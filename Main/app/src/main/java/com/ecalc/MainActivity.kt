@@ -489,41 +489,62 @@ class MainActivity : AppCompatActivity() {
     private fun animateMrClusterPhysics(show: Boolean) {
         mrSlideAnimators.forEach { it.cancel() }; mrSlideAnimators.clear()
         val cluster = binding.mrDisplayCluster
+        val density = resources.displayMetrics.density
+        val baseWidth = if (cluster.width > 0) cluster.width.toFloat() else 140f * density
+        val distance = baseWidth + 48f * density
+        if (cluster.width > 0) {
+            cluster.pivotX = cluster.width.toFloat()
+            cluster.pivotY = cluster.height / 2f
+        }
         if (show) {
             cluster.visibility = View.VISIBLE
-            val distance = if (cluster.width > 0) cluster.width.toFloat() else 220f * resources.displayMetrics.density
             cluster.translationX = distance; cluster.alpha = 0f
             ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 480L; interpolator = LinearInterpolator()
                 addUpdateListener { anim ->
                     val f = anim.animatedValue as Float
-                    val t = f * 0.48; val decay = Math.exp(-4.0 * t)
-                    // bounce out then settle: 0.6 → overshoot ~1.05 → settle
-                    val s = (1.0 - 0.4 * decay * Math.cos(t * 2.8 * Math.PI)).toFloat()
-                    cluster.translationX = distance * (1f - f)
-                    cluster.alpha = (f / 0.25f).coerceIn(0f, 1f)
+                    val t = f * 0.48
+                    val decay = Math.exp(-7.5 * t)
+                    val pulse = decay * Math.sin(t * 22.0)
+                    // Underdamped spring displacement: slides in from right, overshoots, and settles
+                    val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                    cluster.translationX = distance * springFactor
+                    cluster.scaleX = (1.0 + 0.06 * pulse).toFloat()
+                    cluster.scaleY = (1.0 + 0.06 * pulse).toFloat()
+                    cluster.rotation = (3.5 * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
+                    cluster.alpha = (f / 0.22f).coerceIn(0f, 1f)
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
                         cluster.translationX = 0f; cluster.alpha = 1f
+                        cluster.scaleX = 1f; cluster.scaleY = 1f; cluster.rotation = 0f
                     }
                 })
                 start()
                 mrSlideAnimators.add(this)
             }
         } else {
-            val distOut = cluster.width.toFloat() + 48f * resources.displayMetrics.density
+            val startTx = cluster.translationX
             ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 320L; interpolator = AccelerateInterpolator(1.2f)
+                duration = 480L; interpolator = LinearInterpolator()
                 addUpdateListener { anim ->
                     val f = anim.animatedValue as Float
-                    cluster.translationX = distOut * f
-                    cluster.alpha = (1f - f)
+                    val t = f * 0.48
+                    val decay = Math.exp(-7.5 * t)
+                    val pulse = decay * Math.sin(t * 22.0)
+                    // Same damped-spring physics when sliding out: spring recoil then slide to distance
+                    val springFactor = (1.0 - decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                    cluster.translationX = startTx + (distance - startTx) * springFactor
+                    cluster.scaleX = (1.0 - 0.06 * pulse).toFloat()
+                    cluster.scaleY = (1.0 - 0.06 * pulse).toFloat()
+                    cluster.rotation = (-3.5 * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
+                    cluster.alpha = ((1f - f) / 0.65f).coerceIn(0f, 1f)
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
                         cluster.visibility = View.INVISIBLE
                         cluster.translationX = 0f; cluster.alpha = 1f
+                        cluster.scaleX = 1f; cluster.scaleY = 1f; cluster.rotation = 0f
                     }
                 })
                 start()
