@@ -1,0 +1,390 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootFrame"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent">
+
+    <!-- Launch/Exit animated circle splash -->
+    <FrameLayout
+        android:id="@+id/splashCircle"
+        android:layout_width="76dp"
+        android:layout_height="76dp"
+        android:layout_gravity="center"
+        android:visibility="visible">
+
+        <View
+            android:id="@+id/splashOuterDot"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
+            android:layout_gravity="center" />
+
+        <View
+            android:id="@+id/splashInnerDot"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
+            android:layout_gravity="center"
+            android:alpha="0.0" />
+    </FrameLayout>
+
+    <!-- Main calculator container -->
+    <LinearLayout
+        android:id="@+id/calculatorContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#2D2D2D"
+        android:visibility="invisible">
+
+        <!-- Display section -->
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:id="@+id/displaySection"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="0.46"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:paddingTop="48dp"
+            android:paddingBottom="14dp">
+
+            <!-- Theme Toggle Pill: Sun & Moon -->
+            <LinearLayout
+                android:id="@+id/themeTogglePill"
+                android:layout_width="86dp"
+                android:layout_height="40dp"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:clickable="true"
+                android:focusable="true"
+                android:contentDescription="@string/theme_toggle_desc"
+                app:layout_constraintTop_toTopOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintEnd_toEndOf="parent">
+
+                <ImageView
+                    android:id="@+id/ivSun"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_sun"
+                    android:contentDescription="Light theme"
+                    android:layout_marginEnd="14dp" />
+
+                <ImageView
+                    android:id="@+id/ivMoon"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:src="@drawable/ic_moon_cloud"
+                    android:contentDescription="Dark theme" />
+            </LinearLayout>
+
+            <!-- MR Toggle Checkbox -->
+            <LinearLayout
+                android:id="@+id/mrToggleRow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                app:layout_constraintTop_toTopOf="@id/themeTogglePill"
+                app:layout_constraintBottom_toBottomOf="@id/themeTogglePill"
+                app:layout_constraintEnd_toEndOf="parent">
+
+                <androidx.appcompat.widget.AppCompatCheckBox
+                    android:id="@+id/cbMrToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp" />
+
+                <TextView
+                    android:id="@+id/tvMrHeaderLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="@string/mr_toggle_label"
+                    android:textColor="#CCCCCC"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Angle Mode indicator (deg / rad) -->
+            <TextView
+                android:id="@+id/tvAngleMode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="@string/angle_mode_deg"
+                android:textColor="#8E8E8E"
+                android:textSize="15sp"
+                android:clickable="true"
+                android:focusable="true"
+                app:layout_constraintTop_toBottomOf="@id/themeTogglePill"
+                app:layout_constraintStart_toStartOf="parent" />
+
+            <!-- Primary display — height tracks the section so tiny free-form
+                 windows shrink it instead of letting it overlap the MR row -->
+            <TextView
+                android:id="@+id/tvPrimaryDisplay"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_marginTop="22dp"
+                android:gravity="end|center_vertical"
+                android:maxLines="1"
+                android:text="0.0"
+                android:textColor="#E0E0E0"
+                android:autoSizeTextType="uniform"
+                android:autoSizeMinTextSize="20sp"
+                android:autoSizeMaxTextSize="42sp"
+                android:autoSizeStepGranularity="1sp"
+                android:fontFamily="sans-serif-light"
+                app:layout_constraintHeight_percent="0.14"
+                app:layout_constraintTop_toBottomOf="@id/tvAngleMode"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintEnd_toEndOf="parent" />
+
+            <!-- Secondary display — same proportional behavior -->
+            <TextView
+                android:id="@+id/tvSecondaryDisplay"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_marginTop="10dp"
+                android:gravity="end|center_vertical"
+                android:maxLines="1"
+                android:text="0.0"
+                android:textColor="#8E8E8E"
+                android:autoSizeTextType="uniform"
+                android:autoSizeMinTextSize="12sp"
+                android:autoSizeMaxTextSize="19sp"
+                android:autoSizeStepGranularity="1sp"
+                android:fontFamily="sans-serif-light"
+                app:layout_constraintHeight_percent="0.062"
+                app:layout_constraintTop_toBottomOf="@id/tvPrimaryDisplay"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintEnd_toEndOf="parent" />
+
+            <!-- MR Display Cluster -->
+            <LinearLayout
+                android:id="@+id/mrDisplayCluster"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="end"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <com.ecalc.NeumorphicKeyView
+                        android:id="@+id/btnMrClear"
+                        android:layout_width="74dp"
+                        android:layout_height="42dp"
+                        android:layout_marginEnd="12dp"
+                        android:text="@string/mr_clear"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:id="@+id/tvMrClusterTitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/mr_toggle_label"
+                        android:textColor="#8E8E8E"
+                        android:textSize="18sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvMrValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="0.0"
+                    android:textColor="#8E8E8E"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+
+        <!-- Bottom Sheet Keypad Section -->
+        <LinearLayout
+            android:id="@+id/keypadSheet"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="0.54"
+            android:orientation="vertical"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="10dp">
+
+            <!-- 5-icon Tab Bar (horizontally scrollable for future tabs) -->
+            <HorizontalScrollView
+                android:id="@+id/tabScroll"
+                android:layout_width="match_parent"
+                android:layout_height="42dp"
+                android:scrollbars="none"
+                android:fillViewport="true"
+                android:overScrollMode="never">
+
+            <LinearLayout
+                android:id="@+id/tabBarRow"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:orientation="horizontal"
+                android:gravity="start|center_vertical"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp">
+
+                <!-- Tab 0: History -->
+                <FrameLayout
+                    android:id="@+id/tabHistory"
+                    android:layout_width="58dp"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/tab_history">
+
+                    <ImageView
+                        android:id="@+id/ivTabHistory"
+                        android:layout_width="21dp"
+                        android:layout_height="21dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_tab_history"
+                        android:contentDescription="@string/tab_history" />
+
+                    <View
+                        android:id="@+id/indTabHistory"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:visibility="invisible" />
+                </FrameLayout>
+
+                <!-- Tab 1: Basic Keypad -->
+                <FrameLayout
+                    android:id="@+id/tabBasic"
+                    android:layout_width="60dp"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/tab_basic">
+
+                    <ImageView
+                        android:id="@+id/ivTabBasic"
+                        android:layout_width="21dp"
+                        android:layout_height="21dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_tab_keypad_3x3"
+                        android:contentDescription="@string/tab_basic" />
+
+                    <View
+                        android:id="@+id/indTabBasic"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:background="#13959B"
+                        android:visibility="visible" />
+                </FrameLayout>
+
+                <!-- Tab 2: Extended Grid -->
+                <FrameLayout
+                    android:id="@+id/tabExtended"
+                    android:layout_width="60dp"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/tab_extended">
+
+                    <ImageView
+                        android:id="@+id/ivTabExtended"
+                        android:layout_width="21dp"
+                        android:layout_height="21dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_tab_grid_4x3"
+                        android:contentDescription="@string/tab_extended" />
+
+                    <View
+                        android:id="@+id/indTabExtended"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:visibility="invisible" />
+                </FrameLayout>
+
+                <!-- Tab 3: Trig -->
+                <FrameLayout
+                    android:id="@+id/tabTrig"
+                    android:layout_width="60dp"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/tab_trig">
+
+                    <ImageView
+                        android:id="@+id/ivTabTrig"
+                        android:layout_width="21dp"
+                        android:layout_height="21dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_tab_trig"
+                        android:contentDescription="@string/tab_trig" />
+
+                    <View
+                        android:id="@+id/indTabTrig"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:visibility="invisible" />
+                </FrameLayout>
+
+                <!-- Tab 4: Fx -->
+                <FrameLayout
+                    android:id="@+id/tabFx"
+                    android:layout_width="60dp"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/tab_functions">
+
+                    <ImageView
+                        android:id="@+id/ivTabFx"
+                        android:layout_width="21dp"
+                        android:layout_height="21dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_tab_fx"
+                        android:contentDescription="@string/tab_functions" />
+
+                    <View
+                        android:id="@+id/indTabFx"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:visibility="invisible" />
+                </FrameLayout>
+
+            </LinearLayout>
+            </HorizontalScrollView>
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:layout_marginTop="6dp">
+
+                <!-- All five tabs live here as separate fragments managed by
+                     a FragmentStateAdapter: horizontal swipes slide the
+                     current tab out and the adjacent one in. -->
+                <androidx.viewpager2.widget.ViewPager2
+                    android:id="@+id/viewPager"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+            </FrameLayout>
+
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>

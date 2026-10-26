@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Ecalc</string>
+    <string name="theme_toggle_desc">Toggle dark and light theme</string>
+    <string name="mr_toggle_label">MR</string>
+    <string name="mr_clear">Clear</string>
+    <string name="angle_mode_deg">deg(Degree)</string>
+    <string name="angle_mode_rad">rad(Radian)</string>
+    <string name="tab_history">History</string>
+    <string name="tab_basic">Basic keypad</string>
+    <string name="tab_extended">Extended keypad</string>
+    <string name="tab_trig">Trigonometry</string>
+    <string name="tab_functions">Functions</string>
+    <string name="tab_units">Units</string>
+</resources>

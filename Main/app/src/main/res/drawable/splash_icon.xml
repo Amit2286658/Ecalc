@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- System-splash icon that visually continues into the in-app splash:
+     a soft dark disc with a white core, centered — the same shapes the
+     custom splash pulses. Sized for the 288dp splash icon slot with content
+     well inside the 2/3 safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+
+    <!-- outer disc: a touch lighter than the dark splash bg (#2D2D2D) -->
+    <path
+        android:fillColor="#3A3E43"
+        android:pathData="M84,144a60,60 0 1,0 120,0a60,60 0 1,0 -120,0" />
+
+    <!-- white core: same as the splash's pulsing inner dot -->
+    <path
+        android:fillColor="#F8F8F8"
+        android:pathData="M126,144a18,18 0 1,0 36,0a18,18 0 1,0 -36,0" />
+</vector>

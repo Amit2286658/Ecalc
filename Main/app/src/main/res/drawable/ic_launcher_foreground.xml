@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Calculator body -->
+    <path
+        android:fillColor="#232323"
+        android:strokeColor="#13959B"
+        android:strokeWidth="2"
+        android:pathData="M32,24 h44 c4.4,0 8,3.6 8,8 v44 c0,4.4 -3.6,8 -8,8 H32 c-4.4,0 -8,-3.6 -8,-8 V32 c0,-4.4 3.6,-8 8,-8 Z" />
+    <!-- Screen -->
+    <path
+        android:fillColor="#1A1A1A"
+        android:pathData="M30,30 h48 c2.2,0 4,1.8 4,4 v10 c0,2.2 -1.8,4 -4,4 H30 c-2.2,0 -4,-1.8 -4,-4 V34 c0,-2.2 1.8,-4 4,-4 Z" />
+    <!-- Screen accent line -->
+    <path
+        android:fillColor="#13959B"
+        android:pathData="M64,36 h12 v4 H64 Z" />
+    <!-- Keys Grid -->
+    <!-- Row 1 -->
+    <path android:fillColor="#E58A7B" android:pathData="M30,52 h8 v6 h-8 Z" />
+    <path android:fillColor="#3E3E3E" android:pathData="M43,52 h8 v6 h-8 Z" />
+    <path android:fillColor="#3E3E3E" android:pathData="M56,52 h8 v6 h-8 Z" />
+    <path android:fillColor="#13959B" android:pathData="M69,52 h8 v6 h-8 Z" />
+    <!-- Row 2 -->
+    <path android:fillColor="#3E3E3E" android:pathData="M30,61 h8 v6 h-8 Z" />
+    <path android:fillColor="#3E3E3E" android:pathData="M43,61 h8 v6 h-8 Z" />
+    <path android:fillColor="#3E3E3E" android:pathData="M56,61 h8 v6 h-8 Z" />
+    <path android:fillColor="#13959B" android:pathData="M69,61 h8 v6 h-8 Z" />
+    <!-- Row 3 -->
+    <path android:fillColor="#3E3E3E" android:pathData="M30,70 h8 v6 h-8 Z" />
+    <path android:fillColor="#3E3E3E" android:pathData="M43,70 h8 v6 h-8 Z" />
+    <path android:fillColor="#13959B" android:pathData="M56,70 h21 v6 H56 Z" />
+</vector>
