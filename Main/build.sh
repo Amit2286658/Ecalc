@@ -5,15 +5,15 @@
 #  Usage:  ./build.sh [command]
 #
 #  Commands:
-#    (no arg) / debug        build a debug APK with live log
-#    release                 build a release APK with live log
-#    clean                   delete build outputs
-#    stop                    kill any running Gradle daemons/builds
-#    status                  is a build running? last APK built?
-#    log                     follow the latest build log live
-#    apk                     show path of newest APK
-#    env                     print the toolchain env this script uses
-#    help                    show this list
+#    (no arg) / debug / build  build a debug APK with live log
+#    release                   build a release APK with live log
+#    clean                     delete build outputs
+#    stop                      kill any running Gradle daemons/builds
+#    status                    is a build running? last APK built?
+#    log                       follow the latest build log live
+#    apk                       show path of newest APK
+#    env                       print the toolchain env this script uses
+#    help                      show this list
 #
 #  This script automatically handles:
 #   - Java/JDK setup (OpenJDK 21)
@@ -28,10 +28,14 @@ LOG_DIR="$ROOT/.build-logs"
 LOG_FILE="$LOG_DIR/last.log"
 
 # ---------- toolchain env ----------
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
-export ANDROID_HOME=/opt/android_sdk
-export ANDROID_SDK_ROOT=/opt/android_sdk
-export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:/opt/aapt2:$PATH"
+if [ -d /usr/lib/jvm/java-21-openjdk ]; then
+  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+fi
+if [ -d /opt/android_sdk ]; then
+  export ANDROID_HOME=/opt/android_sdk
+  export ANDROID_SDK_ROOT=/opt/android_sdk
+fi
+export PATH="${JAVA_HOME:+$JAVA_HOME/bin:}${ANDROID_HOME:+$ANDROID_HOME/cmdline-tools/latest/bin:}/opt/aapt2:$PATH"
 
 # Memory-permission shim: rebuilds itself if deleted (e.g. /tmp cleanup)
 if [ ! -f /tmp/wxshim.so ]; then
@@ -61,7 +65,11 @@ int mprotect(void *addr, size_t len, int prot) {
 EOF
   cc /tmp/wxshim.c -o /tmp/wxshim.so -shared -fPIC -ldl 2>/dev/null
 fi
-export LD_PRELOAD=/tmp/wxshim.so:/tmp/execshim.so
+if [ -f /tmp/wxshim.so ] && [ -f /tmp/execshim.so ]; then
+  export LD_PRELOAD=/tmp/wxshim.so:/tmp/execshim.so
+elif [ -f /tmp/wxshim.so ]; then
+  export LD_PRELOAD=/tmp/wxshim.so
+fi
 
 # ---------- helpers ----------
 gradle_running() {
@@ -80,8 +88,9 @@ do_build() { # $1 = task, $2 = label
   mkdir -p "$LOG_DIR"
   echo "🏗  Building ($2)... log: $LOG_FILE"
   cd "$ROOT"
-  ./gradlew --no-daemon $1 --console=plain > "$LOG_FILE" 2>&1
-  STATUS=$?
+  chmod +x ./gradlew 2>/dev/null || true
+  ./gradlew --no-daemon $1 --console=plain 2>&1 | tee "$LOG_FILE"
+  STATUS=${PIPESTATUS[0]}
   echo
   grep -E "BUILD (SUCCESSFUL|FAILED)" "$LOG_FILE" | tail -1
   if [ $STATUS -eq 0 ]; then
@@ -92,16 +101,16 @@ do_build() { # $1 = task, $2 = label
       echo "✅  APK: $ROOT/app builds/$(basename "$APK")"
     fi
   else
-    echo "❌ Build failed. Run: ./build.sh log    (or tail -40 \"$LOG_FILE\")"
+    echo "❌ Build failed. Run: ./build.sh log    (or tail -40 "$LOG_FILE")"
   fi
 }
 
 # ---------- commands ----------
 CMD="${1:-debug}"
 case "$CMD" in
-  debug|""  ) do_build "assembleDebug"  "debug"      ;;
+  debug|build|"" ) do_build "assembleDebug"  "debug"      ;;
   release   ) do_build "assembleRelease" "release"   ;;
-  clean     ) ./gradlew clean --console=plain ; rm -f "$LOG_FILE" ;;
+  clean     ) chmod +x ./gradlew 2>/dev/null || true ; ./gradlew clean --console=plain ; rm -f "$LOG_FILE" ;;
   stop      )
     pkill -f "GradleWrapperMain" 2>/dev/null; pkill -f "GradleDaemon" 2>/dev/null
     ./gradlew --stop 2>/dev/null | tail -1

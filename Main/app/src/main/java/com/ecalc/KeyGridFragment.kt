@@ -35,26 +35,26 @@ class KeyGridFragment : Fragment() {
 
         private val EXTENDED_KEYS = listOf(
             KeySpec("(", true), KeySpec(")", true), KeySpec("%", true), KeySpec("^", true),
-            KeySpec("7", false), KeySpec("8", false), KeySpec("9", false), KeySpec("x", true),
-            KeySpec("4", false), KeySpec("5", false), KeySpec("6", false), KeySpec("÷", true),
-            KeySpec("1", false), KeySpec("2", false), KeySpec("3", false), KeySpec("+", true),
+            KeySpec("7", false), KeySpec("8", false), KeySpec("9", false), KeySpec("√", true),
+            KeySpec("4", false), KeySpec("5", false), KeySpec("6", false), KeySpec("ⁿ√", true),
+            KeySpec("1", false), KeySpec("2", false), KeySpec("3", false), KeySpec("!", true),
             KeySpec("0", false), KeySpec(".", false), KeySpec("EE", true), KeySpec("=", true)
         )
 
         private val TRIG_KEYS = listOf(
             KeySpec("sin", true), KeySpec("cos", true), KeySpec("tan", true), KeySpec("π", true),
             KeySpec("asin", true), KeySpec("acos", true), KeySpec("atan", true), KeySpec("e", true),
-            KeySpec("sinh", true), KeySpec("cosh", true), KeySpec("tanh", true), KeySpec("ln", true),
-            KeySpec("deg", true), KeySpec("rad", true), KeySpec("1/x", true), KeySpec("!", true),
-            KeySpec("0", false), KeySpec(".", false), KeySpec("√", true), KeySpec("=", true)
+            KeySpec("sec", true), KeySpec("cosec", true), KeySpec("cot", true), KeySpec("ln", true),
+            KeySpec("asec", true), KeySpec("acosec", true), KeySpec("acot", true), KeySpec("1/x", true),
+            KeySpec("sinh", true), KeySpec("cosh", true), KeySpec("tanh", true), KeySpec("=", true)
         )
 
         private val FX_KEYS = listOf(
-            KeySpec("abs", true), KeySpec("log", true), KeySpec("ln", true), KeySpec("√", true),
+            KeySpec("abs", true), KeySpec("log", true), KeySpec("log₂", true), KeySpec("round", true),
             KeySpec("x²", true), KeySpec("x³", true), KeySpec("xʸ", true), KeySpec("10ˣ", true),
             KeySpec("eˣ", true), KeySpec("nPr", true), KeySpec("nCr", true), KeySpec("cbrt", true),
             KeySpec("ceil", true), KeySpec("floor", true), KeySpec("rand", true), KeySpec("d/dx", true),
-            KeySpec("0", false), KeySpec(".", false), KeySpec("Ans", true), KeySpec("=", true)
+            KeySpec("gcd", true), KeySpec("lcm", true), KeySpec("Ans", true), KeySpec("=", true)
         )
     }
 
@@ -131,6 +131,38 @@ class KeyGridFragment : Fragment() {
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) { view.scaleX=1f;view.scaleY=1f;view.translationX=0f;view.translationY=0f;view.rotation=0f }
+                })
+                start(); wobbleAnimators.add(this)
+            }
+        }
+    }
+
+    /** Damped-spring entrance pulse when tab scrolling settles on this keypad. */
+    fun springSettle(fromDirection: Int) {
+        if (view == null) return
+        wobbleAnimators.forEach { it.cancel() }; wobbleAnimators.clear()
+        val density = resources.displayMetrics.density
+        val slidePx = 22f * density * fromDirection
+        keyViews.forEachIndexed { idx, kv ->
+            if (kv.width == 0 || kv.height == 0) return@forEachIndexed
+            val row = idx / 4
+            val col = idx % 4
+            val delay = ((row * 14) + (col * 10)).toLong()
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                startDelay = delay; duration = 480L; interpolator = LinearInterpolator()
+                addUpdateListener { anim ->
+                    val f = anim.animatedValue as Float; val t = f * 0.48
+                    val decay = Math.exp(-7.5 * t); val pulse = decay * Math.sin(t * 22.0)
+                    val springX = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                    kv.translationX = slidePx * springX * 0.45f
+                    kv.scaleX = (1.0 + 0.045 * pulse).toFloat()
+                    kv.scaleY = (1.0 + 0.045 * pulse).toFloat()
+                    kv.rotation = (2.2 * fromDirection * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        kv.scaleX = 1f; kv.scaleY = 1f; kv.translationX = 0f; kv.rotation = 0f
+                    }
                 })
                 start(); wobbleAnimators.add(this)
             }

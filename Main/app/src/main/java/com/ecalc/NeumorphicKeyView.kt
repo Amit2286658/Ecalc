@@ -115,9 +115,15 @@ class NeumorphicKeyView @JvmOverloads constructor(
         }
     }
 
+    var shadowPadDp: Float = 5f
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     override fun onDraw(canvas: Canvas) {
         val density = resources.displayMetrics.density
-        val pad = 5f * density
+        val pad = shadowPadDp * density
         val radius = cornerRadiusDp * density
 
         rectF.set(pad, pad, width - pad, height - pad)

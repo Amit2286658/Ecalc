@@ -41,11 +41,13 @@ class MainActivity : AppCompatActivity() {
     private val prefs by lazy { getSharedPreferences("ecalc_prefs", MODE_PRIVATE) }
     var isDarkMode: Boolean = true
     private var selectedTabIndex: Int = 1 // Default to Basic keypad
-    private var isDegreeMode: Boolean = true
+    var isDegreeMode: Boolean = true
+    private var currentWorkspacePage: Int = 0 // 0 = Calculator, 1 = .math Studio
     private var currentToast: Toast? = null
 
     private var currentPrimaryInput: String = "0.0"
     private var currentSecondaryFormula: String = "0.0"
+    private var lastAnswer: String = "0.0"
     /** Accumulated expression statement (display dialect, engine-translated
      *  at evaluate time): operators and function heads chain here while the
      *  active operand lives in currentPrimaryInput. */
@@ -59,14 +61,23 @@ class MainActivity : AppCompatActivity() {
     /** Animate the MR cluster sliding — same damped-spring pulse used everywhere
      *  else (e^-7.5 t · sin(22 t)) instead of DecelerateInterpolator / LinearInterpolator. */
     private val mrSlideAnimators = mutableListOf<ValueAnimator>()
+    private val tabPhysicsAnimators = mutableListOf<ValueAnimator>()
+    private val workspaceSlideAnimators = mutableListOf<ValueAnimator>()
+    private var workspaceFragment: MathWorkspaceFragment? = null
+    private var swipeStartX: Float = 0f
+    private var swipeStartY: Float = 0f
+    private var isWorkspaceSwiping: Boolean = false
+    private var swipeBlockedByChild: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Restore the persisted theme before building any themed UI
+        // Restore the persisted theme and angle mode before building any themed UI
         isDarkMode = prefs.getBoolean("dark_mode", isDarkMode)
+        isDegreeMode = prefs.getBoolean("degree_mode", isDegreeMode)
+        binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)" 
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             try {
@@ -84,6 +95,7 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) { /* fall back */ }
         }
 
+        setupWorkspaceFragment()
         setupViewPager()
         setupInteractions()
         applyThemeColors(isDarkMode)
@@ -94,7 +106,13 @@ class MainActivity : AppCompatActivity() {
         binding.root.post { playLaunchSplashReveal() }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { playExitSplashCollapse() }
+            override fun handleOnBackPressed() {
+                if (currentWorkspacePage == 1) {
+                    switchWorkspacePage(0)
+                } else {
+                    playExitSplashCollapse()
+                }
+            }
         })
     }
 
@@ -103,24 +121,249 @@ class MainActivity : AppCompatActivity() {
         currentToast = Toast.makeText(this, "Button: $label", Toast.LENGTH_SHORT).also { it.show() }
     }
 
-    /** Five tabs (history + 4 keypads) live inside a ViewPager2. */
+    private fun setupWorkspaceFragment() {
+        val existing = supportFragmentManager.findFragmentByTag("math_workspace") as? MathWorkspaceFragment
+        if (existing != null) {
+            workspaceFragment = existing
+        } else {
+            val frag = MathWorkspaceFragment()
+            workspaceFragment = frag
+            supportFragmentManager.beginTransaction()
+                .replace(binding.mathWorkspaceContainer.id, frag, "math_workspace")
+                .commitNowAllowingStateLoss()
+        }
+        binding.mathWorkspaceContainer.visibility = View.INVISIBLE
+    }
+
+    /** Switch between Calculator (page 0) and Free-form .math Studio (page 1)
+     *  using the signature damped-spring physics (e^-7.5t * sin(22t)). */
+    fun switchWorkspacePage(targetPage: Int, initialVelocityPx: Float = 0f) {
+        val clamped = targetPage.coerceIn(0, 1)
+        workspaceSlideAnimators.forEach { it.cancel() }
+        workspaceSlideAnimators.clear()
+
+        val width = binding.rootFrame.width.toFloat().coerceAtLeast(1f)
+        val calcView = binding.calculatorContainer
+        val studioView = binding.mathWorkspaceContainer
+
+        calcView.visibility = View.VISIBLE
+        studioView.visibility = View.VISIBLE
+
+        val startCalcTx = calcView.translationX
+        val endCalcTx = if (clamped == 0) 0f else -width
+        val deltaCalc = endCalcTx - startCalcTx
+
+        val pageChanged = (clamped != currentWorkspacePage)
+        currentWorkspacePage = clamped
+
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 480L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.48
+                val decay = Math.exp(-7.5 * t)
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+
+                val curCalcTx = endCalcTx - deltaCalc * springFactor
+                calcView.translationX = curCalcTx
+                studioView.translationX = curCalcTx + width
+
+                val scaleBump = 1f + 0.025f * pulse
+                if (clamped == 1) {
+                    studioView.scaleX = scaleBump
+                    studioView.scaleY = scaleBump
+                    calcView.scaleX = 1f
+                    calcView.scaleY = 1f
+                } else {
+                    calcView.scaleX = scaleBump
+                    calcView.scaleY = scaleBump
+                    studioView.scaleX = 1f
+                    studioView.scaleY = 1f
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    calcView.translationX = endCalcTx
+                    studioView.translationX = endCalcTx + width
+                    calcView.scaleX = 1f; calcView.scaleY = 1f
+                    studioView.scaleX = 1f; studioView.scaleY = 1f
+                    if (clamped == 0) {
+                        studioView.visibility = View.INVISIBLE
+                    } else {
+                        calcView.visibility = View.INVISIBLE
+                    }
+                }
+            })
+            start()
+            workspaceSlideAnimators.add(this)
+        }
+
+        if (pageChanged) {
+            val cx = if (clamped == 1) width * 0.85f else width * 0.15f
+            val cy = binding.rootFrame.height * 0.25f
+            val maxR = hypot(width.toDouble(), binding.rootFrame.height.toDouble()).toFloat()
+            if (clamped == 1) {
+                workspaceFragment?.wobbleRound(cx, cy, maxR, 380L)
+                showButtonToast(".math Studio & Sessions")
+            } else {
+                wobbleRound(cx, cy, maxR, 380L)
+                showButtonToast("Calculator")
+            }
+        }
+    }
+
+    private fun isTouchInsideInteractiveWorkspaceView(ev: MotionEvent): Boolean {
+        val x = ev.rawX.toInt()
+        val y = ev.rawY.toInt()
+        fun hit(v: View?): Boolean {
+            if (v == null || !v.isShown) return false
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            return x in loc[0]..(loc[0] + v.width) && y in loc[1]..(loc[1] + v.height)
+        }
+        if (currentWorkspacePage == 0) {
+            // On calculator page, swiping on the top display section switches to .math Studio,
+            // while swiping on the bottom keypad sheet scrolls between the 5 keypad tabs.
+            return hit(binding.keypadSheet)
+        }
+        return false
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        val density = resources.displayMetrics.density
+        val touchSlop = 18f * density
+        val width = binding.rootFrame.width.toFloat().coerceAtLeast(1f)
+
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeStartX = ev.rawX
+                swipeStartY = ev.rawY
+                isWorkspaceSwiping = false
+                // On page 0 (Calculator), swiping left anywhere on the display section (or from the right edge)
+                // reveals the .math Studio. On page 1 (.math Studio), swiping right from the left edge or header
+                // reveals the Calculator again.
+                val fromRightEdge = ev.rawX >= width - 28f * density
+                val fromLeftEdge = ev.rawX <= 36f * density
+                swipeBlockedByChild = if (currentWorkspacePage == 0) {
+                    !fromRightEdge && isTouchInsideInteractiveWorkspaceView(ev)
+                } else {
+                    !fromLeftEdge && ev.rawY > 150f * density
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!swipeBlockedByChild) {
+                    val dx = ev.rawX - swipeStartX
+                    val dy = ev.rawY - swipeStartY
+                    if (!isWorkspaceSwiping && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.35f) {
+                        val validLeftSwipe = currentWorkspacePage == 0 && dx < 0
+                        val validRightSwipe = currentWorkspacePage == 1 && dx > 0
+                        if (validLeftSwipe || validRightSwipe) {
+                            isWorkspaceSwiping = true
+                            workspaceSlideAnimators.forEach { it.cancel() }
+                            workspaceSlideAnimators.clear()
+                            binding.calculatorContainer.visibility = View.VISIBLE
+                            binding.mathWorkspaceContainer.visibility = View.VISIBLE
+                            val cancelEvent = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
+                            super.dispatchTouchEvent(cancelEvent)
+                            cancelEvent.recycle()
+                        }
+                    }
+                    if (isWorkspaceSwiping) {
+                        val baseCalcTx = if (currentWorkspacePage == 0) 0f else -width
+                        val newCalcTx = (baseCalcTx + dx).coerceIn(-width, 0f)
+                        binding.calculatorContainer.translationX = newCalcTx
+                        binding.mathWorkspaceContainer.translationX = newCalcTx + width
+                        return true
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (isWorkspaceSwiping) {
+                    val dx = ev.rawX - swipeStartX
+                    val threshold = width * 0.22f
+                    val target = when {
+                        currentWorkspacePage == 0 && dx < -threshold -> 1
+                        currentWorkspacePage == 1 && dx > threshold -> 0
+                        else -> currentWorkspacePage
+                    }
+                    isWorkspaceSwiping = false
+                    switchWorkspacePage(target)
+                    return true
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    /** Five tabs (history + 4 keypads) live inside a ViewPager2 with damped-spring physics. */
     private fun setupViewPager() {
         binding.viewPager.adapter = EcalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
         binding.viewPager.offscreenPageLimit = 4
+        binding.viewPager.setPageTransformer { page, position ->
+            val absPos = Math.abs(position).coerceIn(0f, 1f)
+            val t = (1f - absPos) * 0.48
+            val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat() * absPos
+            val scale = (0.92f + 0.08f * (1f - absPos)) + 0.03f * pulse
+            page.scaleX = scale
+            page.scaleY = scale
+            page.rotation = -position * 3.2f * (1f - absPos * 0.5f)
+            page.alpha = 0.65f + 0.35f * (1f - absPos)
+        }
         binding.viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
+                val prevIndex = selectedTabIndex
+                val direction = if (position >= prevIndex) 1 else -1
                 selectedTabIndex = position
-                updateTabIndicators()
+                updateTabIndicators(animate = true)
                 if (position == 0) refreshHistoryUI()
-                val tab = listOf(
+
+                val tabs = listOf(
                     binding.tabHistory, binding.tabBasic, binding.tabExtended,
                     binding.tabTrig, binding.tabFx
-                )[position]
+                )
+                val tab = tabs[position]
+                displaySpringPulse(tab, 0.12f)
+
+                // Apply damped-spring horizontal scroll to the tab bar
                 binding.tabScroll.post {
                     val target = (tab.left - (binding.tabScroll.width - tab.width) / 2)
                         .coerceAtLeast(0)
-                    binding.tabScroll.smoothScrollTo(target, 0)
+                    val startScroll = binding.tabScroll.scrollX
+                    val delta = target - startScroll
+                    if (delta != 0) {
+                        tabPhysicsAnimators.forEach { it.cancel() }
+                        tabPhysicsAnimators.clear()
+                        ValueAnimator.ofFloat(0f, 1f).apply {
+                            duration = 480L
+                            interpolator = LinearInterpolator()
+                            addUpdateListener { anim ->
+                                val f = anim.animatedValue as Float
+                                val t = f * 0.48
+                                val decay = Math.exp(-7.5 * t)
+                                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                                val curScroll = (target - delta * springFactor).toInt()
+                                binding.tabScroll.scrollTo(curScroll, 0)
+                            }
+                            addListener(object : AnimatorListenerAdapter() {
+                                override fun onAnimationEnd(animation: Animator) {
+                                    binding.tabScroll.scrollTo(target, 0)
+                                }
+                            })
+                            start()
+                            tabPhysicsAnimators.add(this)
+                        }
+                    }
+                }
+
+                // Trigger springSettle on the newly selected page's keys/content
+                binding.viewPager.post {
+                    when (val frag = fragmentAt(position)) {
+                        is KeyGridFragment -> frag.springSettle(direction)
+                        is HistoryFragment -> frag.springSettle(direction)
+                    }
                 }
             }
         })
@@ -152,6 +395,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 memoryValue = 0.0
                 binding.tvMrValue.text = formatValue(0.0)
+                displaySpringPulse(binding.tvMrValue, 0.05f)
                 showButtonToast("Memory cleared")
             }
             setOnLongClickListener { true }
@@ -176,11 +420,23 @@ class MainActivity : AppCompatActivity() {
 
         binding.tvAngleMode.setOnClickListener {
             isDegreeMode = !isDegreeMode
+            prefs.edit().putBoolean("degree_mode", isDegreeMode).apply()
             binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)"
+            displaySpringPulse(binding.tvAngleMode, 0.05f)
             showButtonToast("Mode: ${binding.tvAngleMode.text}")
         }
 
         // Tap the memory value to recall it into the current operand
+        binding.tvMrValue.setOnClickListener {
+            val recalled = formatValue(memoryValue)
+            currentPrimaryInput = recalled
+            binding.tvPrimaryDisplay.text =
+                if (currentPrimaryInput == "0.0") exprStatement.trimEnd().ifBlank { "0.0" }
+                else (exprStatement + currentPrimaryInput).ifBlank { "0.0" }
+            displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
+            displaySpringPulse(binding.tvMrValue, 0.05f)
+            showButtonToast("MR Recall: $recalled")
+        }
 
 
         val tabViews = listOf(
@@ -218,6 +474,8 @@ class MainActivity : AppCompatActivity() {
             "AC" -> {
                 exprStatement = ""; currentPrimaryInput = "0.0"; currentSecondaryFormula = "0.0"
                 binding.tvPrimaryDisplay.text = "0.0"; binding.tvSecondaryDisplay.text = "0.0"
+                displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
+                displaySpringPulse(binding.tvSecondaryDisplay, 0.035f)
                 return
             }
             "⌫" -> {
@@ -229,8 +487,10 @@ class MainActivity : AppCompatActivity() {
                         var s = exprStatement.trimEnd()
                         if (s.isNotEmpty()) s = s.dropLast(1).trimEnd()
                         val heads = listOf(
+                            "acosec","cosec","asec","acot","sec","cot",
                             "sin","cos","tan","asin","acos","atan","sinh","cosh","tanh",
-                            "log","ln","abs","ceil","floor","exp","npr","ncr","√","1/(", "10^("
+                            "round","cbrt","root","log2","log₂","log","ln","abs","ceil","floor","exp",
+                            "gcd","lcm","npr","ncr","ⁿ√","√","1/(", "10^("
                         ).sortedByDescending { it.length }
                         for (h in heads) { if (s.endsWith(h)) { s = s.removeSuffix(h).trimEnd(); break } }
                         exprStatement = s
@@ -244,6 +504,7 @@ class MainActivity : AppCompatActivity() {
                 val displayStr = formatValue(memoryValue)
                 binding.tvMrValue.text = displayStr
                 displaySpringPulse(binding.tvMrValue, 0.05f)
+                return
             }
             "M-" -> {
                 // Subtract the displayed value from memory
@@ -252,6 +513,7 @@ class MainActivity : AppCompatActivity() {
                 val displayStr = formatValue(memoryValue)
                 binding.tvMrValue.text = displayStr
                 displaySpringPulse(binding.tvMrValue, 0.05f)
+                return
             }
             "=" -> { evaluateCurrent(); return }
             "Ans" -> {
@@ -262,15 +524,37 @@ class MainActivity : AppCompatActivity() {
                 if (currentPrimaryInput == "0.0") currentPrimaryInput = label
                 else currentPrimaryInput += label
             }
-            "deg", "rad" -> {
-                // Engine natively supports the ° (degree) unit — just append it.
-                // User sees sin(30°) meaning sine of 30 degrees.
-                if (currentPrimaryInput == "0.0") currentPrimaryInput = "0"
-                currentPrimaryInput += " °"
+            "rand" -> {
+                val r = formatValue(Math.random())
+                if (currentPrimaryInput != "0.0") {
+                    flushOperand()
+                    if (exprStatement.isNotEmpty() && exprStatement.trimEnd().last() !in "+-×÷/*^,(") {
+                        exprStatement += "×"
+                    }
+                }
+                currentPrimaryInput = r
             }
-            "!" -> if (currentPrimaryInput != "0.0") currentPrimaryInput += "!"
-            "x²" -> if (currentPrimaryInput != "0.0") currentPrimaryInput += "^2"
-            "x³" -> if (currentPrimaryInput != "0.0") currentPrimaryInput += "^3"
+            "ⁿ√" -> {
+                val hasActiveOperand = currentPrimaryInput != "0.0" || exprStatement.trimEnd().endsWith(")")
+                if (hasActiveOperand) {
+                    flushOperand()
+                    exprStatement += "√("
+                } else {
+                    exprStatement += "ⁿ√("
+                }
+            }
+            "!" -> {
+                if (currentPrimaryInput != "0.0") currentPrimaryInput += "!"
+                else if (exprStatement.trimEnd().endsWith(")")) exprStatement += "!"
+            }
+            "x²" -> {
+                if (currentPrimaryInput != "0.0") currentPrimaryInput += "^2"
+                else if (exprStatement.trimEnd().endsWith(")")) exprStatement += "^2"
+            }
+            "x³" -> {
+                if (currentPrimaryInput != "0.0") currentPrimaryInput += "^3"
+                else if (exprStatement.trimEnd().endsWith(")")) exprStatement += "^3"
+            }
             "xʸ" -> { flushOperand(); withOperator("^") }
             "10ˣ" -> { flushOperand(); exprStatement += "10^(" }
             "eˣ" -> { flushOperand(); exprStatement += "exp(" }
@@ -301,11 +585,35 @@ class MainActivity : AppCompatActivity() {
                 currentPrimaryInput = if (currentPrimaryInput == "0.0" || currentPrimaryInput == "0") label else currentPrimaryInput + label
             }
             "(" -> { flushOperand(); exprStatement += "(" }
-            ")" -> { flushOperand(); if (exprStatement.contains('(')) exprStatement += ")" }
+            ")" -> {
+                flushOperand()
+                val openParens = exprStatement.count { it == '(' } - exprStatement.count { it == ')' }
+                if (openParens > 0) {
+                    val lastOpen = exprStatement.lastIndexOf('(')
+                    val prefix = if (lastOpen >= 0) exprStatement.substring(0, lastOpen) else ""
+                    val inside = if (lastOpen >= 0) exprStatement.substring(lastOpen + 1) else ""
+                    val twoArgHeads = listOf("npr", "ncr", "gcd", "lcm", "root", "ⁿ√")
+                    if (twoArgHeads.any { prefix.endsWith(it) } && !inside.contains(',')) {
+                        exprStatement += ","
+                    } else {
+                        exprStatement += ")"
+                    }
+                }
+            }
             else -> {
                 if (label.isNotEmpty() && (label[0].isLetterOrDigit() || label[0] == '√') && label != "d/dx") {
-                    if (currentPrimaryInput != "0.0") flushOperand()
-                    val fn = when (label) { "nPr"->"npr"; "nCr"->"ncr"; else -> label }
+                    if (currentPrimaryInput != "0.0") {
+                        flushOperand()
+                        if (exprStatement.isNotEmpty() && exprStatement.trimEnd().last() !in "+-×÷/*^,(") {
+                            exprStatement += "×"
+                        }
+                    }
+                    val fn = when (label) {
+                        "nPr" -> "npr"
+                        "nCr" -> "ncr"
+                        "log₂" -> "log2"
+                        else -> label
+                    }
                     exprStatement += "$fn("
                 }
             }
@@ -313,6 +621,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvPrimaryDisplay.text =
             if (currentPrimaryInput == "0.0") exprStatement.trimEnd().ifBlank { "0.0" }
             else (exprStatement + currentPrimaryInput).ifBlank { "0.0" }
+        displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
     }
 
     /** Stateless single-shot evaluation via eng_eval (no session needed).
@@ -324,9 +633,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.tvSecondaryDisplay.text = "$fullDisplay ="
 
-        MathEngineManager.evaluate(fullDisplay) { outcome ->
+        MathEngineManager.evaluate(fullDisplay, isDegreeMode, lastAnswer) { outcome ->
             runOnUiThread {
                 if (outcome.ok) {
+                    lastAnswer = outcome.value
                     currentPrimaryInput = outcome.value
                     exprStatement = ""
                     val unitTag = if (outcome.unit != "none") " [${outcome.unit}]" else ""
@@ -444,7 +754,7 @@ class MainActivity : AppCompatActivity() {
 
         updateTabIndicators()
 
-        // Propagate theme to every live tab (only 5 now)
+        // Propagate theme to every live tab (only 5 now) and the .math studio workspace
         for (pos in 0 until 5) {
             when (val frag = fragmentAt(pos)) {
                 is KeyGridFragment -> frag.applyTheme(dark)
@@ -452,9 +762,10 @@ class MainActivity : AppCompatActivity() {
                 else -> {}
             }
         }
+        workspaceFragment?.applyTheme(dark)
     }
 
-    private fun updateTabIndicators() {
+    private fun updateTabIndicators(animate: Boolean = false) {
         val accentColor = if (isDarkMode) "#13959B" else "#E58A7B"
         val indicators = listOf(
             binding.indTabHistory, binding.indTabBasic,
@@ -462,7 +773,32 @@ class MainActivity : AppCompatActivity() {
         )
         indicators.forEachIndexed { idx, view ->
             view.setBackgroundColor(Color.parseColor(accentColor))
-            view.visibility = if (idx == selectedTabIndex) View.VISIBLE else View.INVISIBLE
+            if (idx == selectedTabIndex) {
+                view.visibility = View.VISIBLE
+                if (animate) {
+                    view.pivotX = view.width / 2f
+                    view.pivotY = view.height / 2f
+                    ValueAnimator.ofFloat(0f, 1f).apply {
+                        duration = 480L
+                        interpolator = LinearInterpolator()
+                        addUpdateListener { anim ->
+                            val f = anim.animatedValue as Float
+                            val t = f * 0.48
+                            val decay = Math.exp(-7.5 * t)
+                            val spring = (1.0 - 0.65 * decay * Math.cos(t * 22.0)).toFloat()
+                            view.scaleX = spring
+                        }
+                        addListener(object : AnimatorListenerAdapter() {
+                            override fun onAnimationEnd(animation: Animator) {
+                                view.scaleX = 1f
+                            }
+                        })
+                        start()
+                    }
+                }
+            } else {
+                view.visibility = View.INVISIBLE
+            }
         }
     }
 
@@ -646,8 +982,9 @@ class MainActivity : AppCompatActivity() {
     private fun toggleThemeWithCircularReveal() {
         val root = binding.rootFrame; val w = root.width; val h = root.height
         if (w == 0 || h == 0) { isDarkMode = !isDarkMode; persistTheme(); applyThemeColors(isDarkMode); applyThemeIconScales(isDarkMode, false); return }
+        val activeContainer: View = if (currentWorkspacePage == 1) binding.mathWorkspaceContainer else binding.calculatorContainer
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        Canvas(bitmap).let { binding.calculatorContainer.draw(it) }
+        Canvas(bitmap).let { activeContainer.draw(it) }
         val overlay = ImageView(this).apply { setImageBitmap(bitmap); layoutParams = FrameLayout.LayoutParams(w, h) }
         root.addView(overlay, 0)
         isDarkMode = !isDarkMode; persistTheme(); applyThemeColors(isDarkMode); applyThemeIconScales(isDarkMode, true)
@@ -655,7 +992,7 @@ class MainActivity : AppCompatActivity() {
         val iconLoc = IntArray(2); revealIcon.getLocationInWindow(iconLoc)
         val cx = iconLoc[0] + revealIcon.width/2; val cy = iconLoc[1] + revealIcon.height/2
         val maxRadius = hypot(w.toDouble(), h.toDouble()).toFloat()
-        ViewAnimationUtils.createCircularReveal(binding.calculatorContainer, cx, cy, 0f, maxRadius).apply {
+        ViewAnimationUtils.createCircularReveal(activeContainer, cx, cy, 0f, maxRadius).apply {
             duration = 380L; interpolator = AccelerateDecelerateInterpolator()
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) { root.removeView(overlay); bitmap.recycle() }
@@ -814,6 +1151,7 @@ class MainActivity : AppCompatActivity() {
         "π" -> "π — pi (3.14159…)"
         "e" -> "e — Euler's number (2.71828…)"
         "√" -> "√ — square root"
+        "ⁿ√" -> "ⁿ√ — nth root: enter n then ⁿ√(x), or ⁿ√(x, n)"
         "!" -> "! — factorial"
         "1/x" -> "1/x — reciprocal"
         "x²" -> "x² — square"
@@ -823,23 +1161,31 @@ class MainActivity : AppCompatActivity() {
         "eˣ" -> "eˣ — exponential (natural)"
         "ln" -> "ln — natural logarithm"
         "log" -> "log — logarithm, base 10"
+        "log₂" -> "log₂ — logarithm, base 2"
+        "round" -> "round — round to nearest integer"
+        "gcd" -> "gcd — greatest common divisor"
+        "lcm" -> "lcm — least common multiple"
         "cbrt" -> "cbrt — cube root"
         "nPr" -> "nPr — permutations"
         "nCr" -> "nCr — combinations"
         "ceil" -> "ceil — round up to integer"
         "floor" -> "floor — round down to integer"
-        "rand" -> "rand — random number"
+        "rand" -> "rand — random number in [0, 1)"
         "d/dx" -> "d/dx — derivative"
         "(" -> "( — opening parenthesis"
-        ")" -> ") — closing parenthesis"
-        "deg" -> "deg — trigonometry in degrees"
-        "rad" -> "rad — trigonometry in radians"
+        ")" -> ") — closing parenthesis (or comma in 2-arg functions)"
         "sin" -> "sin — sine"
         "cos" -> "cos — cosine"
         "tan" -> "tan — tangent"
+        "sec" -> "sec — secant"
+        "cosec" -> "cosec — cosecant"
+        "cot" -> "cot — cotangent"
         "asin" -> "sin⁻¹ — inverse sine (arcsine)"
         "acos" -> "cos⁻¹ — inverse cosine (arccosine)"
         "atan" -> "tan⁻¹ — inverse tangent (arctangent)"
+        "asec" -> "sec⁻¹ — inverse secant (arcsecant)"
+        "acosec" -> "csc⁻¹ — inverse cosecant (arccosecant)"
+        "acot" -> "cot⁻¹ — inverse cotangent (arccotangent)"
         "sinh" -> "sinh — hyperbolic sine"
         "cosh" -> "cosh — hyperbolic cosine"
         "tanh" -> "tanh — hyperbolic tangent"

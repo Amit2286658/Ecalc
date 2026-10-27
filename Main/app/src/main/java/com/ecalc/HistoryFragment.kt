@@ -180,6 +180,37 @@ class HistoryFragment : Fragment() {
         }
     }
 
+    /** Damped-spring entrance pulse when tab scrolling settles on History. */
+    fun springSettle(fromDirection: Int) {
+        val v = view ?: return
+        wobbleAnimators.forEach { it.cancel() }
+        wobbleAnimators.clear()
+        val slidePx = 24f * resources.displayMetrics.density * fromDirection
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 480L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.48
+                val decay = Math.exp(-7.5 * t)
+                val pulse = decay * Math.sin(t * 22.0)
+                val springX = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                v.translationX = slidePx * springX * 0.5f
+                v.scaleX = (1.0 + 0.03 * pulse).toFloat()
+                v.scaleY = (1.0 + 0.03 * pulse).toFloat()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    v.translationX = 0f
+                    v.scaleX = 1f
+                    v.scaleY = 1f
+                }
+            })
+            start()
+            wobbleAnimators.add(this)
+        }
+    }
+
     override fun onDestroyView() {
         wobbleAnimators.forEach { it.cancel() }
         wobbleAnimators.clear()

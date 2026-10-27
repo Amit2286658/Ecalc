@@ -132,6 +132,9 @@
                 android:layout_height="0dp"
                 android:layout_marginTop="22dp"
                 android:gravity="end|center_vertical"
+                android:textAlignment="viewEnd"
+                android:includeFontPadding="false"
+                android:paddingEnd="0dp"
                 android:maxLines="1"
                 android:text="0.0"
                 android:textColor="#E0E0E0"
@@ -145,13 +148,17 @@
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintEnd_toEndOf="parent" />
 
-            <!-- Secondary display — same proportional behavior -->
+            <!-- Secondary display — optical end-padding aligns right edge of 19sp
+                 glyphs with the 42sp primary display above -->
             <TextView
                 android:id="@+id/tvSecondaryDisplay"
                 android:layout_width="0dp"
                 android:layout_height="0dp"
                 android:layout_marginTop="10dp"
                 android:gravity="end|center_vertical"
+                android:textAlignment="viewEnd"
+                android:includeFontPadding="false"
+                android:paddingEnd="2.5dp"
                 android:maxLines="1"
                 android:text="0.0"
                 android:textColor="#8E8E8E"
@@ -386,5 +393,12 @@
 
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Free-form .math Studio & Session Manager container (revealed by swiping left) -->
+    <FrameLayout
+        android:id="@+id/mathWorkspaceContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="invisible" />
 
 </FrameLayout>
