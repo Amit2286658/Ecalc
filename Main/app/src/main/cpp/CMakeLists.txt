@@ -1,6 +1,0 @@
-cmake_minimum_required(VERSION 3.22.1)
-project("ecalc_mep" C)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-add_library(ecalc_mep SHARED ecalc_jni.c)
-target_link_libraries(ecalc_mep android log m)

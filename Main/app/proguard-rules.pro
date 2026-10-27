@@ -19,3 +19,11 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# ---- Math Engine (MEP) JNI bridge ----
+# Keep JNI bridge class and all native method signatures for R8 / ProGuard.
+# Without these, shrinking would strip/renamed the native methods and cause
+# java.lang.UnsatisfiedLinkError at MathEngineBridge.nativeCreate().
+-keep class com.mathengine.MathEngineBridge { *; }
+-keep class com.mathengine.MathEngineBridge$EvalResult { *; }
+-keep class com.mathengine.MathEngineKt { *; }
