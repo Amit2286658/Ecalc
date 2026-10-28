@@ -38,6 +38,40 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+
+  // libmathengine.so can come from two sources: the prebuilt binary in
+  // src/main/jniLibs/ (default, no NDK needed) or the vendored engine source
+  // below (built by CMake during the Gradle build). pickFirsts lets both
+  // coexist during a source build without failing the merge.
+  packaging {
+    jniLibs { pickFirsts += "**/libmathengine.so" }
+  }
+
+  // Source build mode: compile the Math Engine (MEP) from
+  // src/main/cpp/mathengine/ (synced from Amit2286658/Math-Engine-MEP
+  // — current source has UNBOUNDED custom-module count).
+  // Enable with:  ./gradlew assembleDebug -PmepSourceBuild
+  // Requires the Android NDK; without the flag the prebuilt
+  // jniLibs/arm64-v8a/libmathengine.so is used exactly as before.
+  if (project.hasProperty("mepSourceBuild")) {
+    externalNativeBuild {
+      cmake {
+        path = file("src/main/cpp/mathengine/CMakeLists.txt")
+      }
+    }
+    defaultConfig {
+      ndk { abiFilters += listOf("arm64-v8a") }
+      externalNativeBuild {
+        cmake {
+          arguments += listOf(
+            "-DMATH_ENGINE_BUILD_SHARED=ON",
+            "-DCMAKE_BUILD_TYPE=Release"
+          )
+          cFlags += listOf("-O2", "-fPIC", "-fvisibility=hidden")
+        }
+      }
+    }
+  }
 }
 
 dependencies {
