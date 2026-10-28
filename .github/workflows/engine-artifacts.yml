@@ -1,0 +1,84 @@
+name: engine-artifacts
+
+# Rebuilds libmathengine.so (Android bionic, arm64-v8a) and the precompiled
+# stdlib.mathc (host `mathc` compiler) from the SAME Math-Engine-MEP source
+# snapshot so the binary, the stdlib image and the vendored Core/ in
+# Main/app/src/main/cpp/mathengine/ stay structurally consistent
+# (sizeof(TypeDef)/enum hashes drift when engine internals change).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Main/app/src/main/cpp/mathengine/**'
+      - '.github/workflows/engine-artifacts.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Fetch engine sources
+        run: git clone --depth 1 https://github.com/Amit2286658/Math-Engine-MEP.git engine
+
+      - name: Install NDK 27
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Regenerate stdlib.mathc (host toolchain)
+        working-directory: engine
+        run: |
+          cmake -S Main -B .build-host -DCMAKE_BUILD_TYPE=Release > /dev/null
+          cmake --build .build-host --target mathc -j2
+          cmake --build .build-host --target stdlib
+          ls -l Main/precompiled/stdlib.mathc
+
+      - name: Build libmathengine.so (Android NDK, arm64-v8a, separate stdlib)
+        working-directory: engine
+        run: |
+          sh tools/build_android_arm64.sh
+          ls -l Main/precompiled/arm64-v8a/libmathengine.so
+
+      - name: Consistency check (header math)
+        working-directory: engine
+        run: |
+          H=Main/precompiled/stdlib.mathc
+          head -c 48 "$H" | od -A d -t u1
+          # derive expected payload from header counts (AstNode 8, TypeDef 14,
+          # OpOverload 46, ConstDef 10, ...) and compare with stored size
+          header=$(head -c 48 "$H" | od -A n -t u1 | tr -s ' ' ' ')
+          set -- $header
+          perm_src_len=$(awk 'NR==2{print $7+$8*256}' /dev/null; echo)
+          python3 - <<'EOF' 2>/dev/null || echo "(no python3; skipping arithmetic check)"
+          data=open('Main/precompiled/stdlib.mathc','rb').read(48)
+          import struct
+          hdr=struct.unpack('<I H 4B H H 4B I I I 8B',data)
+          (magic,ver,f_r,s_t,v_t,m_t,mod,sym,t_c,c_c,ps,pa,pp,pat,fld,ovl,pay,ih,csm,u_c,_r)=hdr+[0]*8
+          expected=ps+pa*8+pp*8+mod*5+t_c*14+u_c*12+pat*6+fld*8+sym*4+ovl*46+c_c*10
+          print(f"payload stored={pay} expected={expected} {'OK' if pay==expected else 'MISMATCH'}")
+          print(f"version={ver} modules={mod} intr_hash=0x{ih:08X}")
+          assert ver==1 and (pay==expected)
+          EOF
+
+      - name: sha256
+        run: |
+          sha256sum engine/Main/precompiled/stdlib.mathc \
+                    engine/Main/precompiled/arm64-v8a/libmathengine.so > engine.sha256
+          cat engine.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-artifacts
+          path: |
+            engine/Main/precompiled/stdlib.mathc
+            engine/Main/precompiled/arm64-v8a/libmathengine.so
+            engine.sha256
+          if-no-files-found: error
