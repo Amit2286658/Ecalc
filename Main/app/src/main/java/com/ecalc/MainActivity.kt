@@ -101,7 +101,10 @@ class MainActivity : AppCompatActivity() {
         applyThemeColors(isDarkMode)
         applyThemeIconScales(isDarkMode, animate = false)
 
-        Thread { MathEngineManager.ensureEngine() }.start()
+        Thread {
+            MathEngineUpdater.initialize(applicationContext)
+            MathEngineManager.ensureEngine()
+        }.start()
 
         binding.root.post { playLaunchSplashReveal() }
 

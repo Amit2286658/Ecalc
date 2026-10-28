@@ -8,8 +8,27 @@ package com.mathengine;
  * threads can never race or trigger a native use-after-free.
  */
 public final class MathEngineBridge implements AutoCloseable {
+    /**
+     * Optional absolute path to an engine library downloaded at startup by
+     * MathEngineUpdater (fresh build from the Math-Engine-MEP repo). When set
+     * BEFORE the first MathEngineBridge reference, that library is loaded
+     * instead of the one bundled in the APK. Never destroy this thread's
+     * guarantee: nothing else is allowed to assign it after static init.
+     */
+    public static volatile String libOverridePath = null;
+
     static {
-        System.loadLibrary("mathengine");
+        String override = libOverridePath;
+        if (override != null && new java.io.File(override).canRead()) {
+            try {
+                System.load(override);
+            } catch (Throwable t) {
+                // Corrupt or ABI-incompatible download — fall back to bundled
+                System.loadLibrary("mathengine");
+            }
+        } else {
+            System.loadLibrary("mathengine");
+        }
     }
 
     public static final class EvalResult {
