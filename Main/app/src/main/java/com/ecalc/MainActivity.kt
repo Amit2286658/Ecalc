@@ -95,6 +95,9 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Throwable) { /* fall back */ }
         }
 
+        // Initialize context before setupWorkspaceFragment() queues session creation
+        MathEngineManager.initialize(applicationContext)
+
         setupWorkspaceFragment()
         setupViewPager()
         setupInteractions()
@@ -102,11 +105,12 @@ class MainActivity : AppCompatActivity() {
         applyThemeIconScales(isDarkMode, animate = false)
 
         Thread {
-            MathEngineManager.initialize(applicationContext)
             MathEngineManager.ensureEngine()
             // Download any new incremental .math extension patches in the background
-            // (saved to filesDir/math_patches/ and loaded by MathPatchLoader when needed)
-            MathPatchDownloader.syncMissingPatches(applicationContext)
+            // and load them if new patches arrived
+            if (MathPatchDownloader.syncMissingPatches(applicationContext) > 0) {
+                MathEngineManager.loadPendingPatches()
+            }
         }.start()
 
         binding.root.post { playLaunchSplashReveal() }

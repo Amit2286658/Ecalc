@@ -28,6 +28,7 @@ object MathEngineManager {
 
     private const val TAG = "MathEngineManager"
     private const val BUNDLED_STDLIB_ASSET = "precompiled/stdlib.mathc"
+    private const val BUNDLED_USER_TRIG_ASSET = "precompiled/user_trig.math"
 
     @Volatile
     private var appContext: Context? = null
@@ -35,113 +36,72 @@ object MathEngineManager {
     private val worker = Executors.newSingleThreadExecutor()
     private val loadedExtensionSources = mutableSetOf<String>()
 
-    /** Diagnostics: the precise reason of the most recent failed engine boot,
-     *  surfaced through all "Engine init failed" call sites. */
-    @Volatile
-    var lastInitError: String? = null
-        private set
-
-    /** Provides the application context so the bundled `assets/precompiled/stdlib.mathc`
-     *  and local `filesDir/math_patches/` directory can be loaded automatically. */
+    /** Provides the application context so `assets/precompiled/stdlib.mathc`
+     *  and `filesDir/math_patches/` can be loaded automatically. */
     fun initialize(context: Context) {
-        appContext = context.applicationContext
+        val app = context.applicationContext
+        appContext = app
+        seedDefaultPatchesIfNeeded(app)
     }
 
-    /** Boots the native engine:
-     *  1. Tries `MathPatchLoader.tryBootFromCompiledCache(ctx)` first (loads the
-     *     cached `.mathc` image containing `stdlib` + all compiled `.math` patches
-     *     in ~0.4 ms with zero recompilation).
-     *  2. Otherwise boots from the bundled `assets/precompiled/stdlib.mathc`
-     *     (`nativeCreateBlank` + `nativeLoadMathc`) and compiles any `.math`
-     *     patches in `filesDir/math_patches/`, caching the returned `.mathc` bytes. */
+    /** Seeds `user_trig.math` into `filesDir/math_patches/` on first install so
+     *  reciprocal/inverse trig functions work offline before GitHub sync runs. */
+    private fun seedDefaultPatchesIfNeeded(context: Context) {
+        runCatching {
+            val patchesDir = MathPatchDownloader.getPatchesDir(context)
+            val userTrigFile = java.io.File(patchesDir, "user_trig.math")
+            if (!userTrigFile.exists()) {
+                val bytes = context.assets.open(BUNDLED_USER_TRIG_ASSET).use { it.readBytes() }
+                userTrigFile.writeBytes(bytes)
+            }
+        }
+    }
+
+    /** Boots the native engine strictly from `stdlib.mathc` (no embedded fallback):
+     *  1. If `compiled_state.mathc` (cached `stdlib.mathc` + compiled `.math` patches)
+     *     is valid on disk, loads it into a blank engine (`nativeCreateBlank` + `nativeLoadMathc`).
+     *  2. Otherwise creates a blank engine (`nativeCreateBlank`), loads the bundled
+     *     `assets/precompiled/stdlib.mathc` (`nativeLoadMathc`), compiles any `.math`
+     *     patches in `filesDir/math_patches/`, and saves `compiled_state.mathc`. */
     @Synchronized
     fun ensureEngine(): Boolean {
         if (engineHandle != 0L) {
             appContext?.let { ctx ->
-                // Patch-load problems must NEVER invalidate a healthy engine
-                runCatching { MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync) }
-                    .onFailure { Log.e(TAG, "Patch load on warm engine failed (engine kept)", it) }
+                MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
             }
             return true
         }
+        val ctx = appContext ?: return false
+        return try {
+            seedDefaultPatchesIfNeeded(ctx)
 
-        lastInitError = null
-        var handle = 0L
-        val ctx = appContext
-        val reasons = mutableListOf<String>()
+            // 1. Fast path: boot blank engine from cached compiled_state.mathc (stdlib + patches)
+            var handle = MathPatchLoader.tryBootFromCompiledCache(ctx)
 
-        // 1. O(1) boot from the persisted compiled-state cache (stdlib + patches)
-        if (ctx != null) {
-            try {
-                handle = MathPatchLoader.tryBootFromCompiledCache(ctx)
-                if (handle != 0L) Log.i(TAG, "Boot path 1 OK: compiled cache")
-            } catch (t: Throwable) {
-                Log.e(TAG, "Boot path 1 (compiled cache) threw", t)
-                reasons.add("cache: ${t.message ?: t.javaClass.simpleName}")
-            }
-        }
-
-        // 2. Boot blank engine + bundled assets/precompiled/stdlib.mathc
-        if (handle == 0L && ctx != null) {
-            try {
-                val bytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
-                if (bytes.isNotEmpty()) {
-                    val blank = MathEngineBridge.nativeCreateBlank()
-                    if (blank == 0L) {
-                        reasons.add("stdlib: nativeCreateBlank returned 0")
-                        Log.e(TAG, "Boot path 2: nativeCreateBlank() returned 0")
-                    } else {
-                        if (MathEngineBridge.nativeLoadMathc(blank, bytes)) {
-                            handle = blank
-                            Log.i(TAG, "Boot path 2 OK: bundled $BUNDLED_STDLIB_ASSET (${bytes.size} bytes)")
-                        } else {
-                            val err = runCatching { MathEngineBridge.nativeLastError(blank) }.getOrNull() ?: "?"
-                            reasons.add("stdlib: load failed: $err")
-                            Log.e(TAG, "Boot path 2: nativeLoadMathc failed: $err")
-                            MathEngineBridge.nativeDestroy(blank)
-                        }
-                    }
-                } else {
-                    reasons.add("stdlib: asset empty")
-                    Log.e(TAG, "Boot path 2: bundled asset is empty")
+            // 2. Standard path: boot blank engine and load bundled assets/precompiled/stdlib.mathc
+            if (handle == 0L) {
+                val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
+                val blank = MathEngineBridge.nativeCreateBlank()
+                if (blank != 0L && MathEngineBridge.nativeLoadMathc(blank, stdlibBytes)) {
+                    handle = blank
+                    Log.i(TAG, "Booted blank engine with $BUNDLED_STDLIB_ASSET (${stdlibBytes.size} bytes)")
+                } else if (blank != 0L) {
+                    MathEngineBridge.nativeDestroy(blank)
                 }
-            } catch (t: Throwable) {
-                reasons.add("stdlib: ${t.message ?: t.javaClass.simpleName}")
-                Log.e(TAG, "Boot path 2 (bundled stdlib) threw", t)
             }
-        }
 
-        // 3. Legacy fall-back: embedded-stdlib engine via eng_create()
-        if (handle == 0L) {
-            try {
-                handle = MathEngineBridge.nativeCreate()
-                if (handle != 0L) Log.i(TAG, "Boot path 3 OK: embedded nativeCreate()")
-                else {
-                    reasons.add("embedded: nativeCreate returned 0")
-                    Log.e(TAG, "Boot path 3: nativeCreate() returned 0")
-                }
-            } catch (t: Throwable) {
-                reasons.add("embedded: ${t.message ?: t.javaClass.simpleName}")
-                Log.e(TAG, "Boot path 3 (embedded engine) threw", t)
-            }
-        }
-
-        engineHandle = handle
-        if (engineHandle == 0L) {
-            lastInitError = reasons.joinToString("; ").ifEmpty { "no boot path attempted" }
-            Log.e(TAG, "Engine boot FAILED — $lastInitError")
-            return false
-        }
-
-        // Post-boot: link any pending .math patches (failures never kill the engine)
-        if (ctx != null) {
-            try {
+            engineHandle = handle
+            if (engineHandle != 0L) {
                 MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
-            } catch (t: Throwable) {
-                Log.e(TAG, "Post-boot patch load failed (engine running without patches)", t)
+                true
+            } else {
+                Log.e(TAG, "Failed to initialize blank engine with $BUNDLED_STDLIB_ASSET")
+                false
             }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Exception while initializing engine from $BUNDLED_STDLIB_ASSET", t)
+            false
         }
-        return true
     }
 
     /** Scans `filesDir/math_patches/` on the engine worker thread and links any
@@ -381,7 +341,7 @@ object MathEngineManager {
     ) {
         worker.execute {
             if (!ensureEngine()) {
-                onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed: ${lastInitError ?: "unknown"}"))
+                onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"))
                 return@execute
             }
             val engineExpr = toEngineSyntax(displayExpr, isDegreeMode, lastAnswer)
@@ -413,7 +373,7 @@ object MathEngineManager {
     ) {
         worker.execute {
             if (!ensureEngine()) {
-                onDone(false, "Engine init failed: ${lastInitError ?: "unknown"}")
+                onDone(false, "Engine init failed")
                 return@execute
             }
             val (ok, msg) = compileAndLoadSync(mathSource)
@@ -476,7 +436,7 @@ object MathEngineManager {
     fun restoreSession(snapshots: String, onDone: (newSessionId: Int, error: String?) -> Unit) {
         worker.execute {
             if (!ensureEngine()) {
-                onDone(-1, "Engine init failed: ${lastInitError ?: "unknown"}")
+                onDone(-1, "Engine init failed")
                 return@execute
             }
             val sid = try {
@@ -540,7 +500,7 @@ object MathEngineManager {
     ) {
         worker.execute {
             if (!ensureEngine()) {
-                onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed: ${lastInitError ?: "unknown"}"), "")
+                onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"), "")
                 return@execute
             }
             val wire = try {
