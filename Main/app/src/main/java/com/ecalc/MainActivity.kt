@@ -102,8 +102,11 @@ class MainActivity : AppCompatActivity() {
         applyThemeIconScales(isDarkMode, animate = false)
 
         Thread {
-            MathEngineUpdater.initialize(applicationContext)
+            MathEngineManager.initialize(applicationContext)
             MathEngineManager.ensureEngine()
+            // Download any new incremental .math extension patches in the background
+            // (saved to filesDir/math_patches/ and loaded by MathPatchLoader when needed)
+            MathPatchDownloader.syncMissingPatches(applicationContext)
         }.start()
 
         binding.root.post { playLaunchSplashReveal() }

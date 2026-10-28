@@ -8,27 +8,8 @@ package com.mathengine;
  * threads can never race or trigger a native use-after-free.
  */
 public final class MathEngineBridge implements AutoCloseable {
-    /**
-     * Optional absolute path to an engine library downloaded at startup by
-     * MathEngineUpdater (fresh build from the Math-Engine-MEP repo). When set
-     * BEFORE the first MathEngineBridge reference, that library is loaded
-     * instead of the one bundled in the APK. Never destroy this thread's
-     * guarantee: nothing else is allowed to assign it after static init.
-     */
-    public static volatile String libOverridePath = null;
-
     static {
-        String override = libOverridePath;
-        if (override != null && new java.io.File(override).canRead()) {
-            try {
-                System.load(override);
-            } catch (Throwable t) {
-                // Corrupt or ABI-incompatible download — fall back to bundled
-                System.loadLibrary("mathengine");
-            }
-        } else {
-            System.loadLibrary("mathengine");
-        }
+        System.loadLibrary("mathengine");
     }
 
     public static final class EvalResult {
@@ -75,6 +56,26 @@ public final class MathEngineBridge implements AutoCloseable {
         if (this.handle == 0L) {
             throw new IllegalStateException("Failed to initialize native MEP Engine");
         }
+    }
+
+    /**
+     * Initializes a blank native MEP Engine and loads a separate precompiled
+     * `stdlib.mathc` binary image in O(1) `memcpy` time.
+     */
+    public MathEngineBridge(byte[] stdlibMathcBytes) {
+        if (stdlibMathcBytes == null || stdlibMathcBytes.length == 0) {
+            throw new IllegalArgumentException("stdlib.mathc byte array must not be null or empty");
+        }
+        long h = nativeCreateBlank();
+        if (h == 0L) {
+            throw new IllegalStateException("Failed to allocate blank native MEP Engine");
+        }
+        if (!nativeLoadMathc(h, stdlibMathcBytes)) {
+            String err = nativeLastError(h);
+            nativeDestroy(h);
+            throw new IllegalStateException("Failed to load stdlib.mathc: " + err);
+        }
+        this.handle = h;
     }
 
     private long requireOpenHandle() {

@@ -1,5 +1,7 @@
 package com.ecalc
 
+import android.content.Context
+import android.util.Log
 import com.mathengine.MathEngineBridge
 import java.util.concurrent.Executors
 
@@ -24,35 +26,87 @@ object MathEngineManager {
         val error: String?
     )
 
+    private const val TAG = "MathEngineManager"
+    private const val BUNDLED_STDLIB_ASSET = "precompiled/stdlib.mathc"
+
+    @Volatile
+    private var appContext: Context? = null
     private var engineHandle: Long = 0
     private val worker = Executors.newSingleThreadExecutor()
     private val loadedExtensionSources = mutableSetOf<String>()
 
-    /** Default `.math` extension module compiled and linked into the engine at boot
-     *  so `asec`, `acosec`, `acot`, and `nthroot` exist as native `.math` functions
-     *  in both calculator and session modes. */
-    private val BUILTIN_USER_TRIG_EXT =
-        "[user_trig]\n" +
-        "<[trig]\n\n" +
-        "asec(x: real) = acos(1 / x);\n" +
-        "acosec(x: real) = asin(1 / x);\n" +
-        "acot(x: real) = atan(1 / x);\n" +
-        "nthroot(x: real, n: real) = root(x, n);\n"
+    /** Provides the application context so the bundled `assets/precompiled/stdlib.mathc`
+     *  and local `filesDir/math_patches/` directory can be loaded automatically. */
+    fun initialize(context: Context) {
+        appContext = context.applicationContext
+    }
 
-    /** Boots the native engine (idempotent, thread-safe) and links the default
-     *  `[user_trig]` `.math` extension. */
+    /** Boots the native engine:
+     *  1. Tries `MathPatchLoader.tryBootFromCompiledCache(ctx)` first (loads the
+     *     cached `.mathc` image containing `stdlib` + all compiled `.math` patches
+     *     in ~0.4 ms with zero recompilation).
+     *  2. Otherwise boots from the bundled `assets/precompiled/stdlib.mathc`
+     *     (`nativeCreateBlank` + `nativeLoadMathc`) and compiles any `.math`
+     *     patches in `filesDir/math_patches/`, caching the returned `.mathc` bytes. */
     @Synchronized
     fun ensureEngine(): Boolean {
-        if (engineHandle != 0L) return true
+        if (engineHandle != 0L) {
+            appContext?.let { ctx ->
+                MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
+            }
+            return true
+        }
         return try {
-            engineHandle = MathEngineBridge.nativeCreate()
+            var handle = 0L
+            val ctx = appContext
+            if (ctx != null) {
+                // 1. Try O(1) boot from cached compiled_state.mathc (stdlib + patches)
+                handle = MathPatchLoader.tryBootFromCompiledCache(ctx)
+
+                // 2. Otherwise boot from bundled assets/precompiled/stdlib.mathc
+                if (handle == 0L) {
+                    val stdlibBytes = runCatching {
+                        ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
+                    }.getOrNull()
+                    if (stdlibBytes != null && stdlibBytes.isNotEmpty()) {
+                        val blank = MathEngineBridge.nativeCreateBlank()
+                        if (blank != 0L && MathEngineBridge.nativeLoadMathc(blank, stdlibBytes)) {
+                            handle = blank
+                            Log.i(TAG, "Booted engine from bundled $BUNDLED_STDLIB_ASSET (${stdlibBytes.size} bytes)")
+                        } else if (blank != 0L) {
+                            MathEngineBridge.nativeDestroy(blank)
+                        }
+                    }
+                }
+            }
+            if (handle == 0L) {
+                handle = MathEngineBridge.nativeCreate()
+            }
+            engineHandle = handle
             if (engineHandle != 0L) {
-                compileAndLoadSync(BUILTIN_USER_TRIG_EXT)
+                ctx?.let {
+                    MathPatchLoader.loadUnloadedPatches(it, engineHandle, ::compileAndLoadWithBytesSync)
+                }
                 true
             } else {
                 false
             }
         } catch (_: Throwable) { false }
+    }
+
+    /** Scans `filesDir/math_patches/` on the engine worker thread and links any
+     *  downloaded `.math` patches that are not yet loaded. */
+    fun loadPendingPatches(onDone: ((loadedCount: Int) -> Unit)? = null) {
+        worker.execute {
+            if (!ensureEngine()) {
+                onDone?.invoke(0)
+                return@execute
+            }
+            val count = appContext?.let { ctx ->
+                MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
+            } ?: 0
+            onDone?.invoke(count)
+        }
     }
 
     private fun normalizeExtensionSource(raw: String): String {
@@ -93,33 +147,39 @@ object MathEngineManager {
     }
 
     @Synchronized
-    private fun compileAndLoadSync(mathSource: String): Pair<Boolean, String> {
-        if (engineHandle == 0L) return false to "Engine not initialized"
+    private fun compileAndLoadWithBytesSync(mathSource: String): Triple<Boolean, String, ByteArray?> {
+        if (engineHandle == 0L) return Triple(false, "Engine not initialized", null)
         val trimmed = normalizeExtensionSource(mathSource)
-        if (trimmed.isEmpty()) return false to "Empty .math source"
+        if (trimmed.isEmpty()) return Triple(false, "Empty .math source", null)
         return try {
+            // nativeCompileExt compiles & links the .math source directly into engineHandle
+            // (with new [module] headers enabled by default) AND returns the serialized
+            // cumulative .mathc binary image of the entire engine.
             val mathcBytes = MathEngineBridge.nativeCompileExt(engineHandle, trimmed)
             if (mathcBytes == null || mathcBytes.isEmpty()) {
                 val err = MathEngineBridge.nativeLastError(engineHandle) ?: "Compilation failed"
-                false to err
+                Triple(false, err, null)
             } else {
-                val loaded = MathEngineBridge.nativeLoadMathc(engineHandle, mathcBytes)
-                if (loaded) {
-                    // Activate any [module_name] headers declared in the source
-                    Regex("(?m)^\\s*\\[([a-zA-Z0-9_]+)\\]").findAll(trimmed).forEach { m ->
-                        val modName = m.groupValues[1]
-                        MathEngineBridge.nativeSetModule(engineHandle, modName, true)
-                    }
-                    loadedExtensionSources.add(trimmed)
-                    true to "Compiled ${mathcBytes.size} bytes (.mathc) and linked into active engine."
-                } else {
-                    val err = MathEngineBridge.nativeLastError(engineHandle) ?: "Failed to link .mathc"
-                    false to err
+                Regex("(?m)^\\s*\\[([a-zA-Z0-9_]+)\\]").findAll(trimmed).forEach { m ->
+                    val modName = m.groupValues[1]
+                    MathEngineBridge.nativeSetModule(engineHandle, modName, true)
                 }
+                loadedExtensionSources.add(trimmed)
+                Triple(
+                    true,
+                    "Compiled ${mathcBytes.size} bytes (.mathc) and linked into active engine.",
+                    mathcBytes
+                )
             }
         } catch (t: Throwable) {
-            false to (t.message ?: "Native exception")
+            Triple(false, t.message ?: "Native exception", null)
         }
+    }
+
+    @Synchronized
+    private fun compileAndLoadSync(mathSource: String): Pair<Boolean, String> {
+        val (ok, msg, _) = compileAndLoadWithBytesSync(mathSource)
+        return ok to msg
     }
 
     /** Destroy the engine when the process exits. */
@@ -129,6 +189,7 @@ object MathEngineManager {
             MathEngineBridge.nativeDestroy(engineHandle)
             engineHandle = 0L
         }
+        MathPatchLoader.resetTracking()
         worker.shutdown()
     }
 
@@ -237,23 +298,15 @@ object MathEngineManager {
         // Support infix n√(x) -> root(x, n)
         e = replaceInfixNthRoot(e)
 
-        // Normalize cosec / acosec aliases
-        e = Regex("\\bacosec\\(").replace(e, "acsc(")
-        e = Regex("\\bcosec\\(").replace(e, "csc(")
-
-        // Expand inverse reciprocal trig functions:
-        // asec(x) -> acos(1/(x)), acsc(x) -> asin(1/(x)), acot(x) -> atan(1/(x))
-        val invRecipMap = mapOf("asec" to "acos", "acsc" to "asin", "acot" to "atan")
-        e = rewriteFunctionCalls(e, listOf("asec", "acsc", "acot")) { fn, inner ->
-            val baseFn = invRecipMap[fn] ?: fn
-            "$baseFn(1/($inner))"
-        }
-
         // Apply active Degree / Radian mode to trig and inverse trig functions
+        // (`cosec`, `asec`, `acsc`, `acosec`, and `acot` are provided by `patches/user_trig.math`)
         if (isDegreeMode) {
             e = rewriteFunctionCalls(
                 e,
-                listOf("sin", "cos", "tan", "sec", "csc", "cot", "asin", "acos", "atan")
+                listOf(
+                    "sin", "cos", "tan", "sec", "csc", "cosec", "cot",
+                    "asin", "acos", "atan", "asec", "acsc", "acosec", "acot"
+                )
             ) { fn, inner ->
                 if (fn.startsWith("a")) {
                     "rad2deg($fn($inner))"

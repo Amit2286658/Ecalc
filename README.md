@@ -16,46 +16,18 @@ A scientific Android calculator featuring neumorphic keys, a native math engine,
    ./gradlew assembleDebug
    ```
 
-## Native Engine (Math Engine MEP)
+## Native Engine & Standard Library Architecture (Marketplace Compliant)
 
-The calculator evaluates through the C11 **Math Engine (MEP)**,
-<https://github.com/Amit2286658/Math-Engine-MEP>, loaded as
-`libmathengine.so` via `com.mathengine.MathEngineBridge` (JNI).
+The calculator evaluates expressions through the C11 **Math Engine (MEP)** (<https://github.com/Amit2286658/Math-Engine-MEP>), using a separated, store-compliant layout:
 
-Three layers keep the engine current **without re-releasing the APK**:
-
-1. **Hot-update at startup (default branch of the loader)** —
-   `MathEngineUpdater` runs in the engine bootstrap thread. It checks the
-   engine repo's `Prebuilt/arm64-v8a/libmathengine.so` (GitHub contents API,
-   git-blob SHA compare), downloads it on change (integrity-verified via the
-   blob SHA, atomic file replace) into app-private storage, and
-   `MathEngineBridge` then `System.load`s it instead of the bundled binary.
-   Works offline/rate-limited/first-run safe: anything goes wrong → bundled
-   `jniLibs` copy is used. The new engine applies on the **next launch**
-   (a loaded `.so` cannot be swapped mid-process).
-   To publish an engine update for all users: rebuild the engine and commit
-   the fresh `.so` at `Prebuilt/arm64-v8a/libmathengine.so` in the
-   Math-Engine-MEP repo. Never push an older build there — the app adopts it
-   verbatim (there is no version floor).
-2. **Prebuilt (offline fallback)** — `app/src/main/jniLibs/arm64-v8a/libmathengine.so`
-   is packed into the APK directly. No NDK required.
-3. **Source build** — sources vendored at `app/src/main/cpp/mathengine/`
-   (see its `SYNC.md`):
+1. **Bundled Native Engine (`jniLibs/`) & Precompiled Standard Library (`assets/precompiled/`)** —
+   Both `app/src/main/jniLibs/arm64-v8a/libmathengine.so` and `app/src/main/assets/precompiled/stdlib.mathc` are copied from `Math-Engine-MEP/Main/precompiled/` and bundled directly in the app. At startup, `MathEngineManager` loads `libmathengine.so` via standard `System.loadLibrary("mathengine")`, initializes a blank engine (`nativeCreateBlank()`), and loads `assets/precompiled/stdlib.mathc` in $O(1)$ `memcpy` time (`nativeLoadMathc()`). No GitHub network lookup is performed for `.so` or `stdlib.mathc`.
+2. **Incremental `.math` Extension Patches (`MathPatchDownloader` & `MathPatchLoader`)** —
+   For new `.math` extension modules published after an app release:
+   - `MathPatchDownloader.syncMissingPatches(context)` checks the remote `patches/manifest.json` index and downloads any missing `.math` files into `context.filesDir/math_patches/` without modifying the running engine.
+   - `MathPatchLoader.loadUnloadedPatches(...)` scans `context.filesDir/math_patches/` and compiles/links any `.math` files that are not yet loaded into the active engine.
+3. **Optional Source Build (`-PmepSourceBuild`)** —
+   To compile `libmathengine.so` directly from the vendored C11 sources in `app/src/main/cpp/mathengine/` (with `-DMATH_ENGINE_SEPARATE_STDLIB=ON`):
    ```bash
    ./gradlew assembleDebug -PmepSourceBuild
    ```
-   compiles the vendored engine during the Gradle build (needs NDK).
-
-
-To refresh the prebuilt library after an engine update, rebuild it from the
-source in `app/src/main/cpp/mathengine/` (Android NDK r23+ … r27+):
-
-```bash
-cmake -S app/src/main/cpp/mathengine -B build-native \
-      -DMATH_ENGINE_BUILD_SHARED=ON -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_TOOLCHAIN_FILE=$NDK_HOME/build/cmake/android.toolchain.cmake \
-      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26
-cmake --build build-native
-cp build-native/libmathengine.so app/src/main/jniLibs/arm64-v8a/libmathengine.so
-```
-

@@ -18,6 +18,7 @@ add_compile_options(
 
 # Optional shared library build (e.g. for Android NDK / JNI `libmathengine.so`)
 option(MATH_ENGINE_BUILD_SHARED "Build mathengine as a shared library (.so/.dylib)" OFF)
+option(MATH_ENGINE_SEPARATE_STDLIB "Omit embedded stdlib_precompiled.h; load precompiled/stdlib.mathc separately" OFF)
 
 # Android NDK configuration support
 if(ANDROID)
@@ -103,6 +104,10 @@ else()
     add_library(mathengine STATIC ${CORE_SOURCES})
 endif()
 
+if(MATH_ENGINE_SEPARATE_STDLIB)
+    target_compile_definitions(mathengine PRIVATE MATH_ENGINE_SEPARATE_STDLIB=1)
+endif()
+
 set_target_properties(mathengine PROPERTIES
     C_VISIBILITY_PRESET hidden
     POSITION_INDEPENDENT_CODE ON
@@ -160,8 +165,10 @@ if(NOT ANDROID AND EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
             "${CMAKE_SOURCE_DIR}/Library/trig.math"
             "${CMAKE_SOURCE_DIR}/Library/units.math"
             "${CMAKE_SOURCE_DIR}/Library/vec.math"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/precompiled"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/Library/stdlib.mathc" "${CMAKE_SOURCE_DIR}/precompiled/stdlib.mathc"
         DEPENDS mathc
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Compiling & linking Library/*.math -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"
+        COMMENT "Compiling & linking Library/*.math -> Library/stdlib.mathc, precompiled/stdlib.mathc & Core/Headers/stdlib_precompiled.h"
     )
 endif()

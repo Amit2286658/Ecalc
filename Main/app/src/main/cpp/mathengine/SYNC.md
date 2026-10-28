@@ -4,31 +4,15 @@ This directory is a vendored copy of the Math Engine (MEP) C11 sources from:
 
     https://github.com/Amit2286658/Math-Engine-MEP
 
-What is vendored here:
+## Precompiled Default Layout (`jniLibs/` + `assets/precompiled/`)
 
-* `CMakeLists.txt` — engine root build script (builds `libmathengine.so`
-  when `-DMATH_ENGINE_BUILD_SHARED=ON`, which Gradle passes in source mode)
-* `Core/` — engine core: pipeline (`Code/`), headers, extension compiler
-  (`compile/`), JNI layer (`jni/`), delegates (`lib/`), sessions
+By default, `Ecalc` ships the separated precompiled artifacts from `Math-Engine-MEP/Main/precompiled/` directly inside the APK/AAB so startup requires **zero network calls** for the core engine or standard library:
 
-The Kotlin/Java bridge files already live at
-`app/src/main/java/com/mathengine/` and must stay in package
-`com.mathengine` (the JNI symbol names are derived from it).
+* `app/src/main/jniLibs/arm64-v8a/libmathengine.so` — Precompiled C11 native engine binary (synced from `Math-Engine-MEP/Main/precompiled/arm64-v8a/libmathengine.so`).
+* `app/src/main/assets/precompiled/stdlib.mathc` — Precompiled 18-module `.mathc` standard library image (`244,423` bytes, synced from `Math-Engine-MEP/Main/precompiled/stdlib.mathc`). Loaded at boot via `MathEngineBridge.nativeCreateBlank()` + `MathEngineBridge.nativeLoadMathc()`.
 
-## Syncing a new engine version
+## Incremental `.math` Patches
 
-1. Clone / pull the latest Math-Engine-MEP.
-2. Replace `Core/` and `CMakeLists.txt` here with the fresh copies.
-3. Diff `JNI/MathEngineBridge.{java,kt}` from the engine repo against
-   `app/src/main/java/com/mathengine/` and update if changed.
-4. Rebuild `libmathengine.so` (see README "Native engine" — either
-   `-PmepSourceBuild` Gradle mode or `make ndk` + drop into `jniLibs/`).
-
-## Why this exists
-
-The old prebuilt `libmathengine.so` was compiled from a version enforcing a
-maximum custom-module count (error string `Maximum module count (%d)
-exceeded`, `Maximum module dependencies (16) exceeded`). The current engine
-source has an **unbounded module count**, which users of the free-form
-editor rely on. Keeping this source copy allows the prebuilt binary to be
-rebuilt from source at any time instead of going stale.
+New `.math` extension modules published after an app release are listed in `patches/manifest.json` in the repo:
+* `MathPatchDownloader` checks `manifest.json` and downloads any missing `.math` files into `context.filesDir/math_patches/` without touching the running engine.
+* `MathPatchLoader` scans `context.filesDir/math_patches/` and compiles/links any unloaded `.math` files into the active engine.

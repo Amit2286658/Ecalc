@@ -47,6 +47,11 @@ android {
     jniLibs { pickFirsts += "**/libmathengine.so" }
   }
 
+  // Keep precompiled/stdlib.mathc uncompressed inside the APK/AAB for fast asset reads
+  androidResources {
+    noCompress += "mathc"
+  }
+
   // Source build mode: compile the Math Engine (MEP) from
   // src/main/cpp/mathengine/ (synced from Amit2286658/Math-Engine-MEP
   // — current source has UNBOUNDED custom-module count).
@@ -65,6 +70,7 @@ android {
         cmake {
           arguments += listOf(
             "-DMATH_ENGINE_BUILD_SHARED=ON",
+            "-DMATH_ENGINE_SEPARATE_STDLIB=ON",
             "-DCMAKE_BUILD_TYPE=Release"
           )
           cFlags += listOf("-O2", "-fPIC", "-fvisibility=hidden")

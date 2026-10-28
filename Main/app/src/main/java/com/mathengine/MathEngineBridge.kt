@@ -4,9 +4,23 @@ import java.io.Closeable
 
 /**
  * Thread-Safe Android Kotlin Idiomatic Wrapper for the C11 Math Engine (MEP).
+ *
+ * If [stdlibMathcBytes] is provided, boots from the separate precompiled
+ * `stdlib.mathc` binary image (`nativeCreateBlank` + `nativeLoadMathc`);
+ * otherwise falls back to `nativeCreate()`.
  */
-class MathEngineKt : Closeable {
-    private var handle: Long = MathEngineBridge.nativeCreate()
+class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
+    private var handle: Long = if (stdlibMathcBytes != null && stdlibMathcBytes.isNotEmpty()) {
+        val h = MathEngineBridge.nativeCreateBlank()
+        if (h != 0L && MathEngineBridge.nativeLoadMathc(h, stdlibMathcBytes)) {
+            h
+        } else {
+            if (h != 0L) MathEngineBridge.nativeDestroy(h)
+            MathEngineBridge.nativeCreate()
+        }
+    } else {
+        MathEngineBridge.nativeCreate()
+    }
 
     init {
         check(handle != 0L) { "Failed to initialize native MEP Engine" }
