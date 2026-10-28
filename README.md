@@ -2,6 +2,9 @@
 
 A scientific Android calculator featuring neumorphic keys, a native math engine, and damped-spring UI physics.
 
+> All project paths and commands below are relative to the `Main/` directory
+> (the Gradle project root), except where a full path is given.
+
 ## Build & Run Locally
 
 **Prerequisites:** [Android Studio](https://developer.android.com/studio) (JDK 17+)
