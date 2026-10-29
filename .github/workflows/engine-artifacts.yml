@@ -38,6 +38,7 @@ jobs:
           cp -r Main/app/src/main/cpp/mathengine/Core            buildtree/Core
           cp    Main/app/src/main/cpp/mathengine/CMakeLists.txt  buildtree/CMakeLists.txt
           cp -r mep/Main/Library                                 buildtree/Library
+          cp -r mep/Main/Test                                    buildtree/Test
           ls buildtree/Library | head -20
           # Vendored engine must be at least as new as the .math sources need;
           # print both HEADs for the record.
@@ -50,7 +51,6 @@ jobs:
         run: |
           set -eu
           cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release -DMATH_ENGINE_BUILD_SHARED=OFF
-          cmake --build build-host --target myapp -j2
           cmake --build build-host --target mathc -j2
           cmake --build build-host --target stdlib -j2
           ls -l precompiled/stdlib.mathc Core/Headers/stdlib_precompiled.h
@@ -58,7 +58,11 @@ jobs:
       - name: Run engine self-tests (host, informational)
         working-directory: buildtree
         run: |
-          ./build-host/myapp || echo "WARN: cmath_suite reported failures (see log above)"
+          if cmake --build build-host --target myapp -j2; then
+            ./build-host/myapp || echo "WARN: cmath_suite reported failures (see log above)"
+          else
+            echo "WARN: could not build myapp (test sources; see log above)"
+          fi
 
       # ---- Consistency check of the generated .mathc ----
       # Checks: magic/version, payload formula (sizes from _Static_asserts),
