@@ -90,6 +90,12 @@ object MathEngineManager {
                 }
             }
 
+            // 3. Last resort: legacy embedded-stdlib engine (eng_create)
+            if (handle == 0L) {
+                handle = MathEngineBridge.nativeCreate()
+                if (handle != 0L) Log.i(TAG, "Booted engine via nativeCreate() (embedded stdlib)")
+            }
+
             engineHandle = handle
             if (engineHandle != 0L) {
                 MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)

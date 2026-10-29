@@ -1,10 +1,18 @@
 name: engine-artifacts
 
-# Rebuilds libmathengine.so (Android bionic, arm64-v8a) and the precompiled
-# stdlib.mathc (host `mathc` compiler) from the SAME Math-Engine-MEP source
-# snapshot so the binary, the stdlib image and the vendored Core/ in
-# Main/app/src/main/cpp/mathengine/ stay structurally consistent
-# (sizeof(TypeDef)/enum hashes drift when engine internals change).
+# Rebuilds the native artifacts from the SAME source snapshot so the shipped
+# pair can never drift again:
+#   - stdlib.mathc  : host `mathc` compiler over Library/*.math (sources from
+#                     Math-Engine-MEP, engine from the vendored copy below)
+#   - libmathengine.so : arm64-v8a NDK build (embedded stdlib, API 24)
+#
+# Engine sources of truth: Main/app/src/main/cpp/mathengine/
+# (Core/ + CMakeLists.txt vendored from Math-Engine-MEP; only Library/ is
+# pulled from the engine repo at build time).
+#
+# The consistency check derives struct sizes from the `_Static_assert(sizeof(..))`
+# lines in mathc_bin.h, so any future payload-layout drift in the engine breaks
+# CI instead of failing silently on devices ("Engine init failed").
 
 on:
   workflow_dispatch:
@@ -12,6 +20,7 @@ on:
     branches: [main]
     paths:
       - 'Main/app/src/main/cpp/mathengine/**'
+      - 'Main/app/src/main/assets/precompiled/**'
       - '.github/workflows/engine-artifacts.yml'
 
 jobs:
@@ -20,65 +29,118 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: Fetch engine sources
-        run: git clone --depth 1 https://github.com/Amit2286658/Math-Engine-MEP.git engine
-
-      - name: Install NDK 27
+      # ---- Assemble one build tree: vendored engine + .math stdlib sources ----
+      - name: Assemble build tree (vendored Core + Library/*.math)
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          set -eu
+          git clone --depth 1 https://github.com/Amit2286658/Math-Engine-MEP.git mep
+          mkdir -p buildtree
+          cp -r Main/app/src/main/cpp/mathengine/Core            buildtree/Core
+          cp    Main/app/src/main/cpp/mathengine/CMakeLists.txt  buildtree/CMakeLists.txt
+          cp -r mep/Main/Library                                 buildtree/Library
+          ls buildtree/Library | head -20
+          # Vendored engine must be at least as new as the .math sources need;
+          # print both HEADs for the record.
+          echo "vendored engine: $(git log -1 --format='%h %s' -- Main/app/src/main/cpp/mathengine)"
+          echo "engine repo HEAD: $(git -C mep log -1 --format='%h %s')"
 
-      - name: Regenerate stdlib.mathc (host toolchain)
-        working-directory: engine
+      # ---- Host build: mathc compiler -> stdlib.mathc (+ embedded header) ----
+      - name: Build stdlib.mathc (host)
+        working-directory: buildtree
         run: |
-          cmake -S Main -B .build-host -DCMAKE_BUILD_TYPE=Release > /dev/null
-          cmake --build .build-host --target mathc -j2
-          cmake --build .build-host --target stdlib
-          ls -l Main/precompiled/stdlib.mathc
+          set -eu
+          cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release -DMATH_ENGINE_BUILD_SHARED=OFF
+          cmake --build build-host --target myapp -j2
+          cmake --build build-host --target mathc -j2
+          cmake --build build-host --target stdlib -j2
+          ls -l precompiled/stdlib.mathc Core/Headers/stdlib_precompiled.h
 
-      - name: Build libmathengine.so (Android NDK, arm64-v8a, separate stdlib)
-        working-directory: engine
+      - name: Run engine self-tests (host, informational)
+        working-directory: buildtree
         run: |
-          sh tools/build_android_arm64.sh
-          ls -l Main/precompiled/arm64-v8a/libmathengine.so
+          ./build-host/myapp || echo "WARN: cmath_suite reported failures (see log above)"
 
-      - name: Consistency check (header math)
-        working-directory: engine
-        run: |
-          H=Main/precompiled/stdlib.mathc
-          head -c 48 "$H" | od -A d -t u1
-          # derive expected payload from header counts (AstNode 8, TypeDef 14,
-          # OpOverload 46, ConstDef 10, ...) and compare with stored size
-          header=$(head -c 48 "$H" | od -A n -t u1 | tr -s ' ' ' ')
-          set -- $header
-          perm_src_len=$(awk 'NR==2{print $7+$8*256}' /dev/null; echo)
-          python3 - <<'EOF' 2>/dev/null || echo "(no python3; skipping arithmetic check)"
-          data=open('Main/precompiled/stdlib.mathc','rb').read(48)
-          import struct
-          hdr=struct.unpack('<I H 4B H H 4B I I I 8B',data)
-          (magic,ver,f_r,s_t,v_t,m_t,mod,sym,t_c,c_c,ps,pa,pp,pat,fld,ovl,pay,ih,csm,u_c,_r)=hdr+[0]*8
-          expected=ps+pa*8+pp*8+mod*5+t_c*14+u_c*12+pat*6+fld*8+sym*4+ovl*46+c_c*10
-          print(f"payload stored={pay} expected={expected} {'OK' if pay==expected else 'MISMATCH'}")
-          print(f"version={ver} modules={mod} intr_hash=0x{ih:08X}")
-          assert ver==1 and (pay==expected)
-          EOF
+      # ---- Consistency check of the generated .mathc ----
+      # Checks: magic/version, payload formula (sizes from _Static_asserts),
+      # file length, caps, FNV-1a checksum, and intrinsic-table hash.
+      - name: Consistency check stdlib.mathc
+        working-directory: buildtree
+        run: python3 "$GITHUB_WORKSPACE/.github/workflows/check_mathc.py" precompiled/stdlib.mathc
 
-      - name: sha256
+      # ---- NDK build: libmathengine.so (arm64-v8a, embedded stdlib) ----
+      - name: Locate or install Android NDK
         run: |
-          sha256sum engine/Main/precompiled/stdlib.mathc \
-                    engine/Main/precompiled/arm64-v8a/libmathengine.so > engine.sha256
-          cat engine.sha256
+          set -eu
+          NDK_DIR="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$NDK_DIR" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
+            NDK_DIR="$ANDROID_HOME/ndk/27.0.12077973"
+          fi
+          echo "using NDK: $NDK_DIR"
+          echo "NDK_DIR=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Build libmathengine.so (arm64-v8a, embedded stdlib)
+        working-directory: buildtree
+        run: |
+          set -eu
+          cmake -S . -B build-ndk \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMATH_ENGINE_BUILD_SHARED=ON
+          cmake --build build-ndk --target mathengine -j2
+          mkdir -p dist/arm64-v8a
+          cp build-ndk/libmathengine.so dist/arm64-v8a/libmathengine.so
+          ls -l dist/arm64-v8a/libmathengine.so
+
+      - name: Verify JNI exports in built .so
+        working-directory: buildtree
+        run: |
+          set -eu
+          SO=dist/arm64-v8a/libmathengine.so
+          N="$(strings -t d "$SO" | grep -o 'Java_com_mathengine_MathEngineBridge_native[A-Za-z_0-9]*' | sort -u | wc -l)"
+          echo "JNI symbols exported: $N"
+          [ "$N" -ge 23 ] || { echo "ERROR: expected >=23 Java_com_mathengine_MathEngineBridge_native* symbols"; exit 1; }
+          # Embedded stdlib must be present (boot path 2/3 rely on it)
+          grep -q "MTHC" "$SO" 2>/dev/null || {
+            dd if="$SO" of=/tmp/mthc.bin bs=4096 2>/dev/null
+            grep -q "MTHC" /tmp/mthc.bin
+          }
+
+      # ---- Package ----
+      - name: Collect artifacts + sha256
+        run: |
+          set -eu
+          mkdir -p dist
+          cp buildtree/precompiled/stdlib.mathc  dist/stdlib.mathc
+          sha256sum dist/stdlib.mathc dist/arm64-v8a/libmathengine.so > dist/engine.sha256
+          cat dist/engine.sha256
+          # Info: does the freshly built stdlib match the asset committed in the repo?
+          if cmp -s dist/stdlib.mathc Main/app/src/main/assets/precompiled/stdlib.mathc; then
+            echo "stdlib.mathc is byte-identical to the committed asset"
+          else
+            echo "NOTE: freshly built stdlib.mathc differs from committed asset (sizes follow)"
+            ls -l dist/stdlib.mathc Main/app/src/main/assets/precompiled/stdlib.mathc
+          fi
+          # Verify the .so's embedded stdlib equals the fresh stdlib.mathc
+          OFF="$(strings -t d dist/arm64-v8a/libmathengine.so | awk '$2=="MTHC"{print $1; exit}')"
+          if [ -n "$OFF" ]; then
+            SZ="$(stat -c%s dist/stdlib.mathc)"
+            dd if=dist/arm64-v8a/libmathengine.so bs=1 skip="$OFF" count="$SZ" of=/tmp/embedded.mathc 2>/dev/null
+            if cmp -s /tmp/embedded.mathc dist/stdlib.mathc; then
+              echo "embedded stdlib in .so == fresh stdlib.mathc (consistent pair)"
+            else
+              echo "ERROR: embedded stdlib in .so differs from fresh stdlib.mathc!"
+              exit 1
+            fi
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: engine-artifacts
           path: |
-            engine/Main/precompiled/stdlib.mathc
-            engine/Main/precompiled/arm64-v8a/libmathengine.so
-            engine.sha256
+            dist/stdlib.mathc
+            dist/arm64-v8a/libmathengine.so
+            dist/engine.sha256
           if-no-files-found: error
