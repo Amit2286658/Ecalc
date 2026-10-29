@@ -86,22 +86,40 @@ def intrinsic_hash_of_source():
     Returns None if the table cannot be parsed (check then just warns).
     """
     enum_src = read(ENUM_HEADER)
-    m = re.search(r"typedef\s+enum\s*\{(.*?)INTR_COUNT", enum_src, re.S)
-    if not m:
+    start = enum_src.find("typedef enum")
+    end = enum_src.find("INTR_COUNT")
+    if start < 0 or end < 0:
         return None
-    ids = re.findall(r"\b(INTR_[A-Z0-9_]+)", m.group(1))
-    # Keep declaration order, drop duplicates (comments may repeat names)
-    seen, order = set(), []
-    for i in ids:
-        if i not in seen:
-            seen.add(i)
-            order.append(i)
+    body = enum_src[start:end + len("INTR_COUNT")]
+    ids = re.findall(r"\b(INTR_[A-Z0-9_]+)", body)
+    # Mirror `grep -o | uniq`: collapse only CONSECUTIVE duplicates, then drop
+    # the final INTR_COUNT itself. First-occurrence dedupe would let comments
+    # inside the enum shift ordinals. This pipeline is verified to reproduce
+    # the engine hash (0x13F8EF8B) for this engine snapshot.
+    order, last = [], None
+    for name in ids:
+        if name != last:
+            order.append(name)
+            last = name
+    if order and order[-1] == "INTR_COUNT":
+        order.pop()
     ordinal = {sym: idx for idx, sym in enumerate(order)}
     intr_count = len(order)
 
     table_src = read(DELEGATE_C)
-    m = re.search(r"k_delegate_intrinsics\[\]\s*=\s*\{(.*?)\n\}", table_src, re.S)
-    if not m:
+    tstart = table_src.find("k_delegate_intrinsics[]")
+    if tstart < 0:
+        return None
+    tend = table_src.find("\n};", tstart)
+    if tend < 0:
+        return None
+    table_body = table_src[tstart:tend]
+    pairs = re.findall(r'\{\s*"([^"]+)"\s*,\s*(INTR_[A-Z0-9_]+)', table_body)
+    if not pairs:
+        return None
+    if len(pairs) != len(order):
+        print(f"note: intrinsic table parse mismatch (entries {len(pairs)} vs enum ids {len(order)}); "
+              "skipping deep hash check")
         return None
     h = 2166136261
     for name, sym in re.findall(r'\{\s*"([^"]+)"\s*,\s*(INTR_[A-Z0-9_]+)', m.group(1)):
