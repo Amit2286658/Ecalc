@@ -4,7 +4,9 @@ name: engine-artifacts
 # pair can never drift again:
 #   - stdlib.mathc  : host `mathc` compiler over Library/*.math (sources from
 #                     Math-Engine-MEP, engine from the vendored copy below)
-#   - libmathengine.so : arm64-v8a NDK build (embedded stdlib, API 24)
+#   - libmathengine.so : arm64-v8a NDK build with SEPARATE_STDLIB (API 24) —
+#                     ~287 KB, no stdlib image inside; stdlib.mathc ships
+#                     alongside and both come from this one build tree
 #
 # Engine sources of truth: Main/app/src/main/cpp/mathengine/
 # (Core/ + CMakeLists.txt vendored from Math-Engine-MEP; only Library/ is
@@ -37,6 +39,7 @@ jobs:
           mkdir -p buildtree
           cp -r Main/app/src/main/cpp/mathengine/Core            buildtree/Core
           cp    Main/app/src/main/cpp/mathengine/CMakeLists.txt  buildtree/CMakeLists.txt
+          cp -r Main/app/src/main/cpp/mathengine/tools           buildtree/tools
           cp -r mep/Main/Library                                 buildtree/Library
           cp -r mep/Main/Test                                    buildtree/Test
           ls buildtree/Library | head -20
@@ -71,7 +74,11 @@ jobs:
         working-directory: buildtree
         run: python3 "$GITHUB_WORKSPACE/.github/workflows/check_mathc.py" precompiled/stdlib.mathc
 
-      # ---- NDK build: libmathengine.so (arm64-v8a, embedded stdlib) ----
+      # ---- NDK build: libmathengine.so (arm64-v8a, SEPARATE stdlib) ----
+      # Uses the vendored build script (MATH_ENGINE_SEPARATE_STDLIB=1):
+      # the .so carries NO stdlib image; stdlib.mathc ships alongside it in
+      # the APK and is loaded at boot (nativeCreateBlank + nativeLoadMathc).
+      # Pairing .so <-> stdlib.mathc is guaranteed by this same build tree.
       - name: Locate or install Android NDK
         run: |
           set -eu
@@ -83,23 +90,16 @@ jobs:
           echo "using NDK: $NDK_DIR"
           echo "NDK_DIR=$NDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Build libmathengine.so (arm64-v8a, embedded stdlib)
+      - name: Build libmathengine.so (arm64-v8a, separate stdlib, API 24)
         working-directory: buildtree
         run: |
           set -eu
-          cmake -S . -B build-ndk \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DMATH_ENGINE_BUILD_SHARED=ON \
-            -DCMAKE_C_FLAGS="-Wno-error=format-nonliteral"
-          cmake --build build-ndk --target mathengine -j2
+          sh tools/build_android_arm64.sh "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p dist/arm64-v8a
-          cp build-ndk/libmathengine.so dist/arm64-v8a/libmathengine.so
+          cp precompiled/arm64-v8a/libmathengine.so dist/arm64-v8a/libmathengine.so
           ls -l dist/arm64-v8a/libmathengine.so
 
-      - name: Verify JNI exports in built .so
+      - name: Verify built .so
         working-directory: buildtree
         run: |
           set -eu
@@ -107,11 +107,11 @@ jobs:
           N="$(strings -t d "$SO" | grep -o 'Java_com_mathengine_MathEngineBridge_native[A-Za-z_0-9]*' | sort -u | wc -l)"
           echo "JNI symbols exported: $N"
           [ "$N" -ge 23 ] || { echo "ERROR: expected >=23 Java_com_mathengine_MathEngineBridge_native* symbols"; exit 1; }
-          # Embedded stdlib must be present (boot path 2/3 rely on it)
-          grep -q "MTHC" "$SO" 2>/dev/null || {
-            dd if="$SO" of=/tmp/mthc.bin bs=4096 2>/dev/null
-            grep -q "MTHC" /tmp/mthc.bin
-          }
+          # Separate-stdlib build: no MTHC image must be embedded in the .so
+          if grep -qa "MTHC" "$SO"; then
+            echo "ERROR: found 'MTHC' in .so — stdlib must NOT be embedded (SEPARATE_STDLIB build)"; exit 1
+          fi
+          echo "OK: no embedded stdlib image in .so (separate strategy)"
 
       # ---- Package ----
       - name: Collect artifacts + sha256
@@ -128,18 +128,6 @@ jobs:
           else
             echo "NOTE: freshly built stdlib.mathc differs from committed asset (sizes follow)"
             ls -l dist/stdlib.mathc Main/app/src/main/assets/precompiled/stdlib.mathc
-          fi
-          # Verify the .so's embedded stdlib equals the fresh stdlib.mathc
-          OFF="$(strings -t d dist/arm64-v8a/libmathengine.so | awk '$2=="MTHC"{print $1; exit}')"
-          if [ -n "$OFF" ]; then
-            SZ="$(stat -c%s dist/stdlib.mathc)"
-            dd if=dist/arm64-v8a/libmathengine.so bs=1 skip="$OFF" count="$SZ" of=/tmp/embedded.mathc 2>/dev/null
-            if cmp -s /tmp/embedded.mathc dist/stdlib.mathc; then
-              echo "embedded stdlib in .so == fresh stdlib.mathc (consistent pair)"
-            else
-              echo "ERROR: embedded stdlib in .so differs from fresh stdlib.mathc!"
-              exit 1
-            fi
           fi
 
       - uses: actions/upload-artifact@v4
