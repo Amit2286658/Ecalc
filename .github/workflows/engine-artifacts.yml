@@ -117,8 +117,9 @@ jobs:
       - name: Collect artifacts + sha256
         run: |
           set -eu
-          mkdir -p dist
-          cp buildtree/precompiled/stdlib.mathc  dist/stdlib.mathc
+          mkdir -p dist/arm64-v8a
+          cp buildtree/precompiled/stdlib.mathc         dist/stdlib.mathc
+          cp buildtree/dist/arm64-v8a/libmathengine.so  dist/arm64-v8a/libmathengine.so
           sha256sum dist/stdlib.mathc dist/arm64-v8a/libmathengine.so > dist/engine.sha256
           cat dist/engine.sha256
           # Info: does the freshly built stdlib match the asset committed in the repo?
