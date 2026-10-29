@@ -1,21 +1,136 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- System-splash icon that visually continues into the in-app splash:
-     a soft dark disc with a white core, centered — the same shapes the
-     custom splash pulses. Sized for the 288dp splash icon slot with content
-     well inside the 2/3 safe zone. -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="288dp"
-    android:height="288dp"
-    android:viewportWidth="288"
-    android:viewportHeight="288">
+<!-- Animated system-splash icon (API 31+) that begins pulsing and rippling
+     immediately during cold startup, then hands off seamlessly into the
+     in-app circular reveal and damped-spring ripple wavefront. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
 
-    <!-- outer disc: a touch lighter than the dark splash bg (#2D2D2D) -->
-    <path
-        android:fillColor="#3A3E43"
-        android:pathData="M84,144a60,60 0 1,0 120,0a60,60 0 1,0 -120,0" />
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="288dp"
+            android:height="288dp"
+            android:viewportWidth="288"
+            android:viewportHeight="288">
 
-    <!-- white core: same as the splash's pulsing inner dot -->
-    <path
-        android:fillColor="#F8F8F8"
-        android:pathData="M126,144a18,18 0 1,0 36,0a18,18 0 1,0 -36,0" />
-</vector>
+            <!-- Expanding accent ripple ring during cold start -->
+            <group
+                android:name="rippleRingGroup"
+                android:pivotX="144"
+                android:pivotY="144"
+                android:scaleX="0.65"
+                android:scaleY="0.65">
+                <path
+                    android:name="rippleRingPath"
+                    android:fillColor="#00000000"
+                    android:strokeColor="#13959B"
+                    android:strokeWidth="3.5"
+                    android:strokeAlpha="0.45"
+                    android:pathData="M84,144a60,60 0 1,0 120,0a60,60 0 1,0 -120,0" />
+            </group>
+
+            <!-- Outer disc: soft dark circle matching the in-app splash outer disc -->
+            <group
+                android:name="outerDiscGroup"
+                android:pivotX="144"
+                android:pivotY="144">
+                <path
+                    android:fillColor="#3A3E43"
+                    android:pathData="M84,144a60,60 0 1,0 120,0a60,60 0 1,0 -120,0" />
+            </group>
+
+            <!-- Pulsing white core: matches the in-app splash inner dot -->
+            <group
+                android:name="innerCoreGroup"
+                android:pivotX="144"
+                android:pivotY="144">
+                <path
+                    android:fillColor="#F8F8F8"
+                    android:pathData="M126,144a18,18 0 1,0 36,0a18,18 0 1,0 -36,0" />
+            </group>
+        </vector>
+    </aapt:attr>
+
+    <target android:name="innerCoreGroup">
+        <aapt:attr name="android:animation">
+            <set android:ordering="together">
+                <objectAnimator
+                    android:propertyName="scaleX"
+                    android:duration="450"
+                    android:valueFrom="0.65"
+                    android:valueTo="1.18"
+                    android:valueType="floatType"
+                    android:repeatCount="1"
+                    android:repeatMode="reverse"
+                    android:interpolator="@android:interpolator/fast_out_slow_in" />
+                <objectAnimator
+                    android:propertyName="scaleY"
+                    android:duration="450"
+                    android:valueFrom="0.65"
+                    android:valueTo="1.18"
+                    android:valueType="floatType"
+                    android:repeatCount="1"
+                    android:repeatMode="reverse"
+                    android:interpolator="@android:interpolator/fast_out_slow_in" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="outerDiscGroup">
+        <aapt:attr name="android:animation">
+            <set android:ordering="together">
+                <objectAnimator
+                    android:propertyName="scaleX"
+                    android:duration="450"
+                    android:valueFrom="0.92"
+                    android:valueTo="1.04"
+                    android:valueType="floatType"
+                    android:repeatCount="1"
+                    android:repeatMode="reverse"
+                    android:interpolator="@android:interpolator/fast_out_slow_in" />
+                <objectAnimator
+                    android:propertyName="scaleY"
+                    android:duration="450"
+                    android:valueFrom="0.92"
+                    android:valueTo="1.04"
+                    android:valueType="floatType"
+                    android:repeatCount="1"
+                    android:repeatMode="reverse"
+                    android:interpolator="@android:interpolator/fast_out_slow_in" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="rippleRingGroup">
+        <aapt:attr name="android:animation">
+            <set android:ordering="together">
+                <objectAnimator
+                    android:propertyName="scaleX"
+                    android:duration="650"
+                    android:valueFrom="0.75"
+                    android:valueTo="1.55"
+                    android:valueType="floatType"
+                    android:interpolator="@android:interpolator/decelerate_cubic" />
+                <objectAnimator
+                    android:propertyName="scaleY"
+                    android:duration="650"
+                    android:valueFrom="0.75"
+                    android:valueTo="1.55"
+                    android:valueType="floatType"
+                    android:interpolator="@android:interpolator/decelerate_cubic" />
+            </set>
+        </aapt:attr>
+    </target>
+
+    <target android:name="rippleRingPath">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:propertyName="strokeAlpha"
+                android:duration="650"
+                android:valueFrom="0.55"
+                android:valueTo="0.0"
+                android:valueType="floatType"
+                android:interpolator="@android:interpolator/decelerate_quad" />
+        </aapt:attr>
+    </target>
+
+</animated-vector>

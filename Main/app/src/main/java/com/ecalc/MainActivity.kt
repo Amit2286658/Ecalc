@@ -11,10 +11,10 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewAnimationUtils
+import android.view.ViewTreeObserver
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -25,8 +25,8 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.core.view.WindowCompat
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
 import androidx.core.widget.CompoundButtonCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     var isDegreeMode: Boolean = true
     private var currentWorkspacePage: Int = 0 // 0 = Calculator, 1 = .math Studio
     private var currentToast: Toast? = null
+    private var launchRevealStarted: Boolean = false
 
     private var currentPrimaryInput: String = "0.0"
     private var currentSecondaryFormula: String = "0.0"
@@ -62,40 +63,44 @@ class MainActivity : AppCompatActivity() {
      *  else (e^-7.5 t · sin(22 t)) instead of DecelerateInterpolator / LinearInterpolator. */
     private val mrSlideAnimators = mutableListOf<ValueAnimator>()
     private val tabPhysicsAnimators = mutableListOf<ValueAnimator>()
+    private val pagerSpringAnimators = mutableListOf<ValueAnimator>()
     private val workspaceSlideAnimators = mutableListOf<ValueAnimator>()
     private var workspaceFragment: MathWorkspaceFragment? = null
+
+    /** Distance-dependent tab physics tracking (1 = adjacent tab, 4 = farthest tab). */
+    private var lastTabDistance: Int = 1
+    private var lastTabDirection: Int = 1
+    private var pendingTabPhysicsPage: Int = -1
+
     private var swipeStartX: Float = 0f
     private var swipeStartY: Float = 0f
     private var isWorkspaceSwiping: Boolean = false
     private var swipeBlockedByChild: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Restore persisted theme before super.onCreate so recreated fragments read the right mode
+        isDarkMode = prefs.getBoolean("dark_mode", isDarkMode)
+        isDegreeMode = prefs.getBoolean("degree_mode", isDegreeMode)
+
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Restore the persisted theme and angle mode before building any themed UI
-        isDarkMode = prefs.getBoolean("dark_mode", isDarkMode)
-        isDegreeMode = prefs.getBoolean("degree_mode", isDegreeMode)
-        binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)" 
+        binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)"
+        styleSplashDots(isDarkMode)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        // Immediately hand off from the Android 12+ (API 31+) system splash screen
+        // into our in-app ripple reveal so the static icon never lingers on cold start.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
                 splashScreen.setOnExitAnimationListener { splashView ->
-                    splashView.setBackgroundColor(
-                        Color.parseColor(if (isDarkMode) "#2D2D2D" else "#F8F8F8")
-                    )
-                    splashView.animate()
-                        .alpha(0f)
-                        .setDuration(160L)
-                        .setInterpolator(AccelerateInterpolator())
-                        .withEndAction { splashView.remove() }
-                        .start()
+                    splashView.remove()
+                    triggerLaunchSplashIfReady()
                 }
             } catch (_: Throwable) { /* fall back */ }
         }
 
-        // Initialize context before setupWorkspaceFragment() queues session creation
+        // Initialize context asynchronously (no main-thread asset I/O on cold start)
         MathEngineManager.initialize(applicationContext)
 
         setupWorkspaceFragment()
@@ -113,7 +118,18 @@ class MainActivity : AppCompatActivity() {
             }
         }.start()
 
-        binding.root.post { playLaunchSplashReveal() }
+        // Start the in-app ripple animation on the very first pre-draw frame
+        binding.rootFrame.viewTreeObserver.addOnPreDrawListener(
+            object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (binding.rootFrame.viewTreeObserver.isAlive) {
+                        binding.rootFrame.viewTreeObserver.removeOnPreDrawListener(this)
+                    }
+                    triggerLaunchSplashIfReady()
+                    return true
+                }
+            }
+        )
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -124,6 +140,34 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+    }
+
+    private fun styleSplashDots(dark: Boolean) {
+        val outerColor = if (dark) "#3A3E43" else "#E2E5E9"
+        val innerColor = if (dark) "#F8F8F8" else "#2D2D2D"
+        binding.splashOuterDot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor(outerColor))
+        }
+        binding.splashInnerDot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor(innerColor))
+        }
+    }
+
+    private fun triggerLaunchSplashIfReady() {
+        if (launchRevealStarted) return
+        if (binding.rootFrame.width > 0 && binding.rootFrame.height > 0) {
+            launchRevealStarted = true
+            playLaunchSplashReveal()
+        } else {
+            binding.rootFrame.post {
+                if (!launchRevealStarted) {
+                    launchRevealStarted = true
+                    playLaunchSplashReveal()
+                }
+            }
+        }
     }
 
     fun showButtonToast(label: String) {
@@ -151,6 +195,10 @@ class MainActivity : AppCompatActivity() {
         val clamped = targetPage.coerceIn(0, 1)
         workspaceSlideAnimators.forEach { it.cancel() }
         workspaceSlideAnimators.clear()
+
+        if (clamped == 1) {
+            workspaceFragment?.applyTheme(isDarkMode)
+        }
 
         val width = binding.rootFrame.width.toFloat().coerceAtLeast(1f)
         val calcView = binding.calculatorContainer
@@ -216,7 +264,7 @@ class MainActivity : AppCompatActivity() {
             val maxR = hypot(width.toDouble(), binding.rootFrame.height.toDouble()).toFloat()
             if (clamped == 1) {
                 workspaceFragment?.wobbleRound(cx, cy, maxR, 380L)
-                showButtonToast(".math Studio & Sessions")
+                showButtonToast(".math Modules & Sessions")
             } else {
                 wobbleRound(cx, cy, maxR, 380L)
                 showButtonToast("Calculator")
@@ -273,6 +321,9 @@ class MainActivity : AppCompatActivity() {
                             isWorkspaceSwiping = true
                             workspaceSlideAnimators.forEach { it.cancel() }
                             workspaceSlideAnimators.clear()
+                            if (validLeftSwipe) {
+                                workspaceFragment?.applyTheme(isDarkMode)
+                            }
                             binding.calculatorContainer.visibility = View.VISIBLE
                             binding.mathWorkspaceContainer.visibility = View.VISIBLE
                             val cancelEvent = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
@@ -307,27 +358,36 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchTouchEvent(ev)
     }
 
-    /** Five tabs (history + 4 keypads) live inside a ViewPager2 with damped-spring physics. */
+    /** Five tabs (history + 4 keypads) live inside a ViewPager2 with distance-dependent damped-spring physics. */
     private fun setupViewPager() {
         binding.viewPager.adapter = EcalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
-        binding.viewPager.offscreenPageLimit = 4
+        // Start with offscreenPageLimit = 1 for fast cold-start first frame, then expand to 4 after splash reveal
+        binding.viewPager.offscreenPageLimit = 1
         binding.viewPager.setPageTransformer { page, position ->
             val absPos = Math.abs(position).coerceIn(0f, 1f)
+            val distScale = 0.75f + 0.35f * lastTabDistance.coerceIn(1, 4)
             val t = (1f - absPos) * 0.48
-            val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat() * absPos
+            val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat() * absPos * distScale
             val scale = (0.92f + 0.08f * (1f - absPos)) + 0.03f * pulse
             page.scaleX = scale
             page.scaleY = scale
-            page.rotation = -position * 3.2f * (1f - absPos * 0.5f)
+            val clampedPos = position.coerceIn(-1.5f, 1.5f)
+            page.rotation = -clampedPos * (2.6f + 0.9f * lastTabDistance.coerceIn(1, 4)) * (1f - absPos * 0.5f)
             page.alpha = 0.65f + 0.35f * (1f - absPos)
         }
         binding.viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 val prevIndex = selectedTabIndex
+                val rawDistance = kotlin.math.abs(position - prevIndex)
+                val distance = rawDistance.coerceIn(1, 4)
                 val direction = if (position >= prevIndex) 1 else -1
+
+                lastTabDistance = distance
+                lastTabDirection = direction
                 selectedTabIndex = position
-                updateTabIndicators(animate = true)
+
+                updateTabIndicators(animate = true, prevIndex = prevIndex, distance = distance)
                 if (position == 0) refreshHistoryUI()
 
                 val tabs = listOf(
@@ -335,48 +395,184 @@ class MainActivity : AppCompatActivity() {
                     binding.tabTrig, binding.tabFx
                 )
                 val tab = tabs[position]
-                displaySpringPulse(tab, 0.12f)
+                tabSpringPulse(tab, direction, distance)
 
-                // Apply damped-spring horizontal scroll to the tab bar
+                // Apply distance-dependent damped-spring physics to the tab bar & scroll container
                 binding.tabScroll.post {
+                    val density = resources.displayMetrics.density
                     val target = (tab.left - (binding.tabScroll.width - tab.width) / 2)
                         .coerceAtLeast(0)
                     val startScroll = binding.tabScroll.scrollX
                     val delta = target - startScroll
-                    if (delta != 0) {
-                        tabPhysicsAnimators.forEach { it.cancel() }
-                        tabPhysicsAnimators.clear()
-                        ValueAnimator.ofFloat(0f, 1f).apply {
-                            duration = 480L
-                            interpolator = LinearInterpolator()
-                            addUpdateListener { anim ->
-                                val f = anim.animatedValue as Float
-                                val t = f * 0.48
-                                val decay = Math.exp(-7.5 * t)
-                                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                    val barKickPx = -(6f + 5.5f * (distance - 1)) * density * direction
+                    val dur = 460L + (distance - 1) * 55L
+
+                    tabPhysicsAnimators.forEach { it.cancel() }
+                    tabPhysicsAnimators.clear()
+                    ValueAnimator.ofFloat(0f, 1f).apply {
+                        duration = dur
+                        interpolator = LinearInterpolator()
+                        addUpdateListener { anim ->
+                            val f = anim.animatedValue as Float
+                            val t = f * 0.48
+                            val decay = Math.exp(-7.5 * t)
+                            val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                            if (delta != 0) {
                                 val curScroll = (target - delta * springFactor).toInt()
                                 binding.tabScroll.scrollTo(curScroll, 0)
                             }
-                            addListener(object : AnimatorListenerAdapter() {
-                                override fun onAnimationEnd(animation: Animator) {
-                                    binding.tabScroll.scrollTo(target, 0)
-                                }
-                            })
-                            start()
-                            tabPhysicsAnimators.add(this)
+                            binding.tabBarRow.translationX = barKickPx * springFactor
                         }
+                        addListener(object : AnimatorListenerAdapter() {
+                            override fun onAnimationEnd(animation: Animator) {
+                                if (delta != 0) binding.tabScroll.scrollTo(target, 0)
+                                binding.tabBarRow.translationX = 0f
+                            }
+                        })
+                        start()
+                        tabPhysicsAnimators.add(this)
                     }
                 }
 
-                // Trigger springSettle on the newly selected page's keys/content
-                binding.viewPager.post {
-                    when (val frag = fragmentAt(position)) {
-                        is KeyGridFragment -> frag.springSettle(direction)
-                        is HistoryFragment -> frag.springSettle(direction)
+                if (rawDistance <= 1) {
+                    pendingTabPhysicsPage = -1
+                    triggerTabPagePhysics(position, direction, distance)
+                } else {
+                    // For non-adjacent tabs, wait until the multi-page smooth scroll brings
+                    // the destination page onto the screen so the physics animation is visible
+                    // on arrival with full distance-scaled force.
+                    pendingTabPhysicsPage = position
+                }
+            }
+
+            override fun onPageScrolled(
+                position: Int,
+                positionOffset: Float,
+                positionOffsetPixels: Int
+            ) {
+                if (pendingTabPhysicsPage != -1 && pendingTabPhysicsPage == selectedTabIndex) {
+                    val currentFloatPos = position + positionOffset
+                    if (kotlin.math.abs(currentFloatPos - selectedTabIndex) <= 0.65f) {
+                        val targetPos = pendingTabPhysicsPage
+                        pendingTabPhysicsPage = -1
+                        triggerTabPagePhysics(targetPos, lastTabDirection, lastTabDistance)
                     }
                 }
             }
+
+            override fun onPageScrollStateChanged(state: Int) {
+                if (state == ViewPager2.SCROLL_STATE_IDLE && pendingTabPhysicsPage != -1) {
+                    val targetPos = pendingTabPhysicsPage
+                    pendingTabPhysicsPage = -1
+                    triggerTabPagePhysics(targetPos, lastTabDirection, lastTabDistance)
+                }
+            }
         })
+    }
+
+    /**
+     * Applies a distance-dependent damped-spring impulse to both the ViewPager2
+     * container and the destination tab's fragment (`KeyGridFragment` / `HistoryFragment`).
+     * Farther tab jumps (`distance` 1..4) produce progressively stronger displacement,
+     * scale bounce, and rotational settle.
+     */
+    private fun triggerTabPagePhysics(position: Int, direction: Int, distance: Int) {
+        val clampedDist = distance.coerceIn(1, 4)
+        val d = clampedDist.toFloat()
+        val density = resources.displayMetrics.density
+
+        pagerSpringAnimators.forEach { it.cancel() }
+        pagerSpringAnimators.clear()
+
+        val pagerSlidePx = (10f + (d - 1f) * 14f) * density * direction
+        val pagerScaleBump = 0.018f + (d - 1f) * 0.022f
+        val pagerRotAmp = (0.8f + (d - 1f) * 1.1f) * direction
+        val settleDuration = 460L + (clampedDist - 1) * 60L
+
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = settleDuration
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.48
+                val decay = Math.exp(-7.5 * t)
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+
+                binding.viewPager.translationX = pagerSlidePx * springFactor * 0.5f
+                binding.viewPager.scaleX = 1f + pagerScaleBump * pulse
+                binding.viewPager.scaleY = 1f + pagerScaleBump * pulse
+                binding.viewPager.rotation = (pagerRotAmp * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    binding.viewPager.translationX = 0f
+                    binding.viewPager.scaleX = 1f
+                    binding.viewPager.scaleY = 1f
+                    binding.viewPager.rotation = 0f
+                }
+            })
+            start()
+            pagerSpringAnimators.add(this)
+        }
+
+        fun invokeFragmentSpring(attempt: Int) {
+            val frag = fragmentAt(position)
+            when (frag) {
+                is KeyGridFragment -> frag.springSettle(direction, clampedDist)
+                is HistoryFragment -> frag.springSettle(direction, clampedDist)
+                else -> if (attempt < 4) {
+                    binding.viewPager.postDelayed({ invokeFragmentSpring(attempt + 1) }, 24L)
+                }
+            }
+        }
+        binding.viewPager.post { invokeFragmentSpring(0) }
+    }
+
+    /** Distance-dependent spring kick on the clicked tab icon in the tab bar. */
+    private fun tabSpringPulse(view: View, direction: Int, distance: Int) {
+        displayPulseAnimators.removeAll { (v, a) ->
+            if (v === view) {
+                a.cancel()
+                true
+            } else false
+        }
+        val clampedDist = distance.coerceIn(1, 4)
+        val d = clampedDist.toFloat()
+        val density = resources.displayMetrics.density
+        val bump = 0.09f + (d - 1f) * 0.055f
+        val pushPx = (4f + (d - 1f) * 3.5f) * density * direction
+        val rotAmp = (2.5f + (d - 1f) * 2.2f) * direction
+        val dur = 460L + (clampedDist - 1) * 55L
+
+        if (view.width > 0) {
+            view.pivotX = view.width / 2f
+            view.pivotY = view.height / 2f
+        }
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = dur
+            interpolator = LinearInterpolator()
+            addUpdateListener { a ->
+                val f = a.animatedValue as Float
+                val t = f * 0.48
+                val decay = Math.exp(-7.5 * t)
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                view.scaleX = 1f + bump * pulse
+                view.scaleY = 1f + bump * pulse
+                view.translationX = pushPx * pulse
+                view.rotation = (rotAmp * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    view.scaleX = 1f
+                    view.scaleY = 1f
+                    view.translationX = 0f
+                    view.rotation = 0f
+                }
+            })
+            start()
+        }
+        displayPulseAnimators.add(view to anim)
     }
 
     inner class EcalcPagerAdapter(activity: FragmentActivity) : FragmentStateAdapter(activity) {
@@ -448,7 +644,6 @@ class MainActivity : AppCompatActivity() {
             showButtonToast("MR Recall: $recalled")
         }
 
-
         val tabViews = listOf(
             binding.tabHistory, binding.tabBasic, binding.tabExtended,
             binding.tabTrig, binding.tabFx
@@ -457,7 +652,12 @@ class MainActivity : AppCompatActivity() {
 
         tabViews.forEachIndexed { idx, tab ->
             tab.setOnClickListener {
-                binding.viewPager.setCurrentItem(idx, true)
+                if (idx == selectedTabIndex) {
+                    tabSpringPulse(tab, 1, 1)
+                    triggerTabPagePhysics(idx, 1, 1)
+                } else {
+                    binding.viewPager.setCurrentItem(idx, true)
+                }
                 showButtonToast("Tab: ${tabNames[idx]}")
             }
             bindHoldPopup(tab, "${tabNames[idx]} — open this tab")
@@ -775,12 +975,20 @@ class MainActivity : AppCompatActivity() {
         workspaceFragment?.applyTheme(dark)
     }
 
-    private fun updateTabIndicators(animate: Boolean = false) {
+    private fun updateTabIndicators(
+        animate: Boolean = false,
+        prevIndex: Int = selectedTabIndex,
+        distance: Int = 1
+    ) {
         val accentColor = if (isDarkMode) "#13959B" else "#E58A7B"
         val indicators = listOf(
             binding.indTabHistory, binding.indTabBasic,
             binding.indTabExtended, binding.indTabTrig, binding.indTabFx
         )
+        val clampedDist = distance.coerceIn(1, 4)
+        val d = clampedDist.toFloat()
+        val density = resources.displayMetrics.density
+
         indicators.forEachIndexed { idx, view ->
             view.setBackgroundColor(Color.parseColor(accentColor))
             if (idx == selectedTabIndex) {
@@ -788,19 +996,26 @@ class MainActivity : AppCompatActivity() {
                 if (animate) {
                     view.pivotX = view.width / 2f
                     view.pivotY = view.height / 2f
+                    val stepSlotPx = if (view.width > 0) view.width.toFloat() else 60f * density
+                    val startOffsetPx = (prevIndex - idx) * stepSlotPx
+                    val scaleAmp = 0.45f + (d - 1f) * 0.22f
+                    val dur = 460L + (clampedDist - 1) * 55L
                     ValueAnimator.ofFloat(0f, 1f).apply {
-                        duration = 480L
+                        duration = dur
                         interpolator = LinearInterpolator()
                         addUpdateListener { anim ->
                             val f = anim.animatedValue as Float
                             val t = f * 0.48
                             val decay = Math.exp(-7.5 * t)
-                            val spring = (1.0 - 0.65 * decay * Math.cos(t * 22.0)).toFloat()
-                            view.scaleX = spring
+                            val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                            val springScale = (1.0 - scaleAmp * decay * Math.cos(t * 22.0)).toFloat().coerceAtLeast(0.18f)
+                            view.scaleX = springScale
+                            view.translationX = startOffsetPx * springFactor * 0.42f
                         }
                         addListener(object : AnimatorListenerAdapter() {
                             override fun onAnimationEnd(animation: Animator) {
                                 view.scaleX = 1f
+                                view.translationX = 0f
                             }
                         })
                         start()
@@ -808,6 +1023,8 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 view.visibility = View.INVISIBLE
+                view.translationX = 0f
+                view.scaleX = 1f
             }
         }
     }
@@ -1010,58 +1227,88 @@ class MainActivity : AppCompatActivity() {
         }
         spawnRippleRing(cx, cy, maxRadius, 60L, 0.35f, 760L)
         spawnRippleRing(cx, cy, maxRadius, 240L, 0.35f, 760L)
-        wobbleRound(cx.toFloat(), cy.toFloat(), maxRadius, 380L)
+        if (currentWorkspacePage == 1) {
+            workspaceFragment?.wobbleRound(cx.toFloat(), cy.toFloat(), maxRadius, 380L)
+        } else {
+            wobbleRound(cx.toFloat(), cy.toFloat(), maxRadius, 380L)
+        }
     }
 
     private fun persistTheme() { prefs.edit().putBoolean("dark_mode", isDarkMode).apply() }
 
+    /**
+     * Fast, seamless launch ripple transition:
+     * Starts with the splash dot already visible at the exact geometry of `splash_icon.xml`
+     * (no static pause or alpha-zero blanking), fires an immediate 240ms damped-spring kick
+     * with outward ripple rings, and expands the circular reveal of the calculator right away.
+     */
     private fun playLaunchSplashReveal() {
-        val outerColor = if (isDarkMode) "#2D2D2D" else "#F8F8F8"
-        val innerColor = if (isDarkMode) "#F8F8F8" else "#2D2D2D"
-        binding.splashOuterDot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor(outerColor)) }
-        binding.splashInnerDot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor(innerColor)) }
+        styleSplashDots(isDarkMode)
         binding.splashCircle.visibility = View.VISIBLE
+        binding.splashInnerDot.alpha = 1f
         binding.calculatorContainer.visibility = View.INVISIBLE
 
-        val cx = binding.rootFrame.width / 2; val cy = binding.rootFrame.height / 2
+        val cx = binding.rootFrame.width / 2
+        val cy = binding.rootFrame.height / 2
         val splashRadius = hypot(cx.toDouble(), cy.toDouble()).toFloat() * 0.45f
-        listOf(0L, 300L, 600L).forEach { spawnRippleRing(cx, cy, splashRadius, it, 0.22f, 620L) }
+        listOf(0L, 120L).forEach { spawnRippleRing(cx, cy, splashRadius, it, 0.26f, 440L) }
 
-        val pulses = listOf(0.2125, 0.6375)
-        ValueAnimator.ofFloat(0f, 1f, 0f, 1f, 0f).apply {
-            duration = 850L; interpolator = LinearInterpolator()
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 240L
+            interpolator = LinearInterpolator()
             addUpdateListener { anim ->
-                val v = anim.animatedValue as Float; val t = anim.animatedFraction * 0.85
-                var kick = 0.0
-                pulses.forEach { tk -> if (t >= tk) { val dt = t - tk; kick += Math.exp(-7.5*dt)*Math.sin(dt*22.0) } }
-                binding.splashInnerDot.alpha = v
-                val s = ((0.28f + 0.72f * v) * (1.0 + 0.12 * kick)).toFloat()
-                binding.splashInnerDot.scaleX = s; binding.splashInnerDot.scaleY = s
+                val f = anim.animatedValue as Float
+                val t = f * 0.24
+                val kick = Math.exp(-7.5 * t) * Math.sin(t * 24.0)
+                val innerScale = (1.0 + 0.35 * kick - 0.45 * f * f).toFloat().coerceAtLeast(0.25f)
+                val outerScale = (1.0 + 0.14 * kick).toFloat()
+                binding.splashInnerDot.scaleX = innerScale
+                binding.splashInnerDot.scaleY = innerScale
+                binding.splashInnerDot.alpha = (1f - 0.65f * f * f).coerceIn(0f, 1f)
+                binding.splashOuterDot.scaleX = outerScale
+                binding.splashOuterDot.scaleY = outerScale
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     binding.splashCircle.visibility = View.GONE
+                    binding.splashOuterDot.scaleX = 1f
+                    binding.splashOuterDot.scaleY = 1f
+                    binding.splashInnerDot.scaleX = 1f
+                    binding.splashInnerDot.scaleY = 1f
                     binding.calculatorContainer.visibility = View.VISIBLE
-                    val rcx = binding.calculatorContainer.width/2; val rcy = binding.calculatorContainer.height/2
+                    val rcx = binding.calculatorContainer.width / 2
+                    val rcy = binding.calculatorContainer.height / 2
                     val maxR = hypot(rcx.toDouble(), rcy.toDouble()).toFloat()
-                    ViewAnimationUtils.createCircularReveal(binding.calculatorContainer, rcx, rcy, 38f*resources.displayMetrics.density, maxR).apply {
-                        duration = 360L; interpolator = AccelerateDecelerateInterpolator(); start()
+                    ViewAnimationUtils.createCircularReveal(
+                        binding.calculatorContainer,
+                        rcx,
+                        rcy,
+                        38f * resources.displayMetrics.density,
+                        maxR
+                    ).apply {
+                        duration = 340L
+                        interpolator = AccelerateDecelerateInterpolator()
+                        addListener(object : AnimatorListenerAdapter() {
+                            override fun onAnimationEnd(animation: Animator) {
+                                // Pre-warm remaining keypad tabs after launch animation completes
+                                binding.viewPager.offscreenPageLimit = 4
+                            }
+                        })
+                        start()
                     }
-                    spawnRippleRing(rcx, rcy, maxR, 60L, 0.35f, 760L)
-                    spawnRippleRing(rcx, rcy, maxR, 240L, 0.35f, 760L)
-                    wobbleRound(rcx.toFloat(), rcy.toFloat(), maxR, 360L)
+                    spawnRippleRing(rcx, rcy, maxR, 40L, 0.35f, 700L)
+                    spawnRippleRing(rcx, rcy, maxR, 190L, 0.35f, 700L)
+                    wobbleRound(rcx.toFloat(), rcy.toFloat(), maxR, 340L)
                 }
-            }); start()
+            })
+            start()
         }
     }
 
     private fun playExitSplashCollapse() {
         val cx = binding.calculatorContainer.width/2; val cy = binding.calculatorContainer.height/2
         val maxRadius = hypot(cx.toDouble(), cy.toDouble()).toFloat()
-        val outerColor = if (isDarkMode) "#2D2D2D" else "#F8F8F8"
-        val innerColor = if (isDarkMode) "#F8F8F8" else "#2D2D2D"
-        binding.splashOuterDot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor(outerColor)) }
-        binding.splashInnerDot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor(innerColor)) }
+        styleSplashDots(isDarkMode)
         spawnRippleRing(cx, cy, maxRadius, 0L, 0.22f, 620L, inward=true)
         spawnRippleRing(cx, cy, maxRadius, 140L, 0.18f, 620L, inward=true)
         ViewAnimationUtils.createCircularReveal(binding.calculatorContainer, cx, cy, maxRadius, 0f).apply {

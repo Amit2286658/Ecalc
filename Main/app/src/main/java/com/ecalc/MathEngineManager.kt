@@ -37,11 +37,14 @@ object MathEngineManager {
     private val loadedExtensionSources = mutableSetOf<String>()
 
     /** Provides the application context so `assets/precompiled/stdlib.mathc`
-     *  and `filesDir/math_patches/` can be loaded automatically. */
+     *  and `filesDir/math_patches/` can be loaded automatically on the background
+     *  worker thread without stalling cold-start UI rendering. */
     fun initialize(context: Context) {
         val app = context.applicationContext
         appContext = app
-        seedDefaultPatchesIfNeeded(app)
+        worker.execute {
+            seedDefaultPatchesIfNeeded(app)
+        }
     }
 
     /** Seeds `user_trig.math` into `filesDir/math_patches/` on first install so
@@ -55,6 +58,40 @@ object MathEngineManager {
                 userTrigFile.writeBytes(bytes)
             }
         }
+    }
+
+    /**
+     * Checks whether a `.math` file's source code is a true native extension `[module]`
+     * definition (rather than a standard stateful `.math` evaluation script).
+     *
+     * True modules contain at least one `[module_name]` section header, `<[dep]`
+     * dependency directive, `$type` declaration, or typed module overload declaration
+     * (`fn(x: real) = ...;`) and do not consist of session `:=` variable/function
+     * assignments or standalone evaluation expressions.
+     */
+    fun isTrueModuleSource(raw: String): Boolean {
+        val codeLines = raw.lines()
+            .map { it.substringBefore("#").trim() }
+            .filter { it.isNotEmpty() }
+        if (codeLines.isEmpty()) return true // Keep blank module template until edited
+
+        val joined = codeLines.joinToString("\n")
+        val hasModuleHeader = Regex("(?m)^\\[[a-zA-Z_][a-zA-Z0-9_]*\\]$").containsMatchIn(joined)
+        val hasDepHeader = Regex("(?m)^<\\[[a-zA-Z_][a-zA-Z0-9_]*\\]$").containsMatchIn(joined)
+        val hasTypeDecl = Regex("(?m)^\\$[a-zA-Z_][a-zA-Z0-9_]*").containsMatchIn(joined)
+        val hasTypedOverload = Regex(
+            "(?m)^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\([^)]*:\\s*[a-zA-Z_][a-zA-Z0-9_]*[^)]*\\)\\s*="
+        ).containsMatchIn(joined)
+        val hasQuotedOperatorDecl = Regex("(?m)^\"[^\"]+\"").containsMatchIn(joined)
+        val hasSessionAssignment = codeLines.any { it.contains(":=") }
+
+        if (hasModuleHeader || hasDepHeader || hasTypeDecl || hasQuotedOperatorDecl) {
+            return true
+        }
+        if (hasTypedOverload && !hasSessionAssignment) {
+            return true
+        }
+        return false
     }
 
     /** Boots the native engine strictly from `stdlib.mathc` (no embedded fallback):
@@ -524,9 +561,7 @@ object MathEngineManager {
         }
     }
 
-    /** Executes a multi-line `.math` script inside `sessionId`. If the script
-     *  contains a `[module]` header, it first compiles and links the extension
-     *  into the engine, and then evaluates any executable statements. */
+    /** Executes a multi-line `.math` evaluation script inside `sessionId`. */
     fun runProgramScript(
         sessionId: Int,
         scriptSource: String,
@@ -541,8 +576,7 @@ object MathEngineManager {
             val trimmed = scriptSource.trim()
 
             // Check if this file is a [module] extension definition
-            val hasModuleHeader = Regex("(?m)^\\s*\\[[a-zA-Z0-9_]+\\]").containsMatchIn(trimmed)
-            if (hasModuleHeader) {
+            if (isTrueModuleSource(trimmed) && Regex("(?m)^\\s*\\[[a-zA-Z0-9_]+\\]").containsMatchIn(trimmed)) {
                 val (ok, msg) = compileAndLoadSync(trimmed)
                 results.add(
                     "[Module Extension]" to if (ok) {

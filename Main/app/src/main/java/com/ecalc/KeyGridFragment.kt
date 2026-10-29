@@ -79,6 +79,7 @@ class KeyGridFragment : Fragment() {
         }
         root.addView(grid)
 
+        keyViews.clear()
         specs.forEachIndexed { index, spec ->
             val keyView = NeumorphicKeyView(requireContext()).apply {
                 text = spec.label; contentDescription = spec.label
@@ -101,7 +102,14 @@ class KeyGridFragment : Fragment() {
         return root
     }
 
-    fun applyTheme(dark: Boolean) { if (view != null) keyViews.forEach { it.isDarkThemeMode = dark } }
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        (activity as? MainActivity)?.let { applyTheme(it.isDarkMode) }
+    }
+
+    fun applyTheme(dark: Boolean) {
+        keyViews.forEach { it.isDarkThemeMode = dark }
+    }
 
     fun wobbleRound(cx: Float, cy: Float, maxRadius: Float, revealDurationMs: Long) {
         if (view == null) return
@@ -137,34 +145,70 @@ class KeyGridFragment : Fragment() {
         }
     }
 
-    /** Damped-spring entrance pulse when tab scrolling settles on this keypad. */
-    fun springSettle(fromDirection: Int) {
-        if (view == null) return
-        wobbleAnimators.forEach { it.cancel() }; wobbleAnimators.clear()
+    /**
+     * Distance-dependent damped-spring entrance animation when switching tabs.
+     * Clicking an adjacent tab (`distance == 1`) applies a gentle force, while
+     * clicking farther tabs (`distance == 2..4`) scales up the spring impulse,
+     * horizontal/vertical wave displacement, scale bounce, and rotational kick.
+     */
+    fun springSettle(fromDirection: Int, distance: Int = 1) {
+        val rootView = view ?: return
+        if (keyViews.isEmpty() || keyViews.first().width == 0 || keyViews.first().height == 0) {
+            rootView.post {
+                if (isAdded && view != null) {
+                    springSettle(fromDirection, distance)
+                }
+            }
+            return
+        }
+        wobbleAnimators.forEach { it.cancel() }
+        wobbleAnimators.clear()
+
+        val clampedDist = distance.coerceIn(1, 4)
+        val d = clampedDist.toFloat()
         val density = resources.displayMetrics.density
-        val slidePx = 22f * density * fromDirection
+
+        // Force scales proportionally with tab distance (1 = small force, 4 = high force)
+        val slidePx = (16f + (d - 1f) * 18f) * density * fromDirection
+        val vertPx = (3f + (d - 1f) * 3.5f) * density
+        val scaleAmp = 0.035f + (d - 1f) * 0.04f
+        val rotAmp = (1.8f + (d - 1f) * 2.1f) * fromDirection
+        val settleDuration = 460L + (clampedDist - 1) * 60L
+
         keyViews.forEachIndexed { idx, kv ->
-            if (kv.width == 0 || kv.height == 0) return@forEachIndexed
             val row = idx / 4
             val col = idx % 4
-            val delay = ((row * 14) + (col * 10)).toLong()
+            val leadCol = if (fromDirection >= 0) col else (3 - col)
+            val delay = ((row * 12) + (leadCol * 11)).toLong()
+            val rowSign = if (row % 2 == 0) 1f else -1f
+
             ValueAnimator.ofFloat(0f, 1f).apply {
-                startDelay = delay; duration = 480L; interpolator = LinearInterpolator()
+                startDelay = delay
+                duration = settleDuration
+                interpolator = LinearInterpolator()
                 addUpdateListener { anim ->
-                    val f = anim.animatedValue as Float; val t = f * 0.48
-                    val decay = Math.exp(-7.5 * t); val pulse = decay * Math.sin(t * 22.0)
+                    val f = anim.animatedValue as Float
+                    val t = f * 0.48
+                    val decay = Math.exp(-7.5 * t)
+                    val pulse = decay * Math.sin(t * 22.0)
                     val springX = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
-                    kv.translationX = slidePx * springX * 0.45f
-                    kv.scaleX = (1.0 + 0.045 * pulse).toFloat()
-                    kv.scaleY = (1.0 + 0.045 * pulse).toFloat()
-                    kv.rotation = (2.2 * fromDirection * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
+                    kv.translationX = slidePx * springX * 0.55f
+                    kv.translationY = (vertPx * pulse).toFloat() * rowSign
+                    kv.scaleX = (1.0 + scaleAmp * pulse).toFloat()
+                    kv.scaleY = (1.0 + scaleAmp * pulse).toFloat()
+                    kv.rotation = (rotAmp * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
-                        kv.scaleX = 1f; kv.scaleY = 1f; kv.translationX = 0f; kv.rotation = 0f
+                        kv.scaleX = 1f
+                        kv.scaleY = 1f
+                        kv.translationX = 0f
+                        kv.translationY = 0f
+                        kv.rotation = 0f
                     }
                 })
-                start(); wobbleAnimators.add(this)
+                start()
+                wobbleAnimators.add(this)
             }
         }
     }

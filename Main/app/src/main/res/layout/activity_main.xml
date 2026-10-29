@@ -6,26 +6,26 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <!-- Launch/Exit animated circle splash -->
+    <!-- Launch/Exit animated circle splash (pre-sized to match splash_icon.xml) -->
     <FrameLayout
         android:id="@+id/splashCircle"
-        android:layout_width="76dp"
-        android:layout_height="76dp"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
         android:layout_gravity="center"
         android:visibility="visible">
 
         <View
             android:id="@+id/splashOuterDot"
-            android:layout_width="76dp"
-            android:layout_height="76dp"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
             android:layout_gravity="center" />
 
         <View
             android:id="@+id/splashInnerDot"
-            android:layout_width="76dp"
-            android:layout_height="76dp"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
             android:layout_gravity="center"
-            android:alpha="0.0" />
+            android:alpha="1.0" />
     </FrameLayout>
 
     <!-- Main calculator container -->

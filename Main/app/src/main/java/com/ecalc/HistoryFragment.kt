@@ -46,6 +46,7 @@ class HistoryFragment : Fragment() {
             text = "Recent Calculations"
             textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setTextColor(if (activity.isDarkMode) Color.parseColor("#E0E0E0") else Color.parseColor("#333333"))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -83,14 +84,14 @@ class HistoryFragment : Fragment() {
         }
         root.addView(clearButton)
 
-        // Fill with current data once attached (theme set by activity too)
-        root.post { refresh(activity.calculationHistory, activity.isDarkMode) }
+        // Populate immediately and refresh once attached
+        refresh(activity.calculationHistory, activity.isDarkMode)
         return root
     }
 
     /** Rebuild the item list from the activity's history data. */
     fun refresh(items: List<String>, dark: Boolean) {
-        if (view == null) return
+        if (header == null) return
         header?.setTextColor(if (dark) Color.parseColor("#E0E0E0") else Color.parseColor("#333333"))
         clearButton?.isDarkThemeMode = dark
 
@@ -98,11 +99,12 @@ class HistoryFragment : Fragment() {
         val subColor = if (dark) Color.parseColor("#8E8E8E") else Color.parseColor("#666666")
 
         val lay = itemsLayout ?: return
+        val ctx = context ?: return
         lay.removeAllViews()
         val activity = activity as? MainActivity ?: return
 
         if (items.isEmpty()) {
-            lay.addView(TextView(requireContext()).apply {
+            lay.addView(TextView(ctx).apply {
                 text = "No calculations in history yet"
                 setTextColor(subColor)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -111,7 +113,7 @@ class HistoryFragment : Fragment() {
             })
         } else {
             items.take(15).forEach { item ->
-                lay.addView(TextView(requireContext()).apply {
+                lay.addView(TextView(ctx).apply {
                     text = item
                     setTextColor(textColor)
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -180,14 +182,34 @@ class HistoryFragment : Fragment() {
         }
     }
 
-    /** Damped-spring entrance pulse when tab scrolling settles on History. */
-    fun springSettle(fromDirection: Int) {
+    /**
+     * Distance-dependent damped-spring entrance pulse when tab scrolling
+     * settles on History (`distance` ranges from 1 for adjacent tab up to 4).
+     */
+    fun springSettle(fromDirection: Int, distance: Int = 1) {
         val v = view ?: return
+        if (v.width == 0 || v.height == 0) {
+            v.post {
+                if (isAdded && view != null) {
+                    springSettle(fromDirection, distance)
+                }
+            }
+            return
+        }
         wobbleAnimators.forEach { it.cancel() }
         wobbleAnimators.clear()
-        val slidePx = 24f * resources.displayMetrics.density * fromDirection
+
+        val clampedDist = distance.coerceIn(1, 4)
+        val d = clampedDist.toFloat()
+        val density = resources.displayMetrics.density
+        val slidePx = (18f + (d - 1f) * 20f) * density * fromDirection
+        val vertPx = (3f + (d - 1f) * 3f) * density
+        val scaleAmp = 0.03f + (d - 1f) * 0.035f
+        val rotAmp = (1.4f + (d - 1f) * 1.6f) * fromDirection
+        val settleDuration = 460L + (clampedDist - 1) * 60L
+
         ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 480L
+            duration = settleDuration
             interpolator = LinearInterpolator()
             addUpdateListener { anim ->
                 val f = anim.animatedValue as Float
@@ -195,15 +217,19 @@ class HistoryFragment : Fragment() {
                 val decay = Math.exp(-7.5 * t)
                 val pulse = decay * Math.sin(t * 22.0)
                 val springX = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
-                v.translationX = slidePx * springX * 0.5f
-                v.scaleX = (1.0 + 0.03 * pulse).toFloat()
-                v.scaleY = (1.0 + 0.03 * pulse).toFloat()
+                v.translationX = slidePx * springX * 0.55f
+                v.translationY = (vertPx * pulse).toFloat()
+                v.scaleX = (1.0 + scaleAmp * pulse).toFloat()
+                v.scaleY = (1.0 + scaleAmp * pulse).toFloat()
+                v.rotation = (rotAmp * decay * Math.sin(t * 22.0 + 0.6)).toFloat()
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     v.translationX = 0f
+                    v.translationY = 0f
                     v.scaleX = 1f
                     v.scaleY = 1f
+                    v.rotation = 0f
                 }
             })
             start()
