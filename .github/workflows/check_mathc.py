@@ -122,7 +122,7 @@ def intrinsic_hash_of_source():
               "skipping deep hash check")
         return None
     h = 2166136261
-    for name, sym in re.findall(r'\{\s*"([^"]+)"\s*,\s*(INTR_[A-Z0-9_]+)', m.group(1)):
+    for name, sym in pairs:
         if sym not in ordinal:
             print(f"warn: table entry {sym} not found in IntrinsicId enum; skipping deep check")
             return None
