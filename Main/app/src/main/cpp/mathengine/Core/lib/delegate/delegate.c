@@ -340,7 +340,7 @@ Value delegate_construct_token(MemArena *mem, const SymTable *tab,
                 s_off += 1;
                 s_len -= 2;
             }
-            char stack_ubuf[1024];
+            char stack_ubuf[1024] = {0}; /* initialized: silences GCC -Wmaybe-uninitialized on the malloc fallback path */
             char *ubuf = stack_ubuf;
             size_t ucap = sizeof(stack_ubuf);
             if ((size_t)s_len + 2u > ucap) {
