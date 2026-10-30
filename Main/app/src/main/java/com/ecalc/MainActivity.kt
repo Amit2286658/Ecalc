@@ -7,10 +7,15 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewAnimationUtils
@@ -22,6 +27,7 @@ import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -45,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private var currentWorkspacePage: Int = 0 // 0 = Calculator, 1 = .math Studio
     private var currentToast: Toast? = null
     private var launchRevealStarted: Boolean = false
+    private var isExitingApp: Boolean = false
 
     private var currentPrimaryInput: String = "0.0"
     private var currentSecondaryFormula: String = "0.0"
@@ -71,6 +78,10 @@ class MainActivity : AppCompatActivity() {
     private var lastTabDistance: Int = 1
     private var lastTabDirection: Int = 1
     private var pendingTabPhysicsPage: Int = -1
+
+    /** Blurred-background About info window overlay. */
+    private var aboutOverlay: FrameLayout? = null
+    private var aboutBlurredBitmap: Bitmap? = null
 
     private var swipeStartX: Float = 0f
     private var swipeStartY: Float = 0f
@@ -133,10 +144,10 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (currentWorkspacePage == 1) {
-                    switchWorkspacePage(0)
-                } else {
-                    playExitSplashCollapse()
+                when {
+                    aboutOverlay != null -> dismissAboutInfoWindow()
+                    currentWorkspacePage == 1 -> switchWorkspacePage(0)
+                    else -> playExitSplashCollapse()
                 }
             }
         })
@@ -290,6 +301,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (aboutOverlay != null) {
+            return super.dispatchTouchEvent(ev)
+        }
         val density = resources.displayMetrics.density
         val touchSlop = 18f * density
         val width = binding.rootFrame.width.toFloat().coerceAtLeast(1f)
@@ -613,6 +627,7 @@ class MainActivity : AppCompatActivity() {
 
         bindHoldPopup(binding.themeTogglePill, "Theme — toggle between light and dark")
         bindHoldPopup(binding.tvAngleMode, "Angle mode — switch between degrees and radians")
+        bindHoldPopup(binding.btnAboutInfo, "About — view Ecalc & Math Engine info")
 
         binding.themeTogglePill.setOnClickListener {
             toggleThemeWithCircularReveal()
@@ -622,6 +637,11 @@ class MainActivity : AppCompatActivity() {
         binding.cbMrToggle.setOnCheckedChangeListener { _, isChecked ->
             animateMrClusterPhysics(isChecked)
             showButtonToast(if (isChecked) "MR Enabled" else "MR Disabled")
+        }
+
+        binding.btnAboutInfo.setOnClickListener {
+            displaySpringPulse(binding.btnAboutInfo, 0.10f)
+            showAboutInfoWindow()
         }
 
         binding.tvAngleMode.setOnClickListener {
@@ -661,6 +681,336 @@ class MainActivity : AppCompatActivity() {
                 showButtonToast("Tab: ${tabNames[idx]}")
             }
             bindHoldPopup(tab, "${tabNames[idx]} — open this tab")
+        }
+    }
+
+    // =========================================================================
+    //  About Info Modal with Blurred Background (Request 3)
+    // =========================================================================
+
+    private fun createBlurredBackdropBitmap(sourceView: View, radius: Int = 8): Bitmap? {
+        val w = sourceView.width
+        val h = sourceView.height
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val scale = 6
+            val sw = (w / scale).coerceAtLeast(16)
+            val sh = (h / scale).coerceAtLeast(16)
+            val bmp = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            canvas.scale(1f / scale, 1f / scale)
+            sourceView.draw(canvas)
+
+            val pixels = IntArray(sw * sh)
+            val temp = IntArray(sw * sh)
+            bmp.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+
+            val r = radius.coerceIn(2, 14)
+            val div = 2 * r + 1
+            repeat(2) {
+                // Horizontal box blur pass
+                for (y in 0 until sh) {
+                    val rowOffset = y * sw
+                    for (x in 0 until sw) {
+                        var sumA = 0
+                        var sumR = 0
+                        var sumG = 0
+                        var sumB = 0
+                        for (k in -r..r) {
+                            val px = (x + k).coerceIn(0, sw - 1)
+                            val c = pixels[rowOffset + px]
+                            sumA += (c ushr 24) and 0xFF
+                            sumR += (c ushr 16) and 0xFF
+                            sumG += (c ushr 8) and 0xFF
+                            sumB += c and 0xFF
+                        }
+                        temp[rowOffset + x] =
+                            ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
+                    }
+                }
+                // Vertical box blur pass
+                for (x in 0 until sw) {
+                    for (y in 0 until sh) {
+                        var sumA = 0
+                        var sumR = 0
+                        var sumG = 0
+                        var sumB = 0
+                        for (k in -r..r) {
+                            val py = (y + k).coerceIn(0, sh - 1)
+                            val c = temp[py * sw + x]
+                            sumA += (c ushr 24) and 0xFF
+                            sumR += (c ushr 16) and 0xFF
+                            sumG += (c ushr 8) and 0xFF
+                            sumB += c and 0xFF
+                        }
+                        pixels[y * sw + x] =
+                            ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
+                    }
+                }
+            }
+            bmp.setPixels(pixels, 0, sw, 0, 0, sw, sh)
+            bmp
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun showAboutInfoWindow() {
+        if (aboutOverlay != null) {
+            dismissAboutInfoWindow()
+            return
+        }
+        val root = binding.rootFrame
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+        val dark = isDarkMode
+
+        val cardBg = Color.parseColor(if (dark) "#2E2E2E" else "#F5F5F5")
+        val sectionBg = Color.parseColor(if (dark) "#252525" else "#EAEAEA")
+        val strokeColor = Color.parseColor(if (dark) "#444444" else "#D5D5D5")
+        val primaryText = Color.parseColor(if (dark) "#E8E8E8" else "#2A2A2A")
+        val secondaryText = Color.parseColor(if (dark) "#9E9E9E" else "#606060")
+        val accentColor = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
+        val scrimColor = Color.parseColor(if (dark) "#96141414" else "#88E6E6E6")
+
+        // Apply hardware RenderEffect blur on Android 12+ (API 31+) and blurred bitmap backdrop for all APIs
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val blurEffect = RenderEffect.createBlurEffect(20f, 20f, Shader.TileMode.CLAMP)
+            binding.calculatorContainer.setRenderEffect(blurEffect)
+            binding.mathWorkspaceContainer.setRenderEffect(blurEffect)
+        }
+        val activeContainer = if (currentWorkspacePage == 1) binding.mathWorkspaceContainer else binding.calculatorContainer
+        val blurredBmp = createBlurredBackdropBitmap(activeContainer, radius = 8)
+        aboutBlurredBitmap = blurredBmp
+
+        val overlay = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
+            isFocusable = true
+            // Clicking anywhere outside the info card dismisses the window
+            setOnClickListener { dismissAboutInfoWindow() }
+        }
+
+        if (blurredBmp != null) {
+            val bgImage = ImageView(this).apply {
+                setImageBitmap(blurredBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.35f else 0.92f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            overlay.addView(bgImage)
+        }
+
+        val scrimView = View(this).apply {
+            setBackgroundColor(scrimColor)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        overlay.addView(scrimView)
+
+        val cardWidth = (root.width - dp(44f)).coerceIn(dp(270f), dp(340f))
+        val infoCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                cardWidth,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            setPadding(dp(20f), dp(18f), dp(20f), dp(18f))
+            elevation = 16f * density
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 22f * density
+                setColor(cardBg)
+                setStroke(dp(1.2f).coerceAtLeast(1), strokeColor)
+            }
+            isClickable = true
+            isFocusable = true
+            // Consume clicks inside the info card so only outside taps or Close buttons dismiss it
+            setOnClickListener { }
+        }
+
+        // Header row: App title + version badge + top-right '✕' close button
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10f) }
+        }
+
+        val titleCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tvTitle = TextView(this).apply {
+            text = "Ecalc"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(primaryText)
+        }
+        val tvVersion = TextView(this).apply {
+            text = "Version 1.0 • Native C11 Math Engine (MEP)"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextColor(accentColor)
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        titleCol.addView(tvTitle)
+        titleCol.addView(tvVersion)
+
+        val btnCloseTop = NeumorphicKeyView(this).apply {
+            text = "✕"
+            textSize = 13f
+            cornerRadiusDp = 18f
+            shadowPadDp = 3f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            contentDescription = "Close About Window"
+            layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f))
+            setOnClickListener {
+                dismissAboutInfoWindow()
+            }
+        }
+        headerRow.addView(titleCol)
+        headerRow.addView(btnCloseTop)
+        infoCard.addView(headerRow)
+
+        val tvDesc = TextView(this).apply {
+            text = "A scientific Android calculator featuring 3D neumorphic keys, a precompiled C11 symbolic & numeric math engine, and damped-spring wavefront physics."
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(secondaryText)
+            setLineSpacing(0f, 1.18f)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12f) }
+        }
+        infoCard.addView(tvDesc)
+
+        // Highlights box
+        val detailsBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 14f * density
+                setColor(sectionBg)
+                setStroke(1, strokeColor)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(14f) }
+        }
+
+        fun addInfoBullet(label: String, body: String) {
+            val item = TextView(this).apply {
+                text = "▸ $label: $body"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(primaryText)
+                setPadding(0, dp(3f), 0, dp(3f))
+            }
+            detailsBox.addView(item)
+        }
+
+        addInfoBullet("Math Engine", "O(1) stdlib.mathc boot, symbolic diff/solve & units")
+        addInfoBullet("UI Physics", "Damped-spring oscillations (e⁻⁷·⁵ᵗ · sin 22t)")
+        addInfoBullet(".math Studio", "Swipe left on the display for Modules & live Sessions")
+        addInfoBullet("Tooltips", "Press and hold any button or tab to inspect its action")
+        infoCard.addView(detailsBox)
+
+        val btnCloseBottom = NeumorphicKeyView(this).apply {
+            text = "Close"
+            textSize = 13.5f
+            cornerRadiusDp = 14f
+            shadowPadDp = 3.5f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(42f)
+            )
+            setOnClickListener {
+                dismissAboutInfoWindow()
+            }
+        }
+        infoCard.addView(btnCloseBottom)
+
+        overlay.addView(infoCard)
+        root.addView(overlay)
+        aboutOverlay = overlay
+
+        // Animate backdrop fade + damped-spring entrance of the info card
+        overlay.alpha = 0f
+        infoCard.scaleX = 0.78f
+        infoCard.scaleY = 0.78f
+        infoCard.translationY = 18f * density
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 440L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.44
+                val decay = Math.exp(-7.5 * t)
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                overlay.alpha = (f / 0.28f).coerceIn(0f, 1f)
+                val s = 1f - 0.22f * springFactor + 0.04f * pulse
+                infoCard.scaleX = s
+                infoCard.scaleY = s
+                infoCard.translationY = (18f * density) * springFactor
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    overlay.alpha = 1f
+                    infoCard.scaleX = 1f
+                    infoCard.scaleY = 1f
+                    infoCard.translationY = 0f
+                }
+            })
+            start()
+        }
+    }
+
+    fun dismissAboutInfoWindow() {
+        val overlay = aboutOverlay ?: return
+        aboutOverlay = null
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            binding.calculatorContainer.setRenderEffect(null)
+            binding.mathWorkspaceContainer.setRenderEffect(null)
+        }
+
+        val card = overlay.getChildAt(overlay.childCount - 1)
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 200L
+            interpolator = AccelerateInterpolator(0.9f)
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                overlay.alpha = 1f - f
+                if (card != null) {
+                    val s = 1f - 0.18f * f
+                    card.scaleX = s
+                    card.scaleY = s
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    (overlay.parent as? FrameLayout)?.removeView(overlay)
+                    aboutBlurredBitmap?.recycle()
+                    aboutBlurredBitmap = null
+                }
+            })
+            start()
         }
     }
 
@@ -933,6 +1283,12 @@ class MainActivity : AppCompatActivity() {
             cornerRadius = 24f * resources.displayMetrics.density
             setColor(Color.parseColor(pillBg))
         }
+
+        binding.btnAboutInfo.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor(pillBg))
+        }
+        binding.ivAboutInfo.setColorFilter(Color.parseColor(if (dark) "#CCCCCC" else "#444444"))
 
         binding.ivSun.setColorFilter(Color.parseColor(if (dark) "#757575" else "#222222"))
         binding.ivMoon.setColorFilter(Color.parseColor(if (dark) "#FFFFFF" else "#A0A0A0"))
@@ -1305,23 +1661,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Collapses the calculator inward with circular reveal + inward ripple rings,
+     * and exits immediately when the reveal reaches zero so no static circle icon
+     * remains visible before the app closes.
+     */
     private fun playExitSplashCollapse() {
-        val cx = binding.calculatorContainer.width/2; val cy = binding.calculatorContainer.height/2
+        if (isExitingApp) return
+        isExitingApp = true
+        binding.splashCircle.visibility = View.GONE
+        val cx = binding.calculatorContainer.width / 2
+        val cy = binding.calculatorContainer.height / 2
         val maxRadius = hypot(cx.toDouble(), cy.toDouble()).toFloat()
-        styleSplashDots(isDarkMode)
-        spawnRippleRing(cx, cy, maxRadius, 0L, 0.22f, 620L, inward=true)
-        spawnRippleRing(cx, cy, maxRadius, 140L, 0.18f, 620L, inward=true)
+        spawnRippleRing(cx, cy, maxRadius, 0L, 0.24f, 280L, inward = true)
+        spawnRippleRing(cx, cy, maxRadius, 80L, 0.18f, 220L, inward = true)
         ViewAnimationUtils.createCircularReveal(binding.calculatorContainer, cx, cy, maxRadius, 0f).apply {
-            duration = 320L; interpolator = AccelerateDecelerateInterpolator()
+            duration = 280L
+            interpolator = AccelerateDecelerateInterpolator()
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     binding.calculatorContainer.visibility = View.INVISIBLE
-                    binding.splashCircle.visibility = View.VISIBLE
-                    binding.root.postDelayed(::finish, 250L)
+                    binding.splashCircle.visibility = View.GONE
+                    finish()
+                    @Suppress("DEPRECATION")
+                    overridePendingTransition(0, 0)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+                    }
                 }
-            }); start()
+            })
+            start()
         }
-        wobbleRound(cx.toFloat(), cy.toFloat(), maxRadius, 320L, inward=true)
+        wobbleRound(cx.toFloat(), cy.toFloat(), maxRadius, 280L, inward = true)
     }
 
     private var keyPopupOverlay: FrameLayout? = null

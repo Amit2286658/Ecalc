@@ -36,18 +36,17 @@ import kotlin.math.hypot
  *    with inner `📝 Editor` and `📋 Log` sub-tabs. Any file in Modules that is not a true
  *    `[module]` and can be classified as a standard `.math` evaluation file is automatically
  *    promoted into a separate Session as a proper evaluation file.
- * 2. **Sessions (`⚡ Sessions`)**: Each session owns its own `.math` evaluation file and
- *    native engine session, providing inner `📝 Editor` (for `.math` file editing and running)
- *    and `📋 Log` (for viewing evaluation logs and live MSP1 session variables) sub-tabs.
+ * 2. **Sessions (`⚡ Sessions`)**:
+ *    - Beneath the Sessions tab, displays the **Active Sessions** chips (`Session #1`, `Session #2`, ...)
+ *      along with dedicated **Session controls** (`+ Session`, `Reset`, `Close`, `📂 Load Sess`, `💾 Export Sess`).
+ *    - Beneath the Session controls, displays the **Individual `.math` Evaluation Files** chips
+ *      and **individual File controls** (`+ File`, `Save`, `Del`, `📂 Load File`, `💾 Export File`)
+ *      that operate strictly on the `.math` files themselves (exporting a `.math` file exports
+ *      only the file independently, not the session).
+ *    - Provides inner `📝 Editor` and `📋 Log` sub-tabs (with `Snap` and `Restore` removed
+ *      from the Log viewer since session Export/Load are handled directly in the Session bar).
  */
 class MathWorkspaceFragment : Fragment() {
-
-    data class SessionEntry(
-        var sessionId: Int,
-        var fileName: String,
-        var logText: String = "",
-        var varsSummary: String = ""
-    )
 
     private var rootLayout: LinearLayout? = null
     private var topHeaderBar: LinearLayout? = null
@@ -88,14 +87,26 @@ class MathWorkspaceFragment : Fragment() {
 
     // --- Top-level Section 2: Sessions Section ---
     private var sessionsSection: LinearLayout? = null
+
+    // 2A. Active Sessions Bar & Session-Level Controls
+    private var tvSessionsGroupLabel: TextView? = null
     private var sessionChipsRow: LinearLayout? = null
     private var btnNewSession: NeumorphicKeyView? = null
-    private var btnSaveSessionFile: NeumorphicKeyView? = null
     private var btnResetSession: NeumorphicKeyView? = null
     private var btnCloseSession: NeumorphicKeyView? = null
-    private var btnImportSessionFile: NeumorphicKeyView? = null
-    private var btnExportSessionFile: NeumorphicKeyView? = null
+    private var btnLoadSession: NeumorphicKeyView? = null
+    private var btnExportSession: NeumorphicKeyView? = null
 
+    // 2B. Individual .math Evaluation Files Bar & File-Level Controls
+    private var tvEvalFilesGroupLabel: TextView? = null
+    private var evalFileChipsRow: LinearLayout? = null
+    private var btnNewEvalFile: NeumorphicKeyView? = null
+    private var btnSaveEvalFile: NeumorphicKeyView? = null
+    private var btnDeleteEvalFile: NeumorphicKeyView? = null
+    private var btnImportEvalFile: NeumorphicKeyView? = null
+    private var btnExportEvalFile: NeumorphicKeyView? = null
+
+    // 2C. Inner Sub-Tabs for Sessions: [📝 Editor] | [📋 Log]
     private var sessionSubTabBar: LinearLayout? = null
     private var btnSessionSubEditor: NeumorphicKeyView? = null
     private var btnSessionSubLog: NeumorphicKeyView? = null
@@ -115,8 +126,6 @@ class MathWorkspaceFragment : Fragment() {
     private var sessionLogCard: LinearLayout? = null
     private var tvSessionLogOutput: TextView? = null
     private var btnSessionBackToEditor: NeumorphicKeyView? = null
-    private var btnExportSnap: NeumorphicKeyView? = null
-    private var btnRestoreSnap: NeumorphicKeyView? = null
     private var btnClearSessionLog: NeumorphicKeyView? = null
 
     // --- Workspace State ---
@@ -127,28 +136,52 @@ class MathWorkspaceFragment : Fragment() {
     private var activeModuleFileName: String = "custom_module.math"
     private val moduleLogs = mutableMapOf<String, String>()
 
-    private val sessionEntries = mutableListOf<SessionEntry>()
-    private var activeSessionIndex: Int = 0
-    private var exportedSnapshotCache: String = ""
+    /** Independent active sessions state (`sessionId` list + per-session log & MSP1 vars). */
+    private val openSessionIds = mutableListOf<Int>()
+    private var activeSessionId: Int = -1
+    private val sessionLogs = mutableMapOf<Int, String>()
+    private val sessionVarsCache = mutableMapOf<Int, String>()
+    private var pendingSessionExportPayload: String = ""
+
+    /** Independent `.math` evaluation files state in the Sessions tab. */
+    private var activeEvalFileName: String = "physics_sim.math"
 
     private val wobbleAnimators = mutableListOf<ValueAnimator>()
     private val springAnimators = mutableListOf<Pair<View, ValueAnimator>>()
 
-    /** SAF Launcher to load/import a `.math` file from device storage. */
-    private val importScriptLauncher = registerForActivityResult(
+    /** SAF Launcher to load/import an individual `.math` file from device storage. */
+    private val importMathFileLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            handleImportedUri(uri)
+            handleImportedMathFileUri(uri)
         }
     }
 
-    /** SAF Launcher to export/save the active `.math` file to device storage. */
-    private val exportScriptLauncher = registerForActivityResult(
+    /** SAF Launcher to export/save an individual `.math` file to device storage. */
+    private val exportMathFileLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain")
     ) { uri: Uri? ->
         if (uri != null) {
-            handleExportedUri(uri)
+            handleExportedMathFileUri(uri)
+        }
+    }
+
+    /** SAF Launcher to load/restore an active Session (`.msp1` snapshot) from device storage. */
+    private val importSessionStateLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            handleImportedSessionUri(uri)
+        }
+    }
+
+    /** SAF Launcher to export the current active Session (`.msp1` snapshot) to device storage. */
+    private val exportSessionStateLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            handleExportedSessionUri(uri)
         }
     }
 
@@ -193,7 +226,7 @@ class MathWorkspaceFragment : Fragment() {
             shadowPadDp = 3f
             isAccentKey = true
             isDarkThemeMode = dark
-            layoutParams = LinearLayout.LayoutParams(dp(82f), dp(42f)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(82f), dp(40f)).apply {
                 marginEnd = dp(10f)
             }
             setOnClickListener {
@@ -224,7 +257,7 @@ class MathWorkspaceFragment : Fragment() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8f) }
+            ).apply { bottomMargin = dp(6f) }
         }
         modeToggleBar = modeRow
 
@@ -235,10 +268,10 @@ class MathWorkspaceFragment : Fragment() {
             shadowPadDp = 3.5f
             isAccentKey = true
             isDarkThemeMode = dark
-            layoutParams = LinearLayout.LayoutParams(0, dp(44f), 1f).apply { marginEnd = dp(4f) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f).apply { marginEnd = dp(4f) }
             setOnClickListener {
                 if (!isModulesMode) {
-                    saveActiveSessionEditorBuffer(showToast = false)
+                    saveCurrentEvalFile(showToast = false)
                     isModulesMode = true
                     updateModeVisibility(animate = true)
                 } else {
@@ -253,7 +286,7 @@ class MathWorkspaceFragment : Fragment() {
             shadowPadDp = 3.5f
             isAccentKey = false
             isDarkThemeMode = dark
-            layoutParams = LinearLayout.LayoutParams(0, dp(44f), 1f).apply { marginStart = dp(4f) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f).apply { marginStart = dp(4f) }
             setOnClickListener {
                 if (isModulesMode) {
                     saveCurrentModuleFile(showToast = false, checkPromotion = true)
@@ -274,15 +307,16 @@ class MathWorkspaceFragment : Fragment() {
         modulesSection = buildModulesSection(ctx, activity, dp)
         root.addView(modulesSection)
 
-        // 4. Build Sessions Section (with inner Editor & Log tabs)
+        // 4. Build Sessions Section (with separate Session bar, File bar, and inner Editor & Log tabs)
         sessionsSection = buildSessionsSection(ctx, activity, dp)
         root.addView(sessionsSection)
 
-        // Apply theme colors immediately (no early return on view == null!)
         applyTheme(dark)
         refreshModuleChips()
         loadModuleIntoEditor(activeModuleFileName, animate = false)
-        initializeSessionsFromFiles(ctx)
+        ensureDefaultSession()
+        refreshEvalFileChips()
+        loadEvalFileIntoEditor(activeEvalFileName, animate = false)
         updateModeVisibility(animate = false)
         updateModuleSubTabVisibility(animate = false)
         updateSessionSubTabVisibility(animate = false)
@@ -328,7 +362,7 @@ class MathWorkspaceFragment : Fragment() {
                 overScrollMode = View.OVER_SCROLL_NEVER
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(42f)
+                    dp(40f)
                 ).apply { bottomMargin = dp(4f) }
             }
             moduleChipsRow = LinearLayout(ctx).apply {
@@ -403,7 +437,7 @@ class MathWorkspaceFragment : Fragment() {
             btnImportModule = makeBtn("📂 Load", true, 1.1f).apply {
                 setOnClickListener {
                     springPulse(this, 0.07f)
-                    launchImportFromStorage()
+                    launchImportMathFileFromStorage()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
@@ -417,11 +451,11 @@ class MathWorkspaceFragment : Fragment() {
                 (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
                 setOnClickListener {
                     springPulse(this, 0.07f)
-                    launchExportToStorage()
+                    launchExportMathFileToStorage()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
-                    if (held) activity.showButtonPopup(this, "Export current .math module to device storage")
+                    if (held) activity.showButtonPopup(this, "Export current .math module file independently")
                     else activity.dismissButtonPopup()
                 }
             }
@@ -451,7 +485,7 @@ class MathWorkspaceFragment : Fragment() {
                 shadowPadDp = 3f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1f).apply { marginEnd = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(0, dp(36f), 1f).apply { marginEnd = dp(4f) }
                 setOnClickListener {
                     if (!isModuleEditorSubTab) {
                         isModuleEditorSubTab = true
@@ -468,7 +502,7 @@ class MathWorkspaceFragment : Fragment() {
                 shadowPadDp = 3f
                 isAccentKey = false
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1f).apply { marginStart = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(0, dp(36f), 1f).apply { marginStart = dp(4f) }
                 setOnClickListener {
                     if (isModuleEditorSubTab) {
                         isModuleEditorSubTab = false
@@ -534,7 +568,7 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.5f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1.35f).apply { marginEnd = dp(4f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.35f).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         compileOrPromoteCurrentModule()
@@ -555,7 +589,7 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.5f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(42f), 0.95f).apply { marginEnd = dp(4f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 0.95f).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         val code = etModuleEditor?.text?.toString() ?: ""
@@ -577,7 +611,7 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.5f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(dp(74f), dp(42f))
+                    layoutParams = LinearLayout.LayoutParams(dp(74f), dp(40f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         isModuleEditorSubTab = false
@@ -663,7 +697,7 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.5f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1f).apply { marginEnd = dp(6f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1f).apply { marginEnd = dp(6f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         isModuleEditorSubTab = true
@@ -677,7 +711,7 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.5f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(dp(96f), dp(42f))
+                    layoutParams = LinearLayout.LayoutParams(dp(96f), dp(40f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         val cleared = "=== Module Build & Link Log ($activeModuleFileName) ===\n(Log cleared)"
@@ -695,7 +729,12 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     // =========================================================================
-    //  Section 2: Sessions UI Builder (Session Chips + Actions + [Editor | Log])
+    //  Section 2: Sessions UI Builder
+    //  - Beneath Sessions tab: Active Sessions chips + Session controls
+    //    (+ Session | Reset | Close | 📂 Load Sess | 💾 Export Sess)
+    //  - Beneath Session controls: Individual .math Evaluation Files chips + File controls
+    //    (+ File | Save | Del | 📂 Load File | 💾 Export File)
+    //  - Inner Sub-Tabs: [📝 Editor] | [📋 Log] (no Snap/Restore in Log viewer)
     // =========================================================================
 
     private fun buildSessionsSection(
@@ -717,14 +756,39 @@ class MathWorkspaceFragment : Fragment() {
                 1f
             )
 
-            // Row 1: Full-width horizontal scroll of Session chips (each backed by a .math evaluation file)
+            fun makeBarBtn(label: String, accent: Boolean, weight: Float = 1f): NeumorphicKeyView {
+                return NeumorphicKeyView(ctx).apply {
+                    text = label
+                    textSize = 10.8f
+                    cornerRadiusDp = 11f
+                    shadowPadDp = 2.8f
+                    isAccentKey = accent
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(0, dp(36f), weight).apply {
+                        marginEnd = dp(3f)
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // 2A. Active Sessions Bar & Session-Level Actions
+            // -----------------------------------------------------------------
+            tvSessionsGroupLabel = TextView(ctx).apply {
+                text = "ACTIVE SESSIONS"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(secondaryText)
+                setPadding(dp(4f), 0, dp(4f), dp(2f))
+            }
+            addView(tvSessionsGroupLabel)
+
             val sessScroll = HorizontalScrollView(ctx).apply {
                 isHorizontalScrollBarEnabled = false
                 overScrollMode = View.OVER_SCROLL_NEVER
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(42f)
-                ).apply { bottomMargin = dp(4f) }
+                    dp(38f)
+                ).apply { bottomMargin = dp(3f) }
             }
             sessionChipsRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -734,7 +798,6 @@ class MathWorkspaceFragment : Fragment() {
             sessScroll.addView(sessionChipsRow)
             addView(sessScroll)
 
-            // Row 2: Session & Evaluation File Action Bar (+ New | Save | Reset | Close | 📂 Load | 💾 Export)
             val sessBar = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -744,106 +807,185 @@ class MathWorkspaceFragment : Fragment() {
                 ).apply { bottomMargin = dp(6f) }
             }
 
-            fun makeSessBtn(label: String, accent: Boolean, weight: Float = 1f): NeumorphicKeyView {
-                return NeumorphicKeyView(ctx).apply {
-                    text = label
-                    textSize = 11f
-                    cornerRadiusDp = 12f
-                    shadowPadDp = 3f
-                    isAccentKey = accent
-                    isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), weight).apply {
-                        marginEnd = dp(3f)
-                    }
-                }
-            }
-
-            btnNewSession = makeSessBtn("+ New", true, 0.95f).apply {
+            btnNewSession = makeBarBtn("+ Session", true, 1.05f).apply {
                 setOnClickListener {
                     springPulse(this, 0.07f)
-                    promptNewSessionEvaluationFileDialog()
+                    openNewStandaloneSession()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
-                    if (held) activity.showButtonPopup(
-                        this,
-                        "Create a new stateful Session with its own .math evaluation file"
-                    ) else activity.dismissButtonPopup()
-                }
-            }
-            btnSaveSessionFile = makeSessBtn("Save", false, 0.85f).apply {
-                setOnClickListener {
-                    springPulse(this, 0.07f)
-                    saveActiveSessionEditorBuffer(showToast = true)
-                }
-                setOnLongClickListener { true }
-                holdListener = { held ->
-                    if (held) activity.showButtonPopup(this, "Save current session's .math evaluation file")
+                    if (held) activity.showButtonPopup(this, "Create a new active evaluation session")
                     else activity.dismissButtonPopup()
                 }
             }
-            btnResetSession = makeSessBtn("Reset", false, 0.85f).apply {
+            btnResetSession = makeBarBtn("Reset", false, 0.8f).apply {
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     resetActiveSession()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
-                    if (held) activity.showButtonPopup(this, "Reset session variables and evaluation log")
+                    if (held) activity.showButtonPopup(this, "Reset the current active session's variables & log")
                     else activity.dismissButtonPopup()
                 }
             }
-            btnCloseSession = makeSessBtn("Close", false, 0.85f).apply {
+            btnCloseSession = makeBarBtn("Close", false, 0.8f).apply {
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     closeActiveSession()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
-                    if (held) activity.showButtonPopup(this, "Close active session")
+                    if (held) activity.showButtonPopup(this, "Close the current active session")
                     else activity.dismissButtonPopup()
                 }
             }
-            btnImportSessionFile = makeSessBtn("📂 Load", true, 1.05f).apply {
+            btnLoadSession = makeBarBtn("📂 Load Sess", true, 1.15f).apply {
                 setOnClickListener {
                     springPulse(this, 0.07f)
-                    launchImportFromStorage()
+                    launchLoadSessionFromStorage()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
-                    if (held) activity.showButtonPopup(this, "Load a .math evaluation script into a session")
+                    if (held) activity.showButtonPopup(this, "Load a saved session (.msp1) from storage")
                     else activity.dismissButtonPopup()
                 }
             }
-            btnExportSessionFile = makeSessBtn("💾 Export", true, 1.1f).apply {
+            btnExportSession = makeBarBtn("💾 Export Sess", true, 1.2f).apply {
                 (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
                 setOnClickListener {
                     springPulse(this, 0.07f)
-                    launchExportToStorage()
+                    launchExportActiveSessionToStorage()
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->
-                    if (held) activity.showButtonPopup(this, "Export active session's .math file to storage")
+                    if (held) activity.showButtonPopup(this, "Export the current active session (.msp1) to storage")
                     else activity.dismissButtonPopup()
                 }
             }
 
             sessBar.addView(btnNewSession)
-            sessBar.addView(btnSaveSessionFile)
             sessBar.addView(btnResetSession)
             sessBar.addView(btnCloseSession)
-            sessBar.addView(btnImportSessionFile)
-            sessBar.addView(btnExportSessionFile)
+            sessBar.addView(btnLoadSession)
+            sessBar.addView(btnExportSession)
             addView(sessBar)
 
-            // Row 3: Inner Sub-Tab Bar for Sessions: [📝 Editor] | [📋 Log]
-            val sessSubRow = LinearLayout(ctx).apply {
+            // -----------------------------------------------------------------
+            // 2B. Individual .math Evaluation Files Bar & File-Level Actions
+            // -----------------------------------------------------------------
+            tvEvalFilesGroupLabel = TextView(ctx).apply {
+                text = "EVALUATION .MATH FILES (INDEPENDENT)"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(secondaryText)
+                setPadding(dp(4f), 0, dp(4f), dp(2f))
+            }
+            addView(tvEvalFilesGroupLabel)
+
+            val evalFileScroll = HorizontalScrollView(ctx).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(38f)
+                ).apply { bottomMargin = dp(3f) }
+            }
+            evalFileChipsRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(2f), 0, dp(2f), 0)
+            }
+            evalFileScroll.addView(evalFileChipsRow)
+            addView(evalFileScroll)
+
+            val evalFileBar = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { bottomMargin = dp(6f) }
+            }
+
+            btnNewEvalFile = makeBarBtn("+ New File", true, 1.0f).apply {
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    promptNewEvalFileDialog()
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(
+                        this,
+                        "Create a new .math evaluation file independently (does not create a new session)"
+                    ) else activity.dismissButtonPopup()
+                }
+            }
+            btnSaveEvalFile = makeBarBtn("Save", false, 0.8f).apply {
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    saveCurrentEvalFile(showToast = true)
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(this, "Save changes to the current .math file")
+                    else activity.dismissButtonPopup()
+                }
+            }
+            btnDeleteEvalFile = makeBarBtn("Del", false, 0.75f).apply {
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    deleteCurrentEvalFile()
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(this, "Delete the current .math evaluation file")
+                    else activity.dismissButtonPopup()
+                }
+            }
+            btnImportEvalFile = makeBarBtn("📂 Load File", true, 1.15f).apply {
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    launchImportMathFileFromStorage()
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(this, "Load an individual .math file from storage")
+                    else activity.dismissButtonPopup()
+                }
+            }
+            btnExportEvalFile = makeBarBtn("💾 Export File", true, 1.2f).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    launchExportMathFileToStorage()
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(
+                        this,
+                        "Export only this .math file independently (does not export the session)"
+                    ) else activity.dismissButtonPopup()
+                }
+            }
+
+            evalFileBar.addView(btnNewEvalFile)
+            evalFileBar.addView(btnSaveEvalFile)
+            evalFileBar.addView(btnDeleteEvalFile)
+            evalFileBar.addView(btnImportEvalFile)
+            evalFileBar.addView(btnExportEvalFile)
+            addView(evalFileBar)
+
+            // -----------------------------------------------------------------
+            // 2C. Inner Sub-Tab Bar for Sessions: [📝 Editor] | [📋 Log]
+            // -----------------------------------------------------------------
+            val sessSubRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(5f) }
             }
             sessionSubTabBar = sessSubRow
 
@@ -854,7 +996,7 @@ class MathWorkspaceFragment : Fragment() {
                 shadowPadDp = 3f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1f).apply { marginEnd = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(0, dp(36f), 1f).apply { marginEnd = dp(4f) }
                 setOnClickListener {
                     if (!isSessionEditorSubTab) {
                         isSessionEditorSubTab = true
@@ -871,10 +1013,10 @@ class MathWorkspaceFragment : Fragment() {
                 shadowPadDp = 3f
                 isAccentKey = false
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1f).apply { marginStart = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(0, dp(36f), 1f).apply { marginStart = dp(4f) }
                 setOnClickListener {
                     if (isSessionEditorSubTab) {
-                        saveActiveSessionEditorBuffer(showToast = false)
+                        saveCurrentEvalFile(showToast = false)
                         isSessionEditorSubTab = false
                         updateSessionSubTabVisibility(animate = true)
                     } else {
@@ -896,10 +1038,10 @@ class MathWorkspaceFragment : Fragment() {
                 )
 
                 tvActiveSessionFileName = TextView(ctx).apply {
-                    text = "Session #1 — Editing: physics_sim.math"
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    text = "Active: Session #1  •  File: $activeEvalFileName"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                     setTextColor(accentText)
-                    setPadding(dp(4f), 0, dp(4f), dp(4f))
+                    setPadding(dp(4f), 0, dp(4f), dp(3f))
                 }
                 addView(tvActiveSessionFileName)
 
@@ -908,17 +1050,17 @@ class MathWorkspaceFragment : Fragment() {
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         0,
                         1f
-                    ).apply { bottomMargin = dp(6f) }
+                    ).apply { bottomMargin = dp(5f) }
                     gravity = Gravity.TOP or Gravity.START
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(primaryText)
                     setHintTextColor(secondaryText)
-                    setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+                    setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
                     inputType = InputType.TYPE_CLASS_TEXT or
                         InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                         InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                    hint = "# Write stateful .math expressions, assignments (x := 10), and functions (f(t) := t^2)..."
+                    hint = "# Edit .math evaluation file and tap '▶ Run in Session'..."
                 }
                 addView(etSessionEditor)
 
@@ -928,41 +1070,41 @@ class MathWorkspaceFragment : Fragment() {
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { bottomMargin = dp(6f) }
+                    ).apply { bottomMargin = dp(5f) }
                 }
 
                 btnRunSessionScript = NeumorphicKeyView(ctx).apply {
-                    text = "▶ Run Script in Session"
-                    textSize = 13f
+                    text = "▶ Run in Session"
+                    textSize = 12.5f
                     cornerRadiusDp = 14f
                     shadowPadDp = 3.5f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(42f), 1.5f).apply { marginEnd = dp(4f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.5f).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
-                        runActiveSessionScript(switchToLogAfterRun = false)
+                        runCurrentEvalFileInActiveSession(switchToLogAfterRun = false)
                     }
                     setOnLongClickListener { true }
                     holdListener = { held ->
                         if (held) activity.showButtonPopup(
                             this,
-                            "Evaluate all statements in this session's .math file and record results in the Log tab"
+                            "Evaluate the current .math file inside the active session and record output in the Log tab"
                         ) else activity.dismissButtonPopup()
                     }
                 }
 
                 btnSessionViewLog = NeumorphicKeyView(ctx).apply {
                     text = "📋 View Log"
-                    textSize = 12.5f
+                    textSize = 12f
                     cornerRadiusDp = 14f
                     shadowPadDp = 3.5f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(42f), 0.9f)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 0.9f)
                     setOnClickListener {
                         springPulse(this, 0.07f)
-                        saveActiveSessionEditorBuffer(showToast = false)
+                        saveCurrentEvalFile(showToast = false)
                         isSessionEditorSubTab = false
                         updateSessionSubTabVisibility(animate = true)
                     }
@@ -978,7 +1120,7 @@ class MathWorkspaceFragment : Fragment() {
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     )
-                    setPadding(dp(10f), dp(6f), dp(10f), dp(6f))
+                    setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
                     isClickable = true
                     isFocusable = true
                     setOnClickListener {
@@ -987,7 +1129,7 @@ class MathWorkspaceFragment : Fragment() {
                     }
                 }
                 tvSessionQuickStatus = TextView(ctx).apply {
-                    text = "Ready. Tap '▶ Run Script in Session' to evaluate, or switch to '📋 Log' to inspect output & MSP1 variables."
+                    text = "Ready. Tap '▶ Run in Session' to evaluate $activeEvalFileName in the active session."
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(secondaryText)
@@ -998,7 +1140,7 @@ class MathWorkspaceFragment : Fragment() {
             }
             addView(sessionEditorPane)
 
-            // --- Session Sub-Pane B: Evaluation Log & MSP1 Variables Pane ---
+            // --- Session Sub-Pane B: Evaluation Log & MSP1 Variables Pane (No Snap/Restore buttons) ---
             sessionLogPane = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 visibility = View.GONE
@@ -1026,7 +1168,7 @@ class MathWorkspaceFragment : Fragment() {
                     setTextColor(accentText)
                 }
                 tvVarsContent = TextView(ctx).apply {
-                    text = "No variables bound yet. Run the session's .math script in the Editor tab."
+                    text = "No variables bound yet. Run a .math file in the Editor tab."
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(primaryText)
@@ -1036,7 +1178,7 @@ class MathWorkspaceFragment : Fragment() {
                 vCard.addView(tvVarsContent)
                 addView(vCard)
 
-                // Full scrollable Evaluation Log Console card (like the original .math files console)
+                // Full scrollable Evaluation Log Console card
                 val sLogCard = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(
@@ -1055,7 +1197,7 @@ class MathWorkspaceFragment : Fragment() {
                     )
                 }
                 tvSessionLogOutput = TextView(ctx).apply {
-                    text = "Ready. Tap '▶ Run Script in Session' in the Editor tab to evaluate statements."
+                    text = "Ready. Tap '▶ Run in Session' in the Editor tab to evaluate statements."
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(primaryText)
@@ -1065,7 +1207,7 @@ class MathWorkspaceFragment : Fragment() {
                 sLogCard.addView(sLogScroll)
                 addView(sLogCard)
 
-                // Bottom Log Action Row: [📝 Editor] [📤 Snap] [📥 Restore] [Clear]
+                // Bottom Log Action Row: ONLY [📝 Back to Editor] and [Clear Log] (Snap & Restore removed!)
                 val sLogActions = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -1076,65 +1218,38 @@ class MathWorkspaceFragment : Fragment() {
                 }
 
                 btnSessionBackToEditor = NeumorphicKeyView(ctx).apply {
-                    text = "📝 Editor"
-                    textSize = 12f
+                    text = "📝 Back to Editor"
+                    textSize = 12.5f
                     cornerRadiusDp = 14f
                     shadowPadDp = 3.5f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.05f).apply { marginEnd = dp(4f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1f).apply { marginEnd = dp(6f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         isSessionEditorSubTab = true
                         updateSessionSubTabVisibility(animate = true)
                     }
                 }
-                btnExportSnap = NeumorphicKeyView(ctx).apply {
-                    text = "📤 Snap"
-                    textSize = 11.5f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.5f
-                    isAccentKey = false
-                    isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 0.95f).apply { marginEnd = dp(4f) }
-                    setOnClickListener {
-                        springPulse(this, 0.06f)
-                        exportActiveSessionSnapshots()
-                    }
-                }
-                btnRestoreSnap = NeumorphicKeyView(ctx).apply {
-                    text = "📥 Restore"
-                    textSize = 11.5f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.5f
-                    isAccentKey = false
-                    isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.05f).apply { marginEnd = dp(4f) }
-                    setOnClickListener {
-                        springPulse(this, 0.06f)
-                        restoreSessionFromSnapshotDialog()
-                    }
-                }
                 btnClearSessionLog = NeumorphicKeyView(ctx).apply {
-                    text = "Clear"
-                    textSize = 11.5f
+                    text = "Clear Log"
+                    textSize = 12f
                     cornerRadiusDp = 14f
                     shadowPadDp = 3.5f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(40f), 0.8f)
+                    layoutParams = LinearLayout.LayoutParams(dp(96f), dp(40f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
-                        val entry = currentSessionEntry() ?: return@setOnClickListener
-                        entry.logText = "=== Session #${entry.sessionId} (${entry.fileName}) ===\n(Log cleared)"
-                        tvSessionLogOutput?.text = entry.logText
+                        val sid = activeSessionId
+                        val cleared = "=== Session #$sid Log ===\n(Log cleared)"
+                        sessionLogs[sid] = cleared
+                        tvSessionLogOutput?.text = cleared
                         sessionLogCard?.let { springPulse(it, 0.04f) }
                     }
                 }
 
                 sLogActions.addView(btnSessionBackToEditor)
-                sLogActions.addView(btnExportSnap)
-                sLogActions.addView(btnRestoreSnap)
                 sLogActions.addView(btnClearSessionLog)
                 addView(sLogActions)
             }
@@ -1162,18 +1277,16 @@ class MathWorkspaceFragment : Fragment() {
      * Seeds default sample files and classifies any `.math` files across `math_programs/`
      * and `math_modules/`. Any file in `math_modules/` that is NOT a true `[module]`
      * and is a standard `.math` evaluation file is automatically promoted into
-     * `math_sessions/` so it opens as its own evaluation Session.
+     * `math_sessions/`.
      */
     private fun ensureSampleAndClassifiedFiles(ctx: Context) {
         val legDir = legacyMathDir(ctx)
         val modDir = modulesDir(ctx)
         val sessDir = sessionsDir(ctx)
 
-        // Remove old internal trig_ext.math if present
         File(legDir, "trig_ext.math").takeIf { it.exists() }?.delete()
         File(modDir, "trig_ext.math").takeIf { it.exists() }?.delete()
 
-        // Migrate any existing .math files from legacy math_programs/ based on classification
         legDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.forEach { file ->
             val content = runCatching { file.readText() }.getOrDefault("")
             val targetDir = if (MathEngineManager.isTrueModuleSource(content)) modDir else sessDir
@@ -1184,7 +1297,6 @@ class MathWorkspaceFragment : Fragment() {
             file.delete()
         }
 
-        // Seed default custom_module.math in modulesDir if none exist
         val customModFile = File(modDir, "custom_module.math")
         if (!customModFile.exists() && (modDir.listFiles { f -> f.name.endsWith(".math") }?.isEmpty() != false)) {
             customModFile.writeText(
@@ -1209,7 +1321,6 @@ class MathWorkspaceFragment : Fragment() {
             }
         }
 
-        // Ensure at least one valid module file exists in modulesDir after promotion scan
         if (modDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.isEmpty() != false) {
             customModFile.writeText(
                 "# Custom Native Extension Module (.math)\n" +
@@ -1222,12 +1333,11 @@ class MathWorkspaceFragment : Fragment() {
             )
         }
 
-        // Seed default session evaluation .math files if sessionsDir is empty
         val existingSessFiles = sessDir.listFiles { f -> f.isFile && f.name.endsWith(".math") } ?: emptyArray()
         if (existingSessFiles.isEmpty()) {
             File(sessDir, "physics_sim.math").writeText(
                 "# Stateful Session Evaluation Script (.math)\n" +
-                "# Tap '▶ Run Script in Session' to evaluate line-by-line and inspect results in the Log tab!\n\n" +
+                "# Tap '▶ Run in Session' to evaluate line-by-line in the active session!\n\n" +
                 "v0 := 25.0\n" +
                 "angle := 45.0\n" +
                 "g := 9.80665\n\n" +
@@ -1240,7 +1350,7 @@ class MathWorkspaceFragment : Fragment() {
             )
             File(sessDir, "vectors_stats.math").writeText(
                 "# Vectors, Comprehensions & Symbolic Math (.math)\n" +
-                "# Tap '▶ Run Script in Session' to evaluate in this session!\n\n" +
+                "# Tap '▶ Run in Session' to evaluate in the active session!\n\n" +
                 "squares := [x^2 for x in 1...8]\n" +
                 "total := sum(squares)\n" +
                 "avg := mean(squares)\n" +
@@ -1256,12 +1366,17 @@ class MathWorkspaceFragment : Fragment() {
         if (availableMods.isNotEmpty() && availableMods.none { it.name == activeModuleFileName }) {
             activeModuleFileName = availableMods.first().name
         }
+
+        val availableEvalFiles = sessDir.listFiles { f -> f.name.endsWith(".math") }?.sortedBy { it.name } ?: emptyList()
+        if (availableEvalFiles.isNotEmpty() && availableEvalFiles.none { it.name == activeEvalFileName }) {
+            activeEvalFileName = availableEvalFiles.first().name
+        }
     }
 
     /**
-     * Promotes a `.math` file from the Modules section into a dedicated Session
-     * in the Sessions section when it is classified as a standard `.math` evaluation
-     * script rather than a true `[module]`.
+     * Promotes a `.math` file from the Modules section into a separate Session
+     * as a proper evaluation `.math` file when it is classified as a standard
+     * `.math` evaluation script rather than a true `[module]`.
      */
     private fun promoteModuleFileToSession(
         fileName: String,
@@ -1274,14 +1389,10 @@ class MathWorkspaceFragment : Fragment() {
         val sessDir = sessionsDir(ctx)
 
         val safeName = if (fileName.endsWith(".math")) fileName else "$fileName.math"
-
-        // Write evaluation file to sessionsDir and remove from modulesDir
-        val targetSessionFile = File(sessDir, safeName)
-        val finalContent = if (code.isBlank()) "# Promoted Session Script: $safeName\n\nx := 10\nx * 2\n" else code
-        targetSessionFile.writeText(finalContent)
+        val finalContent = if (code.isBlank()) "# Promoted Evaluation Script: $safeName\n\nx := 10\nx * 2\n" else code
+        File(sessDir, safeName).writeText(finalContent)
         File(modDir, safeName).takeIf { it.exists() }?.delete()
 
-        // Ensure modulesDir still has at least one valid [module] file so the Modules tab stays populated
         val remainingMods = modDir.listFiles { f -> f.name.endsWith(".math") }?.sortedBy { it.name } ?: emptyList()
         if (remainingMods.isEmpty()) {
             ensureSampleAndClassifiedFiles(ctx)
@@ -1291,49 +1402,33 @@ class MathWorkspaceFragment : Fragment() {
         refreshModuleChips()
         loadModuleIntoEditor(activeModuleFileName, animate = false)
 
-        val existingIdx = sessionEntries.indexOfFirst { it.fileName == safeName }
-        if (existingIdx >= 0) {
-            activeSessionIndex = existingIdx
-            switchToPromotedSession(safeName, autoEvaluate)
-        } else {
-            val placeholder = SessionEntry(
-                sessionId = -1,
-                fileName = safeName,
-                logText = "🚀 Promoted '$safeName' from Modules into a dedicated evaluation Session."
-            )
-            sessionEntries.add(placeholder)
-            val newIdx = sessionEntries.lastIndex
-            activeSessionIndex = newIdx
-            MathEngineManager.openSession { sid ->
-                activity.runOnUiThread {
-                    val assignedSid = if (sid > 0) sid else (newIdx + 1)
-                    placeholder.sessionId = assignedSid
-                    placeholder.logText = "=== Session #$assignedSid ($safeName) ===\n" +
-                        "🚀 Promoted '$safeName' from Modules into Session #$assignedSid as a standard .math evaluation file."
-                    switchToPromotedSession(safeName, autoEvaluate)
+        activeEvalFileName = safeName
+        MathEngineManager.openSession { newSid ->
+            activity.runOnUiThread {
+                val sid = if (newSid > 0) newSid else (openSessionIds.lastOrNull() ?: 1)
+                if (sid !in openSessionIds) openSessionIds.add(sid)
+                activeSessionId = sid
+                sessionLogs[sid] = "=== Session #$sid ===\n" +
+                    "🚀 Promoted '$safeName' from Modules into Session #$sid as a standard .math evaluation file."
+
+                val promoMsg = "🚀 Promoted '$safeName' to Session #$sid (evaluation file)."
+                tvModuleQuickStatus?.text = promoMsg
+                moduleLogs[activeModuleFileName] = promoMsg
+
+                isModulesMode = false
+                isSessionEditorSubTab = true
+                refreshSessionChips()
+                refreshEvalFileChips()
+                loadEvalFileIntoEditor(safeName, animate = true)
+                refreshActiveSessionLogAndVars()
+                updateModeVisibility(animate = true)
+                updateSessionSubTabVisibility(animate = false)
+
+                activity.showButtonToast("Promoted $safeName to Session #$sid")
+                if (autoEvaluate) {
+                    runCurrentEvalFileInActiveSession(switchToLogAfterRun = false)
                 }
             }
-        }
-    }
-
-    private fun switchToPromotedSession(promotedFileName: String, autoEvaluate: Boolean) {
-        val activity = activity as? MainActivity ?: return
-        val entry = currentSessionEntry() ?: return
-
-        val promoMsg = "🚀 Promoted '$promotedFileName' to Session #${entry.sessionId} (standard .math evaluation file)."
-        tvModuleQuickStatus?.text = promoMsg
-        moduleLogs[activeModuleFileName] = promoMsg
-
-        isModulesMode = false
-        isSessionEditorSubTab = true
-        refreshSessionChips()
-        loadActiveSessionIntoViews(animate = true)
-        updateModeVisibility(animate = true)
-        updateSessionSubTabVisibility(animate = false)
-
-        activity.showButtonToast("Promoted $promotedFileName to Session #${entry.sessionId}")
-        if (autoEvaluate) {
-            runActiveSessionScript(switchToLogAfterRun = false)
         }
     }
 
@@ -1362,7 +1457,7 @@ class MathWorkspaceFragment : Fragment() {
                 isAccentKey = isSelected
                 isDarkThemeMode = activity.isDarkMode
                 val w = (file.name.length * 8.2f + 46f).coerceAtLeast(108f)
-                layoutParams = LinearLayout.LayoutParams(dp(w), dp(38f)).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(w), dp(36f)).apply {
                     marginEnd = dp(6f)
                 }
                 setOnClickListener {
@@ -1395,11 +1490,6 @@ class MathWorkspaceFragment : Fragment() {
         }
     }
 
-    /**
-     * Saves the active module file. If `checkPromotion` is true and the file is not
-     * a true `[module]` (i.e. it is a standard `.math` evaluation script), promotes
-     * it into a separate Session in the Sessions tab.
-     */
     private fun saveCurrentModuleFile(showToast: Boolean, checkPromotion: Boolean): Boolean {
         val ctx = context ?: return false
         val activity = activity as? MainActivity ?: return false
@@ -1423,8 +1513,6 @@ class MathWorkspaceFragment : Fragment() {
         val activity = activity as? MainActivity ?: return
         val code = etModuleEditor?.text?.toString() ?: ""
 
-        // If this file is not a true [module] and is a standard .math evaluation file,
-        // automatically promote it into a separate Session and evaluate it there!
         if (hasNonEmptyStatements(code) && !MathEngineManager.isTrueModuleSource(code)) {
             promoteModuleFileToSession(activeModuleFileName, code, autoEvaluate = true)
             return
@@ -1518,43 +1606,87 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     // =========================================================================
-    //  Sessions Operations (Each Session = .math Evaluation File + Engine Session)
+    //  Sessions Operations (Independent Session Bar + Independent .math File Bar)
     // =========================================================================
 
-    private fun currentSessionEntry(): SessionEntry? =
-        sessionEntries.getOrNull(activeSessionIndex)
-
-    private fun initializeSessionsFromFiles(ctx: Context) {
-        if (sessionEntries.isNotEmpty()) {
+    private fun ensureDefaultSession() {
+        if (openSessionIds.isNotEmpty() && activeSessionId in openSessionIds) {
             refreshSessionChips()
-            loadActiveSessionIntoViews(animate = false)
+            refreshActiveSessionLogAndVars()
             return
         }
-        val files = sessionsDir(ctx).listFiles { f -> f.isFile && f.name.endsWith(".math") }
-            ?.sortedBy { it.name } ?: emptyList()
+        MathEngineManager.openSession { sid ->
+            activity?.runOnUiThread {
+                val validSid = if (sid > 0) sid else 1
+                if (validSid !in openSessionIds) openSessionIds.add(validSid)
+                activeSessionId = validSid
+                sessionLogs.getOrPut(validSid) {
+                    "=== Session #$validSid Log ===\nReady. Select any .math evaluation file and tap '▶ Run in Session'."
+                }
+                refreshSessionChips()
+                refreshActiveSessionLogAndVars()
+            }
+        }
+    }
 
-        files.forEachIndexed { idx, file ->
-            val entry = SessionEntry(
-                sessionId = idx + 1,
-                fileName = file.name,
-                logText = "=== Session #${idx + 1} (${file.name}) ===\nReady. Tap '▶ Run Script in Session' in the Editor tab to evaluate."
-            )
-            sessionEntries.add(entry)
-            MathEngineManager.openSession { sid ->
-                activity?.runOnUiThread {
-                    if (sid > 0) {
-                        entry.sessionId = sid
-                        refreshSessionChips()
-                        if (currentSessionEntry() === entry) {
-                            updateActiveSessionLabels()
-                        }
-                    }
+    /** Creates a new active Session without creating or altering any `.math` file. */
+    private fun openNewStandaloneSession() {
+        val activity = activity as? MainActivity ?: return
+        MathEngineManager.openSession { sid ->
+            activity.runOnUiThread {
+                if (sid > 0) {
+                    if (sid !in openSessionIds) openSessionIds.add(sid)
+                    activeSessionId = sid
+                    sessionLogs[sid] = "=== Session #$sid Log ===\nOpened new active Session #$sid."
+                    sessionVarsCache[sid] = ""
+                    refreshSessionChips()
+                    refreshActiveSessionLogAndVars()
+                    tvSessionQuickStatus?.text = "Switched to new Session #$sid (File: $activeEvalFileName)."
+                    activity.showButtonToast("Opened Session #$sid")
+                } else {
+                    activity.showButtonToast("Max active sessions (8) reached")
                 }
             }
         }
-        activeSessionIndex = 0
-        refreshSessionChips()
-        loadActiveSessionIntoViews(animate = false)
+    }
+
+    private fun resetActiveSession() {
+        val activity = activity as? MainActivity ?: return
+        val sid = activeSessionId
+        if (sid <= 0) return
+        MathEngineManager.resetSession(sid) { ok ->
+            activity.runOnUiThread {
+                sessionVarsCache[sid] = ""
+                sessionLogs[sid] = "=== Session #$sid Log ===\n(Session #$sid state & variables reset)"
+                refreshActiveSessionLogAndVars()
+                tvSessionQuickStatus?.text = "Session #$sid reset. Tap '▶ Run in Session' to evaluate $activeEvalFileName."
+                varsCard?.let { springPulse(it, 0.05f) }
+                sessionLogCard?.let { springPulse(it, 0.04f) }
+                activity.showButtonToast(if (ok) "Session #$sid reset" else "Reset failed")
+            }
+        }
+    }
+
+    /** Closes the active session without deleting any `.math` file. */
+    private fun closeActiveSession() {
+        val activity = activity as? MainActivity ?: return
+        val sid = activeSessionId
+        if (sid <= 0) return
+        if (openSessionIds.size <= 1) {
+            resetActiveSession()
+            return
+        }
+        MathEngineManager.closeSession(sid) { _ ->
+            activity.runOnUiThread {
+                openSessionIds.remove(sid)
+                sessionLogs.remove(sid)
+                sessionVarsCache.remove(sid)
+                activeSessionId = openSessionIds.first()
+                refreshSessionChips()
+                refreshActiveSessionLogAndVars()
+                activity.showButtonToast("Closed Session #$sid")
+            }
+        }
     }
 
     private fun refreshSessionChips() {
@@ -1565,93 +1697,193 @@ class MathWorkspaceFragment : Fragment() {
         val dp = { v: Float -> (v * density).toInt() }
 
         row.removeAllViews()
-        sessionEntries.forEachIndexed { idx, entry ->
-            val selected = idx == activeSessionIndex
-            val label = "S${entry.sessionId} · ${entry.fileName}"
+        openSessionIds.forEach { sid ->
+            val selected = sid == activeSessionId
             val chip = NeumorphicKeyView(ctx).apply {
-                text = label
+                text = "⚡ Session #$sid"
                 textSize = 11.5f
                 cornerRadiusDp = 12f
                 shadowPadDp = 3f
                 isAccentKey = selected
                 isDarkThemeMode = activity.isDarkMode
-                val w = (label.length * 7.8f + 34f).coerceAtLeast(116f)
-                layoutParams = LinearLayout.LayoutParams(dp(w), dp(38f)).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(110f), dp(34f)).apply {
                     marginEnd = dp(6f)
                 }
                 setOnClickListener {
-                    saveActiveSessionEditorBuffer(showToast = false)
-                    activeSessionIndex = idx
+                    activeSessionId = sid
                     refreshSessionChips()
-                    loadActiveSessionIntoViews(animate = true)
+                    refreshActiveSessionLogAndVars()
+                    tvActiveSessionFileName?.let { springPulse(it, 0.045f) }
+                    varsCard?.let { springPulse(it, 0.045f) }
                 }
             }
             row.addView(chip)
         }
     }
 
-    private fun updateActiveSessionLabels() {
-        val entry = currentSessionEntry() ?: return
-        tvActiveSessionFileName?.text = "Session #${entry.sessionId} — Editing: ${entry.fileName}"
-        tvVarsHeader?.text = "Session #${entry.sessionId} Variables (${entry.fileName} · MSP1 State)"
-        tvVarsContent?.text = entry.varsSummary.ifBlank {
-            "No variables bound yet in Session #${entry.sessionId}. Run ${entry.fileName} in the Editor tab."
+    private fun refreshActiveSessionLogAndVars() {
+        val sid = activeSessionId
+        val shownSid = if (sid > 0) sid else 1
+        tvActiveSessionFileName?.text = "Active: Session #$shownSid  •  File: $activeEvalFileName"
+        btnRunSessionScript?.text = "▶ Run in Session #$shownSid"
+        tvVarsHeader?.text = "Session #$shownSid Variables (MSP1 State)"
+        tvVarsContent?.text = sessionVarsCache[shownSid].orEmpty().ifBlank {
+            "No variables bound yet in Session #$shownSid."
         }
-        tvSessionLogOutput?.text = entry.logText.ifBlank {
-            "=== Session #${entry.sessionId} (${entry.fileName}) ===\nReady. Tap '▶ Run Script in Session' in the Editor tab."
+        tvSessionLogOutput?.text = sessionLogs[shownSid]
+            ?: "=== Session #$shownSid Log ===\nReady. Tap '▶ Run in Session #$shownSid' in the Editor tab."
+
+        if (sid > 0) {
+            MathEngineManager.inspectSessionVariables(sid) { summary ->
+                activity?.runOnUiThread {
+                    sessionVarsCache[sid] = summary
+                    if (activeSessionId == sid) {
+                        tvVarsContent?.text = summary.ifBlank {
+                            "No variables bound yet in Session #$sid."
+                        }
+                    }
+                }
+            }
         }
     }
 
-    private fun loadActiveSessionIntoViews(animate: Boolean) {
+    // =========================================================================
+    //  Individual .math Evaluation Files Operations (Independent of Sessions!)
+    // =========================================================================
+
+    private fun refreshEvalFileChips() {
         val ctx = context ?: return
-        val entry = currentSessionEntry() ?: return
-        val file = File(sessionsDir(ctx), entry.fileName)
+        val activity = activity as? MainActivity ?: return
+        val row = evalFileChipsRow ?: return
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+
+        row.removeAllViews()
+        val files = sessionsDir(ctx).listFiles { f -> f.isFile && f.name.endsWith(".math") }
+            ?.sortedBy { it.name } ?: emptyList()
+
+        files.forEach { file ->
+            val selected = file.name == activeEvalFileName
+            val chip = NeumorphicKeyView(ctx).apply {
+                text = "📄 ${file.name}"
+                textSize = 11.5f
+                cornerRadiusDp = 12f
+                shadowPadDp = 3f
+                isAccentKey = selected
+                isDarkThemeMode = activity.isDarkMode
+                val w = (file.name.length * 8.0f + 44f).coerceAtLeast(106f)
+                layoutParams = LinearLayout.LayoutParams(dp(w), dp(34f)).apply {
+                    marginEnd = dp(6f)
+                }
+                setOnClickListener {
+                    saveCurrentEvalFile(showToast = false)
+                    activeEvalFileName = file.name
+                    refreshEvalFileChips()
+                    loadEvalFileIntoEditor(file.name, animate = true)
+                }
+            }
+            row.addView(chip)
+        }
+    }
+
+    private fun loadEvalFileIntoEditor(fileName: String, animate: Boolean) {
+        val ctx = context ?: return
+        val file = File(sessionsDir(ctx), fileName)
+        activeEvalFileName = fileName
+        val shownSid = if (activeSessionId > 0) activeSessionId else 1
+        tvActiveSessionFileName?.text = "Active: Session #$shownSid  •  File: $fileName"
         if (file.exists()) {
             etSessionEditor?.setText(file.readText())
         } else {
             etSessionEditor?.setText("")
         }
-        updateActiveSessionLabels()
-        if (entry.sessionId > 0) {
-            MathEngineManager.inspectSessionVariables(entry.sessionId) { summary ->
-                activity?.runOnUiThread {
-                    entry.varsSummary = summary
-                    if (currentSessionEntry() === entry) {
-                        updateActiveSessionLabels()
-                    }
-                }
-            }
-        }
         if (animate) {
-            val activePane = if (isSessionEditorSubTab) sessionEditorPane else sessionLogPane
-            activePane?.let { springSlideIn(it) }
+            etSessionEditor?.let { springSlideIn(it) }
             tvActiveSessionFileName?.let { springPulse(it, 0.05f) }
         }
     }
 
-    private fun saveActiveSessionEditorBuffer(showToast: Boolean) {
+    private fun saveCurrentEvalFile(showToast: Boolean) {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
-        val entry = currentSessionEntry() ?: return
         val code = etSessionEditor?.text?.toString() ?: return
-        File(sessionsDir(ctx), entry.fileName).writeText(code)
+        File(sessionsDir(ctx), activeEvalFileName).writeText(code)
         if (showToast) {
-            activity.showButtonToast("Saved ${entry.fileName} (Session #${entry.sessionId})")
+            activity.showButtonToast("Saved file $activeEvalFileName")
             tvActiveSessionFileName?.let { springPulse(it, 0.05f) }
         }
     }
 
-    private fun runActiveSessionScript(switchToLogAfterRun: Boolean) {
-        saveActiveSessionEditorBuffer(showToast = false)
+    /** Creates a new `.math` evaluation file independently without opening a new session. */
+    private fun promptNewEvalFileDialog() {
+        val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
-        val entry = currentSessionEntry() ?: return
-        val code = etSessionEditor?.text?.toString() ?: ""
+        val dark = activity.isDarkMode
+        val input = EditText(ctx).apply {
+            hint = "script_name.math"
+            setSingleLine(true)
+            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
+            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("New .math Evaluation File")
+            .setView(input)
+            .setPositiveButton("Create") { _, _ ->
+                var name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    if (!name.endsWith(".math")) name += ".math"
+                    saveCurrentEvalFile(showToast = false)
+                    val newFile = File(sessionsDir(ctx), name)
+                    if (!newFile.exists()) {
+                        newFile.writeText(
+                            "# Evaluation Script: $name\n\n" +
+                            "x := 10\n" +
+                            "y := x * 2 + 5\n" +
+                            "y\n"
+                        )
+                    }
+                    activeEvalFileName = name
+                    isSessionEditorSubTab = true
+                    refreshEvalFileChips()
+                    loadEvalFileIntoEditor(name, animate = true)
+                    updateSessionSubTabVisibility(animate = false)
+                    activity.showButtonToast("Created file $name")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
-        fun executeWithSid(sid: Int) {
+    /** Deletes the current `.math` evaluation file independently without closing the session. */
+    private fun deleteCurrentEvalFile() {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val dir = sessionsDir(ctx)
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.sortedBy { it.name } ?: emptyList()
+        if (files.size <= 1) {
+            activity.showButtonToast("Cannot delete the last .math evaluation file")
+            return
+        }
+        val deletedName = activeEvalFileName
+        File(dir, deletedName).delete()
+        val remaining = dir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.sortedBy { it.name } ?: emptyList()
+        activeEvalFileName = remaining.first().name
+        refreshEvalFileChips()
+        loadEvalFileIntoEditor(activeEvalFileName, animate = true)
+        activity.showButtonToast("Deleted $deletedName")
+    }
+
+    private fun runCurrentEvalFileInActiveSession(switchToLogAfterRun: Boolean) {
+        saveCurrentEvalFile(showToast = false)
+        val activity = activity as? MainActivity ?: return
+        val code = etSessionEditor?.text?.toString() ?: ""
+        val evalFile = activeEvalFileName
+
+        fun executeOnSession(sid: Int) {
             MathEngineManager.runProgramScript(sid, code) { results, snapSummary ->
                 activity.runOnUiThread {
                     val sb = StringBuilder()
-                    sb.append("=== Executed ${entry.fileName} (Session #$sid) ===\n")
+                    sb.append("=== Executed $evalFile in Session #$sid ===\n")
                     var lastSummaryLine = "(No executable statements found)"
                     if (results.isEmpty()) {
                         sb.append("(No executable statements found)\n")
@@ -1661,7 +1893,7 @@ class MathWorkspaceFragment : Fragment() {
                                 val u = if (outcome.unit != "none") " [${outcome.unit}]" else ""
                                 val line = "[${idx + 1}] $stmt  ⟹  ${outcome.value}$u (${outcome.type})"
                                 sb.append(line).append("\n")
-                                lastSummaryLine = "✅ [${results.size} stmts] Last: $stmt ⟹ ${outcome.value}$u"
+                                lastSummaryLine = "✅ [S#$sid · $evalFile] $stmt ⟹ ${outcome.value}$u"
                             } else {
                                 val line = "[${idx + 1}] $stmt  ⟹  ⚠ ${outcome.error}"
                                 sb.append(line).append("\n")
@@ -1672,10 +1904,10 @@ class MathWorkspaceFragment : Fragment() {
                     if (snapSummary.isNotBlank()) {
                         sb.append("\n--- Session #$sid Variables ---\n").append(snapSummary)
                     }
-                    entry.logText = sb.toString().trimEnd()
-                    entry.varsSummary = snapSummary
-                    updateActiveSessionLabels()
-                    tvSessionQuickStatus?.text = "$lastSummaryLine  (Tap to open 📋 Log)"
+                    sessionLogs[sid] = sb.toString().trimEnd()
+                    sessionVarsCache[sid] = snapSummary
+                    refreshActiveSessionLogAndVars()
+                    tvSessionQuickStatus?.text = "$lastSummaryLine  (Tap for 📋 Log)"
                     sessionQuickStatusCard?.let { springPulse(it, 0.045f) }
                     sessionLogCard?.let { springPulse(it, 0.045f) }
                     varsCard?.let { springPulse(it, 0.045f) }
@@ -1687,204 +1919,134 @@ class MathWorkspaceFragment : Fragment() {
             }
         }
 
-        if (entry.sessionId > 0) {
-            executeWithSid(entry.sessionId)
+        if (activeSessionId > 0) {
+            executeOnSession(activeSessionId)
         } else {
             MathEngineManager.openSession { newSid ->
                 activity.runOnUiThread {
                     val validSid = if (newSid > 0) newSid else 1
-                    entry.sessionId = validSid
+                    if (validSid !in openSessionIds) openSessionIds.add(validSid)
+                    activeSessionId = validSid
                     refreshSessionChips()
-                    executeWithSid(validSid)
+                    executeOnSession(validSid)
                 }
             }
         }
     }
 
-    private fun promptNewSessionEvaluationFileDialog() {
-        val ctx = context ?: return
-        val activity = activity as? MainActivity ?: return
-        val dark = activity.isDarkMode
-        val nextNum = sessionEntries.size + 1
-        val input = EditText(ctx).apply {
-            hint = "session_${nextNum}.math"
-            setSingleLine(true)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("New Session & .math Evaluation File")
-            .setView(input)
-            .setPositiveButton("Create") { _, _ ->
-                saveActiveSessionEditorBuffer(showToast = false)
-                var name = input.text.toString().trim().ifEmpty { "session_${nextNum}.math" }
-                if (!name.endsWith(".math")) name += ".math"
-                val file = File(sessionsDir(ctx), name)
-                if (!file.exists()) {
-                    file.writeText(
-                        "# Session Evaluation Script: $name\n\n" +
-                        "a := 12.5\n" +
-                        "b := 4.0\n" +
-                        "result := a * b + sqrt(a)\n" +
-                        "result\n"
-                    )
-                }
-                MathEngineManager.openSession { sid ->
-                    activity.runOnUiThread {
-                        val assignedSid = if (sid > 0) sid else (sessionEntries.size + 1)
-                        val newEntry = SessionEntry(
-                            sessionId = assignedSid,
-                            fileName = name,
-                            logText = "=== Session #$assignedSid ($name) ===\nReady. Tap '▶ Run Script in Session' to evaluate."
-                        )
-                        sessionEntries.add(newEntry)
-                        activeSessionIndex = sessionEntries.lastIndex
-                        isSessionEditorSubTab = true
-                        refreshSessionChips()
-                        loadActiveSessionIntoViews(animate = true)
-                        updateSessionSubTabVisibility(animate = false)
-                        activity.showButtonToast("Opened Session #$assignedSid ($name)")
-                    }
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
+    // =========================================================================
+    //  Session Export & Load (Beneath the Sessions Tab)
+    // =========================================================================
 
-    private fun resetActiveSession() {
+    private fun launchExportActiveSessionToStorage() {
         val activity = activity as? MainActivity ?: return
-        val entry = currentSessionEntry() ?: return
-        val sid = entry.sessionId
-        if (sid <= 0) return
-        MathEngineManager.resetSession(sid) { ok ->
-            activity.runOnUiThread {
-                entry.varsSummary = ""
-                entry.logText = "=== Session #$sid (${entry.fileName}) ===\n(Session state & variables reset)"
-                updateActiveSessionLabels()
-                tvSessionQuickStatus?.text = "Session #$sid reset. Tap '▶ Run Script in Session' to re-evaluate."
-                varsCard?.let { springPulse(it, 0.05f) }
-                sessionLogCard?.let { springPulse(it, 0.04f) }
-                activity.showButtonToast(if (ok) "Session #$sid reset" else "Reset failed")
-            }
-        }
-    }
-
-    private fun closeActiveSession() {
-        val ctx = context ?: return
-        val activity = activity as? MainActivity ?: return
-        val entry = currentSessionEntry() ?: return
-        if (sessionEntries.size <= 1) {
-            resetActiveSession()
+        val sid = activeSessionId
+        if (sid <= 0) {
+            activity.showButtonToast("No active session to export")
             return
         }
-        val sid = entry.sessionId
-        val closingIdx = activeSessionIndex
-        MathEngineManager.closeSession(sid) { _ ->
-            activity.runOnUiThread {
-                File(sessionsDir(ctx), entry.fileName).takeIf { it.exists() }?.delete()
-                sessionEntries.removeAt(closingIdx)
-                activeSessionIndex = activeSessionIndex.coerceIn(0, sessionEntries.lastIndex)
-                refreshSessionChips()
-                loadActiveSessionIntoViews(animate = true)
-                activity.showButtonToast("Closed Session #$sid")
-            }
-        }
-    }
-
-    private fun exportActiveSessionSnapshots() {
-        val ctx = context ?: return
-        val activity = activity as? MainActivity ?: return
-        val entry = currentSessionEntry() ?: return
-        val sid = entry.sessionId
-        if (sid <= 0) return
         MathEngineManager.exportSessionSnapshots(sid) { snaps ->
             activity.runOnUiThread {
-                exportedSnapshotCache = snaps
-                val snapFile = File(sessionsDir(ctx), "session_${sid}.msp1")
-                snapFile.writeText(snaps)
-                val preview = if (snaps.isBlank()) "(Empty session — run the .math script first)" else snaps
-                AlertDialog.Builder(ctx)
-                    .setTitle("Session #$sid MSP1 Snapshot")
-                    .setMessage("Saved to ${snapFile.name} & cached for restore:\n\n$preview")
-                    .setPositiveButton("OK", null)
-                    .show()
-            }
-        }
-    }
-
-    private fun restoreSessionFromSnapshotDialog() {
-        val ctx = context ?: return
-        val activity = activity as? MainActivity ?: return
-        val dark = activity.isDarkMode
-        val input = EditText(ctx).apply {
-            setText(exportedSnapshotCache)
-            hint = "MSP1|seq:1|prev:00000000|hash:...|vars:..."
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("Restore Session from MSP1 Snapshot")
-            .setView(input)
-            .setPositiveButton("Restore") { _, _ ->
-                val raw = input.text.toString().trim()
-                if (raw.isNotEmpty()) {
-                    MathEngineManager.restoreSession(raw) { newSid, err ->
-                        activity.runOnUiThread {
-                            if (newSid > 0) {
-                                val fileName = "restored_s${newSid}.math"
-                                val restoredFile = File(sessionsDir(ctx), fileName)
-                                if (!restoredFile.exists()) {
-                                    restoredFile.writeText("# Restored Session #$newSid\n# Variables restored from MSP1 snapshot\n")
-                                }
-                                MathEngineManager.inspectSessionVariables(newSid) { summary ->
-                                    activity.runOnUiThread {
-                                        val restoredEntry = SessionEntry(
-                                            sessionId = newSid,
-                                            fileName = fileName,
-                                            logText = "=== Session #$newSid ($fileName) ===\n✅ Restored MSP1 Snapshot into Session #$newSid.",
-                                            varsSummary = summary
-                                        )
-                                        sessionEntries.add(restoredEntry)
-                                        activeSessionIndex = sessionEntries.lastIndex
-                                        isSessionEditorSubTab = false
-                                        refreshSessionChips()
-                                        loadActiveSessionIntoViews(animate = true)
-                                        updateSessionSubTabVisibility(animate = true)
-                                        activity.showButtonToast("Restored into Session #$newSid")
-                                    }
-                                }
-                            } else {
-                                activity.showButtonToast("Restore failed: ${err ?: "invalid snapshot"}")
-                            }
-                        }
-                    }
+                if (snaps.isBlank()) {
+                    activity.showButtonToast("Session #$sid is empty — evaluate a .math file first")
+                    return@runOnUiThread
+                }
+                pendingSessionExportPayload = snaps
+                try {
+                    exportSessionStateLauncher.launch("session_${sid}.msp1")
+                } catch (t: Throwable) {
+                    activity.showButtonToast("Could not open save picker: ${t.message}")
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
-    // =========================================================================
-    //  Storage Import / Export (with Module-vs-Session Classification)
-    // =========================================================================
-
-    private fun launchImportFromStorage() {
+    private fun handleExportedSessionUri(uri: Uri) {
+        val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         try {
-            if (isModulesMode) {
-                saveCurrentModuleFile(showToast = false, checkPromotion = false)
-            } else {
-                saveActiveSessionEditorBuffer(showToast = false)
+            val payload = pendingSessionExportPayload
+            ctx.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+                writer.write(payload)
+            } ?: run {
+                activity.showButtonToast("Unable to write session file")
+                return
             }
-            importScriptLauncher.launch(arrayOf("*/*"))
+            tvSessionQuickStatus?.text = "💾 Exported Session #$activeSessionId (${payload.length} chars) to storage."
+            activity.showButtonToast("Exported Session #$activeSessionId")
+        } catch (t: Throwable) {
+            activity.showButtonToast("Session export failed: ${t.message}")
+        }
+    }
+
+    private fun launchLoadSessionFromStorage() {
+        val activity = activity as? MainActivity ?: return
+        try {
+            importSessionStateLauncher.launch(arrayOf("*/*"))
         } catch (t: Throwable) {
             activity.showButtonToast("Could not open file picker: ${t.message}")
         }
     }
 
-    private fun handleImportedUri(uri: Uri) {
+    private fun handleImportedSessionUri(uri: Uri) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        try {
+            val rawSnap = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }?.trim()
+                ?: run {
+                    activity.showButtonToast("Unable to read selected session file")
+                    return
+                }
+            if (rawSnap.isEmpty()) {
+                activity.showButtonToast("Selected session file is empty")
+                return
+            }
+            MathEngineManager.restoreSession(rawSnap) { newSid, err ->
+                activity.runOnUiThread {
+                    if (newSid > 0) {
+                        if (newSid !in openSessionIds) openSessionIds.add(newSid)
+                        activeSessionId = newSid
+                        MathEngineManager.inspectSessionVariables(newSid) { summary ->
+                            activity.runOnUiThread {
+                                sessionVarsCache[newSid] = summary
+                                sessionLogs[newSid] = "=== Session #$newSid Log ===\n" +
+                                    "📂 Loaded & restored MSP1 session state from storage.\n\n" +
+                                    (if (summary.isNotBlank()) "--- Restored Variables ---\n$summary" else "(No bound variables)")
+                                refreshSessionChips()
+                                refreshActiveSessionLogAndVars()
+                                tvSessionQuickStatus?.text = "📂 Loaded Session #$newSid from storage."
+                                activity.showButtonToast("Loaded Session #$newSid")
+                            }
+                        }
+                    } else {
+                        activity.showButtonToast("Load session failed: ${err ?: "invalid .msp1 file"}")
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            activity.showButtonToast("Session load failed: ${t.message}")
+        }
+    }
+
+    // =========================================================================
+    //  Independent .math File Import / Export (Applies Strictly to .math Files!)
+    // =========================================================================
+
+    private fun launchImportMathFileFromStorage() {
+        val activity = activity as? MainActivity ?: return
+        try {
+            if (isModulesMode) {
+                saveCurrentModuleFile(showToast = false, checkPromotion = false)
+            } else {
+                saveCurrentEvalFile(showToast = false)
+            }
+            importMathFileLauncher.launch(arrayOf("*/*"))
+        } catch (t: Throwable) {
+            activity.showButtonToast("Could not open file picker: ${t.message}")
+        }
+    }
+
+    private fun handleImportedMathFileUri(uri: Uri) {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         try {
@@ -1909,7 +2071,7 @@ class MathWorkspaceFragment : Fragment() {
 
             val isTrueModule = MathEngineManager.isTrueModuleSource(content)
             if (isModulesMode && !isTrueModule && hasNonEmptyStatements(content)) {
-                // Imported in Modules tab, but it's a standard .math evaluation file -> promote to Session!
+                // Imported in Modules tab, but it is a standard .math evaluation file -> promote to Session!
                 promoteModuleFileToSession(displayName, content, autoEvaluate = false)
                 return
             }
@@ -1922,53 +2084,39 @@ class MathWorkspaceFragment : Fragment() {
                 tvModuleQuickStatus?.text = "📂 Loaded module '$displayName' (${content.length} chars)."
                 activity.showButtonToast("Loaded module $displayName")
             } else {
+                // Independent .math file import in Sessions tab — does NOT create a new session
                 File(sessionsDir(ctx), displayName).writeText(content)
-                val existingIdx = sessionEntries.indexOfFirst { it.fileName == displayName }
-                if (existingIdx >= 0) {
-                    activeSessionIndex = existingIdx
-                    refreshSessionChips()
-                    loadActiveSessionIntoViews(animate = true)
-                } else {
-                    MathEngineManager.openSession { sid ->
-                        activity.runOnUiThread {
-                            val assignedSid = if (sid > 0) sid else (sessionEntries.size + 1)
-                            sessionEntries.add(
-                                SessionEntry(
-                                    sessionId = assignedSid,
-                                    fileName = displayName,
-                                    logText = "=== Session #$assignedSid ($displayName) ===\n📂 Loaded '$displayName' from storage."
-                                )
-                            )
-                            activeSessionIndex = sessionEntries.lastIndex
-                            refreshSessionChips()
-                            loadActiveSessionIntoViews(animate = true)
-                        }
-                    }
-                }
-                activity.showButtonToast("Loaded $displayName into Session")
+                activeEvalFileName = displayName
+                isSessionEditorSubTab = true
+                refreshEvalFileChips()
+                loadEvalFileIntoEditor(displayName, animate = true)
+                updateSessionSubTabVisibility(animate = false)
+                tvSessionQuickStatus?.text = "📂 Loaded file '$displayName' (${content.length} chars)."
+                activity.showButtonToast("Loaded file $displayName")
             }
         } catch (t: Throwable) {
             activity.showButtonToast("Import failed: ${t.message}")
         }
     }
 
-    private fun launchExportToStorage() {
+    /** Exports only the single `.math` file independently (never exports the session). */
+    private fun launchExportMathFileToStorage() {
         val activity = activity as? MainActivity ?: return
         try {
             val exportName = if (isModulesMode) {
                 saveCurrentModuleFile(showToast = false, checkPromotion = false)
                 activeModuleFileName
             } else {
-                saveActiveSessionEditorBuffer(showToast = false)
-                currentSessionEntry()?.fileName ?: "session.math"
+                saveCurrentEvalFile(showToast = false)
+                activeEvalFileName
             }
-            exportScriptLauncher.launch(exportName)
+            exportMathFileLauncher.launch(exportName)
         } catch (t: Throwable) {
             activity.showButtonToast("Could not open save picker: ${t.message}")
         }
     }
 
-    private fun handleExportedUri(uri: Uri) {
+    private fun handleExportedMathFileUri(uri: Uri) {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         try {
@@ -1977,7 +2125,7 @@ class MathWorkspaceFragment : Fragment() {
             } else {
                 etSessionEditor?.text?.toString() ?: ""
             }
-            val fileName = if (isModulesMode) activeModuleFileName else (currentSessionEntry()?.fileName ?: "session.math")
+            val fileName = if (isModulesMode) activeModuleFileName else activeEvalFileName
             ctx.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
                 writer.write(code)
             } ?: run {
@@ -1985,18 +2133,18 @@ class MathWorkspaceFragment : Fragment() {
                 return
             }
             if (isModulesMode) {
-                tvModuleQuickStatus?.text = "💾 Exported '$fileName' (${code.length} chars) to storage."
+                tvModuleQuickStatus?.text = "💾 Exported module '$fileName' (${code.length} chars)."
             } else {
-                tvSessionQuickStatus?.text = "💾 Exported '$fileName' (${code.length} chars) to storage."
+                tvSessionQuickStatus?.text = "💾 Exported file '$fileName' (${code.length} chars) independently."
             }
-            activity.showButtonToast("Exported $fileName")
+            activity.showButtonToast("Exported file $fileName")
         } catch (t: Throwable) {
             activity.showButtonToast("Export failed: ${t.message}")
         }
     }
 
     // =========================================================================
-    //  Mode & Sub-Tab Visibility + Theme Synchronization (Fix 2 & Fix 3)
+    //  Mode & Sub-Tab Visibility + Theme Synchronization
     // =========================================================================
 
     private fun updateModeVisibility(animate: Boolean) {
@@ -2012,7 +2160,7 @@ class MathWorkspaceFragment : Fragment() {
         } else {
             modulesSection?.visibility = View.GONE
             sessionsSection?.visibility = View.VISIBLE
-            updateActiveSessionLabels()
+            refreshActiveSessionLogAndVars()
             if (animate) {
                 btnModeSessions?.let { springPulse(it, 0.06f) }
                 sessionsSection?.let { springSlideIn(it) }
@@ -2053,7 +2201,7 @@ class MathWorkspaceFragment : Fragment() {
         } else {
             sessionEditorPane?.visibility = View.GONE
             sessionLogPane?.visibility = View.VISIBLE
-            updateActiveSessionLabels()
+            refreshActiveSessionLogAndVars()
             if (animate) {
                 btnSessionSubLog?.let { springPulse(it, 0.06f) }
                 sessionLogPane?.let { springSlideIn(it) }
@@ -2061,11 +2209,6 @@ class MathWorkspaceFragment : Fragment() {
         }
     }
 
-    /**
-     * Applies dark/light theme colors across all views in the workspace.
-     * Uses `rootLayout == null` instead of `view == null` so calling `applyTheme`
-     * during `onCreateView()` or from `MainActivity.onCreate()` always succeeds on first load.
-     */
     fun applyTheme(dark: Boolean) {
         val root = rootLayout ?: return
         val density = resources.displayMetrics.density
@@ -2081,6 +2224,8 @@ class MathWorkspaceFragment : Fragment() {
         tvWorkspaceTitle?.setTextColor(primaryText)
         tvActiveModuleName?.setTextColor(accentText)
         tvActiveSessionFileName?.setTextColor(accentText)
+        tvSessionsGroupLabel?.setTextColor(secondaryText)
+        tvEvalFilesGroupLabel?.setTextColor(secondaryText)
 
         fun styleCard(v: View?, fill: Int) {
             v?.background = GradientDrawable().apply {
@@ -2119,22 +2264,22 @@ class MathWorkspaceFragment : Fragment() {
             btnModuleSubEditor, btnModuleSubLog,
             btnCompileModule, btnPromoteModule, btnModuleViewLog,
             btnModuleBackToEditor, btnClearModuleLog,
-            btnNewSession, btnSaveSessionFile, btnResetSession, btnCloseSession,
-            btnImportSessionFile, btnExportSessionFile,
+            btnNewSession, btnResetSession, btnCloseSession, btnLoadSession, btnExportSession,
+            btnNewEvalFile, btnSaveEvalFile, btnDeleteEvalFile, btnImportEvalFile, btnExportEvalFile,
             btnSessionSubEditor, btnSessionSubLog,
             btnRunSessionScript, btnSessionViewLog,
-            btnSessionBackToEditor, btnExportSnap, btnRestoreSnap, btnClearSessionLog
+            btnSessionBackToEditor, btnClearSessionLog
         ).forEach { it?.isDarkThemeMode = dark }
 
         refreshModuleChips()
         refreshSessionChips()
+        refreshEvalFileChips()
     }
 
     // =========================================================================
     //  Damped-Spring Physics Helpers
     // =========================================================================
 
-    /** Same damped-spring pulse (e^-7.5t * sin(22t)) used across the calculator. */
     private fun springPulse(target: View, bump: Float) {
         springAnimators.removeAll { (v, a) -> if (v === target) { a.cancel(); true } else false }
         if (target.width > 0) {
@@ -2163,7 +2308,6 @@ class MathWorkspaceFragment : Fragment() {
         springAnimators.add(target to anim)
     }
 
-    /** Underdamped spring slide-in for panels and file switches. */
     private fun springSlideIn(target: View) {
         springAnimators.removeAll { (v, a) -> if (v === target) { a.cancel(); true } else false }
         val dist = 36f * resources.displayMetrics.density
@@ -2194,7 +2338,6 @@ class MathWorkspaceFragment : Fragment() {
         springAnimators.add(target to anim)
     }
 
-    /** Ripple wavefront wobble when theme or page changes. */
     fun wobbleRound(cx: Float, cy: Float, maxRadius: Float, revealDurationMs: Long) {
         wobbleAnimators.forEach { it.cancel() }
         wobbleAnimators.clear()
@@ -2252,7 +2395,7 @@ class MathWorkspaceFragment : Fragment() {
 
     override fun onDestroyView() {
         saveCurrentModuleFile(showToast = false, checkPromotion = false)
-        saveActiveSessionEditorBuffer(showToast = false)
+        saveCurrentEvalFile(showToast = false)
         wobbleAnimators.forEach { it.cancel() }
         wobbleAnimators.clear()
         springAnimators.forEach { it.second.cancel() }

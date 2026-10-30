@@ -80,7 +80,7 @@
                     android:contentDescription="Dark theme" />
             </LinearLayout>
 
-            <!-- MR Toggle Checkbox -->
+            <!-- MR Toggle Checkbox + About Info Icon (just right of MR) -->
             <LinearLayout
                 android:id="@+id/mrToggleRow"
                 android:layout_width="wrap_content"
@@ -108,6 +108,24 @@
                     android:textColor="#CCCCCC"
                     android:textSize="14sp"
                     android:textStyle="bold" />
+
+                <FrameLayout
+                    android:id="@+id/btnAboutInfo"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="10dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="About Ecalc">
+
+                    <ImageView
+                        android:id="@+id/ivAboutInfo"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_about_info"
+                        android:contentDescription="About Ecalc" />
+                </FrameLayout>
             </LinearLayout>
 
             <!-- Angle Mode indicator (deg / rad) -->
