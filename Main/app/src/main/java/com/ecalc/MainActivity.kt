@@ -1098,7 +1098,7 @@ class MainActivity : AppCompatActivity() {
             • Architecture: Self-contained C11 symbolic & numerical runtime with 8B NaN-boxed Values, O(1) stdlib.mathc binary boot ("MTHC" v1), topological <[dep] extension linker, and up to 8 isolated MSP1 sessions.
             • Expressions & Sessions: Implicit multiplication (2x, 2π), dynamic bindings (x := 10, f(t) := ...), ranges (1...10, 1..<10, by), list comprehensions ([x^2 for x in 1...8]), lambdas ((x) => x^2), pipes (x |> f), matrices ([1, 2; 3, 4]), and SI unit conversions (25 km in m).
             • Symbolic & Numerical Calculus: sym_diff, sym_integ, sym_solve, sym_simplify, sym_taylor, diff, integrate, lim, sigma, prod, solve, fmin, fmax, ode_rk4.
-            • Writing [module] Extensions: Declare [module_name], dependencies <[arith], constants (c = 1.0;), typed functions (fn(x: real) = expr;), custom operators, and $type structs.
+            • Writing [module] Extensions: Declare [module_name], dependencies <[arith], constants (c = 1.0;), typed functions (fn(x: real) = expr;), custom operators, and ${'$'}type structs.
             • Standard Library (18 Modules): [boot_syntax], [boot_types], [boot_control], [arith], [trig], [user_trig], [complex_ext], [vec], [mat], [algebra], [calculus], [units], [conversions], [physics], [chemistry], [biology], [geom_ext], [string].
         """.trimIndent()
         val engineDocsText = readAssetTextOrFallback("docs/CMATH_ENGINE_DOCS.md", docsFallback)
