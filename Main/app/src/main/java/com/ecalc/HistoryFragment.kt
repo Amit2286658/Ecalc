@@ -163,7 +163,7 @@ class HistoryFragment : Fragment() {
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
-                        item.translationX = -exitDist
+                        item.translationX = -exitDist.toFloat()
                         item.alpha = 0f
                         remaining--
                         if (remaining == 0) {
