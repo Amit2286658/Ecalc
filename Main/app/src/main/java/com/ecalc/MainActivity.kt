@@ -1049,7 +1049,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         quickLinksRow.addView(makeQuickLinkBtn("✉ Email", "mailto:amitkumar13234353@gmail.com?subject=Ecalc%20Query%20/%20Feedback"))
-        quickLinksRow.addView(makeQuickLinkBtn("🌐 Ecalc Repo", "https://github.com/Ecalc"))
+        quickLinksRow.addView(makeQuickLinkBtn("🌐 Ecalc Repo", "https://github.com/Amit2286658/Ecalc"))
         quickLinksRow.addView(makeQuickLinkBtn("⚙ MEP Engine", "https://github.com/Amit2286658/Math-Engine-MEP").apply {
             (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
         })
