@@ -1003,10 +1003,10 @@ class MainActivity : AppCompatActivity() {
         addInfoBullet(authorBox, "Email", "amitkumar13234353@gmail.com") {
             openExternalUri("mailto:amitkumar13234353@gmail.com?subject=Ecalc%20Query%20/%20Feedback")
         }
-        addInfoBullet(authorBox, "Project GitHub", "GitHub.com/Ecalc") {
-            openExternalUri("https://github.com/Ecalc")
+        addInfoBullet(authorBox, "Project GitHub", "GitHub.com/Amit2286658/Ecalc") {
+            openExternalUri("https://github.com/Amit2286658/Ecalc")
         }
-        addInfoBullet(authorBox, "Cmath engine", "GitHub.com/Math-Engine-MEP") {
+        addInfoBullet(authorBox, "Cmath engine", "GitHub.com/Amit2286658/Math-Engine-MEP") {
             openExternalUri("https://github.com/Amit2286658/Math-Engine-MEP")
         }
         addInfoBullet(authorBox, "Engine Docs Guide", "GitHub.com/Math-Engine-MEP (Bundled in-project below)") {
