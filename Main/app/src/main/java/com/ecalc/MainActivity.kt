@@ -146,6 +146,7 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 when {
                     aboutOverlay != null -> dismissAboutInfoWindow()
+                    currentWorkspacePage == 1 && workspaceFragment?.handleBackPressed() == true -> Unit
                     currentWorkspacePage == 1 -> switchWorkspacePage(0)
                     else -> playExitSplashCollapse()
                 }
@@ -302,6 +303,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (aboutOverlay != null) {
+            return super.dispatchTouchEvent(ev)
+        }
+        if (currentWorkspacePage == 1 && workspaceFragment?.isFileManagerDrawerOpen == true) {
             return super.dispatchTouchEvent(ev)
         }
         val density = resources.displayMetrics.density

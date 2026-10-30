@@ -12,6 +12,8 @@ import java.util.concurrent.Executors
  * - Stateless single-shot evaluation (`eng_eval`) for the calculator keypad
  * - Stateful multi-session evaluation (`eng_session_open`, `eng_session_eval`,
  *   `eng_session_reset`, `eng_session_close`, MSP1 snapshot export/restore)
+ *   with 1-based UI session IDs (`1 .. ENG_MAX_SESSIONS`) mapped cleanly to
+ *   the C11 engine's 0-based session slots (`0 .. ENG_MAX_SESSIONS - 1`).
  * - Native `.math` extension compilation & `.mathc` runtime linking
  *   (`user_compile_ext` + `user_load_mathc`)
  */
@@ -408,7 +410,10 @@ object MathEngineManager {
 
     // =========================================================================
     //  Stateful Sessions & .math Extension Compiler API
+    //  Note: UI sessionId is 1-based (1..8), mapped to native 0-based (0..7).
     // =========================================================================
+
+    private fun toNativeSid(sessionId: Int): Int = sessionId - 1
 
     fun compileAndLoadExtension(
         mathSource: String,
@@ -430,21 +435,22 @@ object MathEngineManager {
                 onDone(-1)
                 return@execute
             }
-            val sid = try {
+            val rawSid = try {
                 MathEngineBridge.nativeSessionOpen(engineHandle)
             } catch (_: Throwable) { -1 }
-            onDone(sid)
+            val uiSid = if (rawSid >= 0) rawSid + 1 else -1
+            onDone(uiSid)
         }
     }
 
     fun resetSession(sessionId: Int, onDone: (ok: Boolean) -> Unit) {
         worker.execute {
-            if (!ensureEngine()) {
+            if (!ensureEngine() || sessionId <= 0) {
                 onDone(false)
                 return@execute
             }
             val ok = try {
-                MathEngineBridge.nativeSessionReset(engineHandle, sessionId)
+                MathEngineBridge.nativeSessionReset(engineHandle, toNativeSid(sessionId))
             } catch (_: Throwable) { false }
             onDone(ok)
         }
@@ -452,12 +458,12 @@ object MathEngineManager {
 
     fun closeSession(sessionId: Int, onDone: (ok: Boolean) -> Unit) {
         worker.execute {
-            if (!ensureEngine()) {
+            if (!ensureEngine() || sessionId <= 0) {
                 onDone(false)
                 return@execute
             }
             val ok = try {
-                MathEngineBridge.nativeSessionClose(engineHandle, sessionId)
+                MathEngineBridge.nativeSessionClose(engineHandle, toNativeSid(sessionId))
             } catch (_: Throwable) { false }
             onDone(ok)
         }
@@ -465,12 +471,12 @@ object MathEngineManager {
 
     fun exportSessionSnapshots(sessionId: Int, onDone: (snapshots: String) -> Unit) {
         worker.execute {
-            if (!ensureEngine()) {
+            if (!ensureEngine() || sessionId <= 0) {
                 onDone("")
                 return@execute
             }
             val snaps = try {
-                MathEngineBridge.nativeSessionExportSnapshots(engineHandle, sessionId) ?: ""
+                MathEngineBridge.nativeSessionExportSnapshots(engineHandle, toNativeSid(sessionId)) ?: ""
             } catch (_: Throwable) { "" }
             onDone(snaps)
         }
@@ -482,22 +488,25 @@ object MathEngineManager {
                 onDone(-1, "Engine init failed")
                 return@execute
             }
-            val sid = try {
+            val rawSid = try {
                 MathEngineBridge.nativeSessionRestore(engineHandle, snapshots)
             } catch (_: Throwable) { -1 }
-            val err = if (sid <= 0) {
+            val uiSid = if (rawSid >= 0) rawSid + 1 else -1
+            val err = if (uiSid <= 0) {
                 try { MathEngineBridge.nativeLastError(engineHandle) } catch (_: Throwable) { null }
             } else null
-            onDone(sid, err)
+            onDone(uiSid, err)
         }
     }
 
     /** Parse the latest MSP1 snapshot for `sessionId` to display bound variables. */
     private fun parseSessionVariablesSync(sessionId: Int): String {
+        if (sessionId <= 0) return ""
         return try {
-            val count = MathEngineBridge.nativeSessionSnapshotCount(engineHandle, sessionId)
+            val nativeSid = toNativeSid(sessionId)
+            val count = MathEngineBridge.nativeSessionSnapshotCount(engineHandle, nativeSid)
             if (count <= 0) return ""
-            val latest = MathEngineBridge.nativeSessionSnapshotAt(engineHandle, sessionId, count - 1) ?: return ""
+            val latest = MathEngineBridge.nativeSessionSnapshotAt(engineHandle, nativeSid, count - 1) ?: return ""
             // Format: MSP1|seq:...|prev:...|hash:...|vars:N|name:type:unit:ltype:lunit=val;...|res:type:unit=val
             val varsMarker = "|vars:"
             val resMarker = "|res:"
@@ -527,7 +536,7 @@ object MathEngineManager {
 
     fun inspectSessionVariables(sessionId: Int, onDone: (summary: String) -> Unit) {
         worker.execute {
-            if (!ensureEngine()) {
+            if (!ensureEngine() || sessionId <= 0) {
                 onDone("")
                 return@execute
             }
@@ -550,8 +559,9 @@ object MathEngineManager {
                 onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"), "")
                 return@execute
             }
+            val nativeSid = toNativeSid(sessionId)
             val wire = try {
-                MathEngineBridge.nativeSessionEval(engineHandle, sessionId, expr.trim())
+                MathEngineBridge.nativeSessionEval(engineHandle, nativeSid, expr.trim())
             } catch (_: Throwable) { null }
             val outcome = if (wire == null) {
                 EvalOutcome(false, "0.0", "", "none", "Session call failed")
@@ -565,7 +575,7 @@ object MathEngineManager {
         }
     }
 
-    /** Executes a multi-line `.math` evaluation script inside `sessionId`. */
+    /** Executes a multi-line `.math` evaluation script strictly inside isolated `sessionId`. */
     fun runProgramScript(
         sessionId: Int,
         scriptSource: String,
@@ -580,64 +590,54 @@ object MathEngineManager {
                 onDone(emptyList(), "")
                 return@execute
             }
+            val nativeSid = toNativeSid(sessionId)
             val results = mutableListOf<Pair<String, EvalOutcome>>()
             val trimmed = scriptSource.trim()
 
-            // Check if this file is a [module] extension definition
-            if (isTrueModuleSource(trimmed) && Regex("(?m)^\\s*\\[[a-zA-Z0-9_]+\\]").containsMatchIn(trimmed)) {
-                val (ok, msg) = compileAndLoadSync(trimmed)
-                results.add(
-                    "[Module Extension]" to if (ok) {
-                        EvalOutcome(true, msg, "mathc", "none", null)
-                    } else {
-                        EvalOutcome(false, "0.0", "error", "none", msg)
-                    }
-                )
-            } else {
-                // Split into statements by newline (ignoring # comments and blank lines)
-                val statements = mutableListOf<String>()
-                var currentStmt = StringBuilder()
-                var braceDepth = 0
-                var parenDepth = 0
-                var brackDepth = 0
+            // Split into statements by newline (ignoring # comments and blank lines)
+            // and evaluate strictly inside this isolated sessionId.
+            val statements = mutableListOf<String>()
+            var currentStmt = StringBuilder()
+            var braceDepth = 0
+            var parenDepth = 0
+            var brackDepth = 0
 
-                for (rawLine in trimmed.lines()) {
-                    val line = rawLine.substringBefore("#").trim()
-                    if (line.isEmpty()) continue
-                    if (currentStmt.isNotEmpty()) currentStmt.append(" ")
-                    currentStmt.append(line)
-                    for (ch in line) {
-                        when (ch) {
-                            '{' -> braceDepth++
-                            '}' -> if (braceDepth > 0) braceDepth--
-                            '(' -> parenDepth++
-                            ')' -> if (parenDepth > 0) parenDepth--
-                            '[' -> brackDepth++
-                            ']' -> if (brackDepth > 0) brackDepth--
-                        }
-                    }
-                    if (braceDepth == 0 && parenDepth == 0 && brackDepth == 0) {
-                        statements.add(currentStmt.toString().trim())
-                        currentStmt = StringBuilder()
+            for (rawLine in trimmed.lines()) {
+                val line = rawLine.substringBefore("#").trim()
+                if (line.isEmpty()) continue
+                if (currentStmt.isNotEmpty()) currentStmt.append(" ")
+                currentStmt.append(line)
+                for (ch in line) {
+                    when (ch) {
+                        '{' -> braceDepth++
+                        '}' -> if (braceDepth > 0) braceDepth--
+                        '(' -> parenDepth++
+                        ')' -> if (parenDepth > 0) parenDepth--
+                        '[' -> brackDepth++
+                        ']' -> if (brackDepth > 0) brackDepth--
                     }
                 }
-                if (currentStmt.isNotEmpty()) {
+                if (braceDepth == 0 && parenDepth == 0 && brackDepth == 0) {
                     statements.add(currentStmt.toString().trim())
+                    currentStmt = StringBuilder()
                 }
+            }
+            if (currentStmt.isNotEmpty()) {
+                statements.add(currentStmt.toString().trim())
+            }
 
-                for (stmt in statements) {
-                    val wire = try {
-                        MathEngineBridge.nativeSessionEval(engineHandle, sessionId, stmt)
-                    } catch (_: Throwable) { null }
-                    val outcome = if (wire == null) {
-                        EvalOutcome(false, "0.0", "", "none", "Session eval failed")
-                    } else {
-                        val res = MathEngineBridge.EvalResult.parseWire(wire)
-                        if (res.ok) EvalOutcome(true, res.value, res.type, res.unit, null)
-                        else EvalOutcome(false, "0.0", "", "none", res.error)
-                    }
-                    results.add(stmt to outcome)
+            for (stmt in statements) {
+                val wire = try {
+                    MathEngineBridge.nativeSessionEval(engineHandle, nativeSid, stmt)
+                } catch (_: Throwable) { null }
+                val outcome = if (wire == null) {
+                    EvalOutcome(false, "0.0", "", "none", "Session eval failed")
+                } else {
+                    val res = MathEngineBridge.EvalResult.parseWire(wire)
+                    if (res.ok) EvalOutcome(true, res.value, res.type, res.unit, null)
+                    else EvalOutcome(false, "0.0", "", "none", res.error)
                 }
+                results.add(stmt to outcome)
             }
 
             val vars = parseSessionVariablesSync(sessionId)
