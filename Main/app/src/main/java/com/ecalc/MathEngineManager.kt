@@ -541,6 +541,10 @@ object MathEngineManager {
         isDegreeMode: Boolean = false,
         onDone: (outcome: EvalOutcome, varsSummary: String) -> Unit
     ) {
+        if (sessionId <= 0) {
+            onDone(EvalOutcome(false, "0.0", "", "none", "Session not ready (no session open yet)"), "")
+            return
+        }
         worker.execute {
             if (!ensureEngine()) {
                 onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"), "")
@@ -567,6 +571,10 @@ object MathEngineManager {
         scriptSource: String,
         onDone: (results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
     ) {
+        if (sessionId <= 0) {
+            onDone(emptyList(), "")
+            return
+        }
         worker.execute {
             if (!ensureEngine()) {
                 onDone(emptyList(), "")

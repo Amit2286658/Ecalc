@@ -1038,7 +1038,7 @@ class MathWorkspaceFragment : Fragment() {
                 )
 
                 tvActiveSessionFileName = TextView(ctx).apply {
-                    text = "Active: Session #1  •  File: $activeEvalFileName"
+                    text = "Active: Session opening…  •  File: $activeEvalFileName"
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                     setTextColor(accentText)
                     setPadding(dp(4f), 0, dp(4f), dp(3f))
@@ -1405,7 +1405,11 @@ class MathWorkspaceFragment : Fragment() {
         activeEvalFileName = safeName
         MathEngineManager.openSession { newSid ->
             activity.runOnUiThread {
-                val sid = if (newSid > 0) newSid else (openSessionIds.lastOrNull() ?: 1)
+                if (newSid <= 0) {
+                    activity.showButtonToast("Engine booting… retry promotion in a moment")
+                    return@runOnUiThread
+                }
+                val sid = newSid
                 if (sid !in openSessionIds) openSessionIds.add(sid)
                 activeSessionId = sid
                 sessionLogs[sid] = "=== Session #$sid ===\n" +
@@ -1610,23 +1614,62 @@ class MathWorkspaceFragment : Fragment() {
     // =========================================================================
 
     private fun ensureDefaultSession() {
-        if (openSessionIds.isNotEmpty() && activeSessionId in openSessionIds) {
+        if (openSessionIds.isNotEmpty() && activeSessionId in openSessionIds && activeSessionId > 0) {
             refreshSessionChips()
             refreshActiveSessionLogAndVars()
             return
         }
         MathEngineManager.openSession { sid ->
             activity?.runOnUiThread {
-                val validSid = if (sid > 0) sid else 1
-                if (validSid !in openSessionIds) openSessionIds.add(validSid)
-                activeSessionId = validSid
-                sessionLogs.getOrPut(validSid) {
-                    "=== Session #$validSid Log ===\nReady. Select any .math evaluation file and tap '▶ Run in Session'."
+                if (sid > 0) {
+                    if (sid !in openSessionIds) openSessionIds.add(sid)
+                    activeSessionId = sid
+                    sessionLogs.getOrPut(sid) {
+                        "=== Session #$sid Log ===\nReady. Select any .math evaluation file and tap '▶ Run in Session'."
+                    }
+                    refreshSessionChips()
+                    refreshActiveSessionLogAndVars()
+                } else {
+                    // Engine not ready yet or open failed — do NOT fake a session id.
+                    // sessionChips will show the opening state; Run paths retry via
+                    // routeOntoActiveSession().
+                    activity?.showButtonToast("Engine booting… try again in a moment")
+                    refreshActiveSessionLogAndVars()
                 }
-                refreshSessionChips()
-                refreshActiveSessionLogAndVars()
             }
         }
+    }
+
+    /** Runs [a] on the active session; if none is (really) open yet, opens one first.
+     *  Never fabricates a session id: on failure it retries once, then reports. */
+    private fun routeOntoActiveSession(action: (sid: Int) -> Unit) {
+        if (activeSessionId > 0 && activeSessionId in openSessionIds) {
+            action(activeSessionId)
+            return
+        }
+        val activity = activity as? MainActivity ?: return
+        var retriedOnce = false
+        fun attempt() {
+            MathEngineManager.openSession { sid ->
+                activity.runOnUiThread {
+                    if (sid > 0) {
+                        if (sid !in openSessionIds) openSessionIds.add(sid)
+                        activeSessionId = sid
+                        sessionLogs.getOrPut(sid) { "=== Session #$sid Log ===\n" }
+                        refreshSessionChips()
+                        refreshActiveSessionLogAndVars()
+                        action(sid)
+                    } else if (!retriedOnce) {
+                        retriedOnce = true
+                        tvActiveSessionFileName?.postDelayed({ attempt() }, 400)
+                        tvActiveSessionFileName?.text = "Active: Session opening… • File: $activeEvalFileName"
+                    } else {
+                        activity.showButtonToast("Engine not ready — try again")
+                    }
+                }
+            }
+        }
+        attempt()
     }
 
     /** Creates a new active Session without creating or altering any `.math` file. */
@@ -1723,7 +1766,12 @@ class MathWorkspaceFragment : Fragment() {
 
     private fun refreshActiveSessionLogAndVars() {
         val sid = activeSessionId
-        val shownSid = if (sid > 0) sid else 1
+        if (sid <= 0) {
+            tvActiveSessionFileName?.text = "Active: Session opening…  •  File: $activeEvalFileName"
+            tvSessionLogOutput?.text = "Session is opening… tap again in a moment."
+            return
+        }
+        val shownSid = sid
         tvActiveSessionFileName?.text = "Active: Session #$shownSid  •  File: $activeEvalFileName"
         btnRunSessionScript?.text = "▶ Run in Session #$shownSid"
         tvVarsHeader?.text = "Session #$shownSid Variables (MSP1 State)"
@@ -1919,17 +1967,11 @@ class MathWorkspaceFragment : Fragment() {
             }
         }
 
-        if (activeSessionId > 0) {
+        if (activeSessionId > 0 && activeSessionId in openSessionIds) {
             executeOnSession(activeSessionId)
         } else {
-            MathEngineManager.openSession { newSid ->
-                activity.runOnUiThread {
-                    val validSid = if (newSid > 0) newSid else 1
-                    if (validSid !in openSessionIds) openSessionIds.add(validSid)
-                    activeSessionId = validSid
-                    refreshSessionChips()
-                    executeOnSession(validSid)
-                }
+            routeOntoActiveSession { sid ->
+                activity.runOnUiThread { executeOnSession(sid) }
             }
         }
     }
