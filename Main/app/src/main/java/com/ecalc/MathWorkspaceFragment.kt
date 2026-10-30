@@ -1631,9 +1631,9 @@ class MathWorkspaceFragment : Fragment() {
                     refreshActiveSessionLogAndVars()
                 } else {
                     // Engine not ready yet or open failed — do NOT fake a session id.
-                    // sessionChips will show the opening state; Run paths retry via
+                    // Session chips will show the opening state; Run paths retry via
                     // routeOntoActiveSession().
-                    activity?.showButtonToast("Engine booting… try again in a moment")
+                    (activity as? MainActivity)?.showButtonToast("Engine booting… try again in a moment")
                     refreshActiveSessionLogAndVars()
                 }
             }
