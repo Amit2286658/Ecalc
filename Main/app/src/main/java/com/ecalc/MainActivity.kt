@@ -184,7 +184,7 @@ class MainActivity : AppCompatActivity() {
 
     fun showButtonToast(label: String) {
         currentToast?.cancel()
-        currentToast = Toast.makeText(this, "Button: $label", Toast.LENGTH_SHORT).also { it.show() }
+        currentToast = Toast.makeText(this, label, Toast.LENGTH_SHORT).also { it.show() }
     }
 
     private fun setupWorkspaceFragment() {
@@ -276,10 +276,8 @@ class MainActivity : AppCompatActivity() {
             val maxR = hypot(width.toDouble(), binding.rootFrame.height.toDouble()).toFloat()
             if (clamped == 1) {
                 workspaceFragment?.wobbleRound(cx, cy, maxR, 380L)
-                showButtonToast(".math Modules & Sessions")
             } else {
                 wobbleRound(cx, cy, maxR, 380L)
-                showButtonToast("Calculator")
             }
         }
     }
@@ -605,9 +603,42 @@ class MainActivity : AppCompatActivity() {
         supportFragmentManager.findFragmentByTag("f$position")
 
     fun clearHistory() {
-        showButtonToast("Clear History")
-        calculationHistory.clear()
-        refreshHistoryUI()
+        val frag = fragmentAt(0) as? HistoryFragment
+        if (frag == null) {
+            calculationHistory.clear()
+            refreshHistoryUI()
+            return
+        }
+        // Cascade: entries slide out one by one first, THEN the data resets and
+        // the empty-state placeholder fades back in with the spring pulse.
+        frag.animateClearThenReset {
+            calculationHistory.clear()
+            refreshHistoryUI(fadeInPlaceholder = true)
+        }
+    }
+
+    /**
+     * Tapping a history entry places its result back onto the calculation.
+     * Entries are stored as "expr = result[unit]"; the stored result (unit
+     * stripped) is typed onto the current operand — replacing "0.0" when fresh,
+     * appending when the user is mid-number, just like manual keying would.
+     */
+    fun onHistoryItemClicked(item: String) {
+        val trimmed = item.trim()
+        if (trimmed.isEmpty()) return
+        val value = if (trimmed.contains(" = ")) {
+            trimmed.substringAfterLast(" = ").substringBefore("[").trim()
+        } else trimmed
+        if (value.isEmpty()) return
+
+        currentPrimaryInput =
+            if (currentPrimaryInput == "0.0" || currentPrimaryInput.isBlank()) value
+            else currentPrimaryInput + value
+
+        binding.tvPrimaryDisplay.text =
+            if (currentPrimaryInput == "0.0") exprStatement.trimEnd().ifBlank { "0.0" }
+            else (exprStatement + currentPrimaryInput).ifBlank { "0.0" }
+        displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
     }
 
     private fun setupInteractions() {
@@ -624,23 +655,28 @@ class MainActivity : AppCompatActivity() {
             }
             setOnLongClickListener { true }
             holdListener = { held ->
-                if (held) showButtonPopup(this, "Clear — zero the memory counter")
+                if (held) showButtonPopup(this, "Clear memory — zeroes the single memory slot (M) behind the MR " +
+                    "cluster. The recalled value shown under the display resets to 0.0; the number currently on the " +
+                    "keypad is untouched.")
                 else dismissButtonPopup()
             }
         }
 
-        bindHoldPopup(binding.themeTogglePill, "Theme — toggle between light and dark")
-        bindHoldPopup(binding.tvAngleMode, "Angle mode — switch between degrees and radians")
-        bindHoldPopup(binding.btnAboutInfo, "About — view Ecalc & Math Engine info")
+        bindHoldPopup(binding.themeTogglePill, "Theme toggle — switches the whole app between the dark palette " +
+            "(graphite surfaces, teal accents) and the light palette (porcelain surfaces, coral accents) with a " +
+            "circular reveal from the toggle. Yours is remembered across restarts.")
+        bindHoldPopup(binding.tvAngleMode, "Angle mode — taps switch how trigonometric functions interpret angles: " +
+            "Degrees (sin 90° = 1) or Radians (sin π/2 = 1). The choice is saved persistently; the label below the " +
+            "display always shows the active mode.")
+        bindHoldPopup(binding.btnAboutInfo, "About — opens a blurred-glass modal with Ecalc/version info, the bundled " +
+            "Math-Engine (.math runtime) details, and how the engine boots with its precompiled standard library.")
 
         binding.themeTogglePill.setOnClickListener {
             toggleThemeWithCircularReveal()
-            showButtonToast(if (isDarkMode) "Dark Theme" else "Light Theme")
         }
 
         binding.cbMrToggle.setOnCheckedChangeListener { _, isChecked ->
             animateMrClusterPhysics(isChecked)
-            showButtonToast(if (isChecked) "MR Enabled" else "MR Disabled")
         }
 
         binding.btnAboutInfo.setOnClickListener {
@@ -653,7 +689,6 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean("degree_mode", isDegreeMode).apply()
             binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)"
             displaySpringPulse(binding.tvAngleMode, 0.05f)
-            showButtonToast("Mode: ${binding.tvAngleMode.text}")
         }
 
         // Tap the memory value to recall it into the current operand
@@ -665,7 +700,6 @@ class MainActivity : AppCompatActivity() {
                 else (exprStatement + currentPrimaryInput).ifBlank { "0.0" }
             displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
             displaySpringPulse(binding.tvMrValue, 0.05f)
-            showButtonToast("MR Recall: $recalled")
         }
 
         val tabViews = listOf(
@@ -682,9 +716,8 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     binding.viewPager.setCurrentItem(idx, true)
                 }
-                showButtonToast("Tab: ${tabNames[idx]}")
             }
-            bindHoldPopup(tab, "${tabNames[idx]} — open this tab")
+            bindHoldPopup(tab, tabDescriptionFor(tabNames[idx]))
         }
     }
 
@@ -1262,8 +1295,8 @@ class MainActivity : AppCompatActivity() {
         return s
     }
 
-    fun refreshHistoryUI() {
-        (fragmentAt(0) as? HistoryFragment)?.refresh(calculationHistory, isDarkMode)
+    fun refreshHistoryUI(fadeInPlaceholder: Boolean = false) {
+        (fragmentAt(0) as? HistoryFragment)?.refresh(calculationHistory, isDarkMode, fadeInPlaceholder)
     }
 
     private fun applyThemeColors(dark: Boolean) {
@@ -1766,61 +1799,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun tabDescriptionFor(name: String): String = when (name) {
+        "History" -> "History — your last 15 calculations, newest first. Tap an entry to place its result onto the " +
+            "current keypad input; hold 'Clear History' to wipe the whole list with a slide-out animation."
+        "Basic keypad" -> "Basic keypad — the everyday grid: digits, decimal point, AC / ⌫, M+ / M− and the four " +
+            "core operations (×  ÷  +  −). Hold any key for a usage hint."
+        "Extended keypad" -> "Extended keypad — parentheses, %, powers, √, ⁿ√ (nth root), factorial (!), and " +
+            "scientific-notation EE. Hold a key for examples of how it enters the expression."
+        "Trig" -> "Trig keypad — sin / cos / tan with their inverses and reciprocals, the hyperbolic family, and the " +
+            "constants π and e. Angles follow the deg/rad mode shown under the display."
+        "Fx" -> "Fx keypad — general functions: abs, log / log₂, powers (x², x³, xʸ, 10ˣ, eˣ), roots (cbrt), " +
+            "combinatorics (nPr, nCr), gcd / lcm, round / ceil / floor, rand, the derivative d/dx, and Ans recall."
+        else -> "$name — open this tab"
+    }
+
     fun keyDescriptionFor(label: String): String = when (label) {
-        "AC" -> "AC — clear everything and reset the display"
-        "⌫" -> "⌫ — delete the last character"
-        "M+" -> "M+ — add the displayed value to memory"
-        "M-" -> "M− — subtract the displayed value from memory"
-        "=" -> "= — evaluate the expression"
-        "Ans" -> "Ans — reuse the last answer"
+        "AC" -> "AC — All Clear: wipes the whole pending expression, the current operand and resets the display to 0.0. Memory (M) is NOT touched."
+        "⌫" -> "⌫ — Backspace: deletes the last typed character of the current operand; if the operand is empty it trims the trailing token of the expression."
+        "M+" -> "M+ — adds the value currently on the display to the memory slot. The MR value under the display updates immediately."
+        "M-" -> "M− — subtracts the value currently on the display from the memory slot. Useful for running totals without a paper trail."
+        "=" -> "= — evaluates the full expression with the native Math-Engine and records 'expr = result' into History (tap a History entry to reuse a result)."
+        "Ans" -> "Ans — inserts the last computed answer into the expression: tap initially to start with it, tap again to append. chains like Ans+1, Ans×2 work."
         "x" -> "× — multiplication"
-        "÷" -> "÷ — division"
+        "÷" -> "÷ — division (0 ÷ anything stays 0; nonzero ÷ 0 reports a division error)"
         "+" -> "+ — addition"
-        "-" -> "− — subtraction"
+        "-" -> "− — subtraction; also works as a negative sign when it is the first token, e.g. −5 + 3"
         "%" -> "% — percentage: 200 + 10% = 220 · 200 × 10% = 20 · 10% = 0.1"
-        "^" -> "^ — power"
-        "EE" -> "EE — scientific-notation exponent"
-        "π" -> "π — pi (3.14159…)"
-        "e" -> "e — Euler's number (2.71828…)"
-        "√" -> "√ — square root"
-        "ⁿ√" -> "ⁿ√ — nth root: enter n then ⁿ√(x), or ⁿ√(x, n)"
-        "!" -> "! — factorial"
-        "1/x" -> "1/x — reciprocal"
-        "x²" -> "x² — square"
-        "x³" -> "x³ — cube"
-        "xʸ" -> "xʸ — exponentiate"
-        "10ˣ" -> "10ˣ — power of ten"
-        "eˣ" -> "eˣ — exponential (natural)"
-        "ln" -> "ln — natural logarithm"
-        "log" -> "log — logarithm, base 10"
-        "log₂" -> "log₂ — logarithm, base 2"
-        "round" -> "round — round to nearest integer"
-        "gcd" -> "gcd — greatest common divisor"
-        "lcm" -> "lcm — least common multiple"
-        "cbrt" -> "cbrt — cube root"
-        "nPr" -> "nPr — permutations"
-        "nCr" -> "nCr — combinations"
-        "ceil" -> "ceil — round up to integer"
-        "floor" -> "floor — round down to integer"
-        "rand" -> "rand — random number in [0, 1)"
-        "d/dx" -> "d/dx — derivative"
-        "(" -> "( — opening parenthesis"
+        "^" -> "^ — power operator: enter the base, tap ^, then the exponent — 2 ^ 10 = 1024. Non-integer exponents use the engine's fp math."
+        "EE" -> "EE — scientific-notation exponent: 3 EE 8 enters 3×10⁸. Use ± keys to sign the exponent."
+        "π" -> "π — pi (3.14159…): taps insert the constant directly; π/2, 2π r, sin(π) are all valid expressions."
+        "e" -> "e — Euler's number (2.71828…): e^x via xʸ, or use the dedicated eˣ key on the fx grid."
+        "√" -> "√ — square root: √(x). Entering a number first auto-multiplies (√(9…) becomes √(9×…) — use parentheses for multi-term radicands."
+        "ⁿ√" -> "ⁿ√ — nth root: ⁿ√(x, n) or type n then tap ⁿ√ — e.g. ⁿ√(27, 3) = 3 (cube root). n may be fractional for exotic roots."
+        "!" -> "! — factorial: appends ! to the value on the display — 5! = 120. Non-integers fall back to the engine's gamma-based factorial."
+        "1/x" -> "1/x — reciprocal: turns the current operand into its multiplicative inverse; 0 is rejected with a division error."
+        "x²" -> "x² — squares the current operand: 1.5 x² = 2.25. Applied after a ')' it squares the parenthesised term."
+        "x³" -> "x³ — cubes the current operand: 4 x³ = 64."
+        "xʸ" -> "xʸ — exponentiate: type the base, tap xʸ, then type the exponent and press = — 2 xʸ 0.5 = √2."
+        "10ˣ" -> "10ˣ — power of ten: inserts 10^( so you complete the exponent — 10^(3) = 1000. Handy with EE-style magnitudes."
+        "eˣ" -> "eˣ — natural exponential: inserts e^( — e^(1) ≈ 2.71828. Pairs with ln for shift/undo style math."
+        "ln" -> "ln — natural logarithm, base e — ln(e) = 1, ln(e²) = 2. Input ≤ 0 reports a domain error."
+        "log" -> "log — logarithm, base 10 — log(1000) = 3. Input ≤ 0 reports a domain error."
+        "log₂" -> "log₂ — logarithm, base 2 — log₂(256) = 8. Bit-count style estimates, input ≤ 0 is a domain error."
+        "round" -> "round(x) — rounds to the nearest integer, ties upward: round(2.5) = 3, round(−2.5) = −2 (banker's rounding is NOT applied)."
+        "gcd" -> "gcd(a, b) — greatest common divisor of two integers: gcd(48, 18) = 6. Negative inputs use absolute value."
+        "lcm" -> "lcm(a, b) — least common multiple: lcm(4, 6) = 12."
+        "cbrt" -> "cbrt(x) — real cube root: cbrt(27) = 3 and cbrt(−27) = −3 (sign-preserving, unlike fractional powers)."
+        "nPr" -> "nPr(n, r) — permutations: ORDER matters — nPr(5, 2) = 20. r > n reports a combinatorics error."
+        "nCr" -> "nCr(n, r) — combinations: ORDER does not matter — nCr(5, 2) = 10 (binomial coefficient)."
+        "ceil" -> "ceil(x) — rounds up: ceil(2.001) = 3, ceil(−2.1) = −2."
+        "floor" -> "floor(x) — rounds down: floor(2.999) = 2, floor(−2.001) = −3."
+        "rand" -> "rand() — a fresh uniform random number in [0, 1) each time it is evaluated in a session."
+        "d/dx" -> "d/dx — symbolic derivative: d/dx(x^2+1) → 2·x. In sessions the derivative rule set of the Math-Engine is applied."
+        "(" -> "( — opening parenthesis; also starts a function's argument list, e.g. log(100)"
         ")" -> ") — closing parenthesis (or comma in 2-arg functions)"
-        "sin" -> "sin — sine"
-        "cos" -> "cos — cosine"
-        "tan" -> "tan — tangent"
-        "sec" -> "sec — secant"
-        "cosec" -> "cosec — cosecant"
-        "cot" -> "cot — cotangent"
-        "asin" -> "sin⁻¹ — inverse sine (arcsine)"
-        "acos" -> "cos⁻¹ — inverse cosine (arccosine)"
-        "atan" -> "tan⁻¹ — inverse tangent (arctangent)"
-        "asec" -> "sec⁻¹ — inverse secant (arcsecant)"
-        "acosec" -> "csc⁻¹ — inverse cosecant (arccosecant)"
-        "acot" -> "cot⁻¹ — inverse cotangent (arccotangent)"
-        "sinh" -> "sinh — hyperbolic sine"
-        "cosh" -> "cosh — hyperbolic cosine"
-        "tanh" -> "tanh — hyperbolic tangent"
+        "sin" -> "sin — sine of the angle in the active deg/rad mode"
+        "cos" -> "cos — cosine of the angle in the active deg/rad mode"
+        "tan" -> "tan — tangent; ±90°/±π/2 reports a tangent asymptote instead of a huge number"
+        "sec" -> "sec — secant = 1/cos(x); undefined where cos(x) = 0"
+        "cosec" -> "cosec — cosecant = 1/sin(x); undefined where sin(x) = 0"
+        "cot" -> "cot — cotangent = 1/tan(x); undefined at multiples of π"
+        "asin" -> "sin⁻¹ — inverse sine (arcsine): domain [−1, 1], result in deg/rad mode. asin(0.5) = 30° in degrees"
+        "acos" -> "cos⁻¹ — inverse cosine (arccosine): domain [−1, 1], result in deg/rad mode. acos(0.5) = 60° in degrees"
+        "atan" -> "tan⁻¹ — inverse tangent (arctangent): accepts any real, result in deg/rad mode"
+        "asec" -> "sec⁻¹ — inverse secant: domain |x| ≥ 1, result in deg/rad mode"
+        "acosec" -> "csc⁻¹ — inverse cosecant: domain |x| ≥ 1, result in deg/rad mode"
+        "acot" -> "cot⁻¹ — inverse cotangent: accepts any real, result in deg/rad mode"
+        "sinh" -> "sinh — hyperbolic sine: (eˣ − e^(−x))/2"
+        "cosh" -> "cosh — hyperbolic cosine: (eˣ + e^(−x))/2, always ≥ 1"
+        "tanh" -> "tanh — hyperbolic tangent: asymptotically approaches ±1"
         else -> "$label"
     }
 }

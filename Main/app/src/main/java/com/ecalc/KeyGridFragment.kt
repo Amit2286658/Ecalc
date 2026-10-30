@@ -86,7 +86,7 @@ class KeyGridFragment : Fragment() {
                 isAccentKey = spec.isAccent; isDarkThemeMode = activity.isDarkMode
                 cornerRadiusDp = 8f
                 setOnClickListener {
-                    activity.showButtonToast(spec.label); activity.onKeyClicked(spec.label)
+                    activity.onKeyClicked(spec.label)
                 }
                 setOnLongClickListener { true }
                 holdListener = { held ->

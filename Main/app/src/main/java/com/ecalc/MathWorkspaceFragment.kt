@@ -272,7 +272,10 @@ class MathWorkspaceFragment : Fragment() {
             holdListener = { held ->
                 if (held) activity.showButtonPopup(
                     this,
-                    "Open / close File Manager (Modules & isolated Sessions)"
+                    "File Manager drawer — a left-hand workspace panel holding two modes.\n" +
+                        "🧩 Modules: stored .math files, open/active state, editor & convert operations.\n" +
+                        "⚡ Sessions: every isolated evaluation session with its own variables, files " +
+                        "and log. Tapping ☰ again slides the drawer back out of view."
                 ) else activity.dismissButtonPopup()
             }
         }
@@ -297,7 +300,9 @@ class MathWorkspaceFragment : Fragment() {
             }
             setOnLongClickListener { true }
             holdListener = { held ->
-                if (held) activity.showButtonPopup(this, "Return to basic calculator (or swipe right)")
+                if (held) activity.showButtonPopup(this, "← Calc — returns to the basic calculator. Sessions keep " +
+                    "their variable state while you are away; open files stay open. You can also swipe right from " +
+                    "the left edge of this screen, or press the system back button.")
                 else activity.dismissButtonPopup()
             }
         }
@@ -1349,7 +1354,10 @@ class MathWorkspaceFragment : Fragment() {
                     holdListener = { held ->
                         if (held) activity.showButtonPopup(
                             this,
-                            "Compile [module] into .mathc & link (or auto-promote non-module .math file into a Session)"
+                            "Compile — converts the current [module] block into a binary .mathc bundle and links it " +
+                                "into the running engine so its functions become callable from every session. " +
+                                "If the buffer is a plain .math script instead, it is auto-promoted into a new " +
+                                "isolated Session. Compilation errors are reported in the Log with a line number."
                         ) else activity.dismissButtonPopup()
                     }
                 }
@@ -1372,7 +1380,10 @@ class MathWorkspaceFragment : Fragment() {
                     holdListener = { held ->
                         if (held) activity.showButtonPopup(
                             this,
-                            "Promote this .math file into a separate isolated evaluation Session"
+                            "⚡ To Session — promotes this .math file into a fresh, fully isolated evaluation " +
+                                "Session (own variables, own log, own MSP1 state) and runs it once there. The " +
+                                "original file is removed from the Modules library as market rules require: " +
+                                "interpreted scripts are fine, but this keeps code execution scoped per-session."
                         ) else activity.dismissButtonPopup()
                     }
                 }
@@ -1653,7 +1664,10 @@ class MathWorkspaceFragment : Fragment() {
                     holdListener = { held ->
                         if (held) activity.showButtonPopup(
                             this,
-                            "Evaluate the current .math file inside this isolated session"
+                            "▶ Run in Session — evaluates the open .math file line-by-line inside the active " +
+                            "session (shown in the header above). Every variable it binds stays in that " +
+                            "session's MSP1 state and appears in the Variables card; output lines are appended " +
+                            "to the session Log. Other sessions are untouched."
                         ) else activity.dismissButtonPopup()
                     }
                 }

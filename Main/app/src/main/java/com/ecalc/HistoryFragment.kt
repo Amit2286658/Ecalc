@@ -10,6 +10,7 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -78,7 +79,8 @@ class HistoryFragment : Fragment() {
             setOnLongClickListener { true }
             holdListener = { held ->
                 if (held) activity.showButtonPopup(
-                    this, "Clear History — remove all saved calculations"
+                    this, "Clear History — every saved calculation slides off-screen and the list resets.\n" +
+                        "Cleared results cannot be recovered; recent answers remain reusable via the Ans key."
                 ) else activity.dismissButtonPopup()
             }
         }
@@ -90,7 +92,7 @@ class HistoryFragment : Fragment() {
     }
 
     /** Rebuild the item list from the activity's history data. */
-    fun refresh(items: List<String>, dark: Boolean) {
+    fun refresh(items: List<String>, dark: Boolean, fadeInPlaceholder: Boolean = false) {
         if (header == null) return
         header?.setTextColor(if (dark) Color.parseColor("#E0E0E0") else Color.parseColor("#333333"))
         clearButton?.isDarkThemeMode = dark
@@ -104,13 +106,15 @@ class HistoryFragment : Fragment() {
         val activity = activity as? MainActivity ?: return
 
         if (items.isEmpty()) {
-            lay.addView(TextView(ctx).apply {
+            val placeholder = TextView(ctx).apply {
                 text = "No calculations in history yet"
                 setTextColor(subColor)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 gravity = Gravity.CENTER
                 setPadding(0, 40, 0, 40)
-            })
+            }
+            lay.addView(placeholder)
+            if (fadeInPlaceholder) springFadeInView(placeholder)
         } else {
             items.take(15).forEach { item ->
                 lay.addView(TextView(ctx).apply {
@@ -120,9 +124,87 @@ class HistoryFragment : Fragment() {
                     setPadding(12, 14, 12, 14)
                     isClickable = true
                     isFocusable = true
-                    setOnClickListener { activity.showButtonToast("History item: $item") }
+                    setOnClickListener {
+                        activity.onHistoryItemClicked(item)
+                        // Acknowledge the placement on the item itself (no toast)
+                        alpha = 0.45f
+                        animate().alpha(1f).setDuration(240L).start()
+                    }
                 })
             }
+        }
+    }
+
+    /**
+     * Cascading clear: every history entry slides left and out of the screen,
+     * one after another (top first), then [onCleared] fires so the caller can
+     * wipe the data and rebuild the list — the placeholder then fades in with
+     * the damped-spring pulse.
+     */
+    fun animateClearThenReset(onCleared: () -> Unit) {
+        val lay = itemsLayout
+        if (lay == null || lay.childCount == 0) { onCleared(); return }
+        wobbleAnimators.forEach { it.cancel() }
+        wobbleAnimators.clear()
+
+        val count = lay.childCount
+        var remaining = count
+        for (idx in 0 until count) {
+            val item = lay.getChildAt(idx)
+            val exitDist = item.width.coerceAtLeast(lay.width).coerceAtLeast(1) + item.paddingRight
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                startDelay = idx * 45L
+                duration = 300L
+                interpolator = DecelerateInterpolator(1.1f)
+                addUpdateListener { anim ->
+                    val f = anim.animatedValue as Float
+                    item.translationX = -exitDist * f
+                    item.alpha = 1f - (Math.pow(f.toDouble(), 1.6)).toFloat()
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        item.translationX = -exitDist
+                        item.alpha = 0f
+                        remaining--
+                        if (remaining == 0) {
+                            lay.removeAllViews()
+                            onCleared()
+                        }
+                    }
+                })
+                start()
+                wobbleAnimators.add(this)
+            }
+        }
+    }
+
+    /** Damped-spring fade-in for the empty-history placeholder
+     *  (e^(-7.5t)·sin(22t) pulse, same family as the app's other springs). */
+    private fun springFadeInView(target: View) {
+        target.alpha = 0f
+        target.pivotX = target.width * 0.5f
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 560L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.48
+                val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat()
+                target.alpha = (f / 0.28f).coerceIn(0f, 1f)
+                target.scaleX = (1.0 + 0.045 * pulse).toFloat()
+                target.scaleY = (1.0 + 0.045 * pulse).toFloat()
+                target.translationX = (-10f * resources.displayMetrics.density * pulse).toFloat()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    target.alpha = 1f
+                    target.scaleX = 1f
+                    target.scaleY = 1f
+                    target.translationX = 0f
+                }
+            })
+            start()
+            wobbleAnimators.add(this)
         }
     }
 
