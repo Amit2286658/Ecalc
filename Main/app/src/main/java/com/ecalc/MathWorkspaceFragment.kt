@@ -733,13 +733,13 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     /**
-     * Jank-free damped-spring slide animation for the Left-Side File Manager Drawer:
+     * Damped-spring slide animation for the Left-Side File Manager Drawer:
      * - Pre-measured (`View.INVISIBLE` instead of `View.GONE`) so zero layout pass happens on Frame 0.
      * - Uses hardware texture layer (`LAYER_TYPE_HARDWARE`) during the slide so the GPU composites
      *   the entire drawer as a single texture instead of re-rendering software shadows per frame.
-     * - Uses a continuous critically-damped translation curve (`1 - (1 + 6.5*f)*e^(-6.5*f)`) combined
-     *   with a subtle left-anchored (`pivotX = 0f`) damped-spring scale pulse so the drawer never
-     *   hits a hard `.coerceAtMost(0f)` clamp freeze or detaches from the left edge.
+     * - Uses a damped-spring translation curve (`e^(-7.5t)·(cos(22t) + (7.5/22)·sin(22t))`) that
+     *   visibly overshoots and bounces back to rest, combined with a left-anchored (`pivotX = 0f`)
+     *   synchronized spring flex. No `.coerceAtMost(0f)` clamp → no mid-bounce freeze at the edge.
      */
     fun toggleFileManagerDrawer(open: Boolean, animate: Boolean) {
         val drawer = fileManagerDrawerPanel ?: return
@@ -782,24 +782,26 @@ class MathWorkspaceFragment : Fragment() {
         val endAlpha = if (open) 1f else 0f
 
         drawerAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 360L
+            duration = 420L
             interpolator = LinearInterpolator()
             addUpdateListener { anim ->
                 val f = anim.animatedValue as Float
-                // Smooth critically-damped translation (C1 continuous velocity, zero hard-clamp freeze)
-                val k = 6.8 * f
-                val rem = ((1.0 + k) * Math.exp(-k)).toFloat()
-                drawer.translationX = endTx - deltaTx * rem
+                // Damped spring (same family as the tab/key pulses): the
+                // springFactor swings past 0 so the drawer visibly overshoots
+                // and bounces back to rest — no mid-animation freeze.
+                val t = f * 0.48
+                val decay = Math.exp(-7.5 * t)
+                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                // Note: overshoot past the resting point is allowed (never clamped);
+                // the left-anchored pivot keeps it attached to the screen edge.
+                drawer.translationX = endTx - deltaTx * springFactor
 
-                // Subtle left-anchored damped-spring breath once the drawer reaches the edge
-                if (open) {
-                    val t = f * 0.42
-                    val pulse = (Math.exp(-8.0 * t) * Math.sin(t * 20.0)).toFloat()
-                    drawer.scaleX = 1f + 0.014f * pulse
-                } else {
-                    drawer.scaleX = 1f
-                }
-                scrim.alpha = startAlpha + (endAlpha - startAlpha) * (1f - rem)
+                // Left-anchored flex synchronized with the bounce
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                drawer.scaleX = 1f + 0.03f * pulse
+
+                // Scrim fades in quickly during the first part of the slide
+                scrim.alpha = startAlpha + (endAlpha - startAlpha) * (f / 0.35f).coerceIn(0f, 1f)
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
