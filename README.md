@@ -1,9 +1,18 @@
 # Ecalc
 
-A scientific Android calculator featuring neumorphic keys, a native math engine, and damped-spring UI physics.
+A scientific Android calculator featuring neumorphic keys, a native C11 math engine, and damped-spring UI physics.
 
 > All project paths and commands below are relative to the `Main/` directory
 > (the Gradle project root), except where a full path is given.
+
+## Author & Project Information
+
+- **Author :** Amit kumar
+- **Email :** amitkumar13234353@gmail.com
+- **Project GitHub :** [GitHub.com/Ecalc](https://github.com/Ecalc)
+- **Cmath engine :** [GitHub.com/Math-Engine-MEP](https://github.com/Math-Engine-MEP) (<https://github.com/Amit2286658/Math-Engine-MEP>)
+- **Support & Feedback :** Contact the developer on the email address (`amitkumar13234353@gmail.com`) for any query/bug report/feature request.
+- **Engine Documentation & Guides :** Included in-project at [`docs/CMATH_ENGINE_DOCS.md`](docs/CMATH_ENGINE_DOCS.md) and bundled in the app at `Main/app/src/main/assets/docs/CMATH_ENGINE_DOCS.md` (accessible directly inside the in-app **Info (`i`)** modal below the License & Terms & Conditions).
 
 ## Build & Run Locally
 
@@ -31,3 +40,9 @@ The calculator evaluates expressions through the C11 **Math Engine (MEP)** (<htt
    ```bash
    ./gradlew assembleDebug -PmepSourceBuild
    ```
+
+## License
+
+Released under the **MIT License** (see [`LICENSE`](LICENSE)).
+
+Copyright (c) 2026 Amit kumar (`amitkumar13234353@gmail.com`).

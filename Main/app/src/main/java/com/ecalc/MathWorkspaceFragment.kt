@@ -38,6 +38,9 @@ import kotlin.math.hypot
  *    - All duplicate file/session action toolbars (`New`, `Open`, `Save`, `Delete`, `Import`, `Export`,
  *      `Reset`, `Close`, etc.) are removed from the main window so the `Editor` and `Log` panes
  *      use the full vertical screen real estate.
+ *    - In the **`🧩 Modules`** tab, files always stay in Modules (no option or auto-promotion to run/open
+ *      a module in a session, even if the file is not a true `[module]` — at best a non-module file
+ *      simply evaluates, logs its values into the Module Log, and exits).
  * 2. **Unified Left-Side Hamburger File Manager Drawer (`🧩 Modules` & `⚡ Sessions`)**:
  *    - **In `⚡ Sessions` mode**:
  *      - Displays the active sessions chips row at the top.
@@ -107,7 +110,6 @@ class MathWorkspaceFragment : Fragment() {
     private var tvActiveModuleName: TextView? = null
     private var etModuleEditor: EditText? = null
     private var btnCompileModule: NeumorphicKeyView? = null
-    private var btnPromoteModule: NeumorphicKeyView? = null
     private var btnModuleViewLog: NeumorphicKeyView? = null
     private var moduleQuickStatusCard: LinearLayout? = null
     private var tvModuleQuickStatus: TextView? = null
@@ -273,7 +275,7 @@ class MathWorkspaceFragment : Fragment() {
                 if (held) activity.showButtonPopup(
                     this,
                     "File Manager drawer — a left-hand workspace panel holding two modes.\n" +
-                        "🧩 Modules: stored .math files, open/active state, editor & convert operations.\n" +
+                        "🧩 Modules: stored .math module files, open/active state, and editor operations.\n" +
                         "⚡ Sessions: every isolated evaluation session with its own variables, files " +
                         "and log. Tapping ☰ again slides the drawer back out of view."
                 ) else activity.dismissButtonPopup()
@@ -377,8 +379,6 @@ class MathWorkspaceFragment : Fragment() {
         outerFrame.addView(root)
 
         // 5. Build Left-Side Sliding File Manager Drawer + Dimmed Scrim
-        // Use View.INVISIBLE (not GONE) when closed so Android pre-measures and pre-lays out the drawer
-        // before the user opens it, eliminating first-frame layout jank.
         val scrim = View(ctx).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -435,7 +435,7 @@ class MathWorkspaceFragment : Fragment() {
     private fun switchWorkspaceMode(toModules: Boolean, animate: Boolean) {
         if (toModules == isModulesMode) return
         if (isModulesMode) {
-            saveCurrentModuleEditorState(showToast = false, checkPromotion = true)
+            saveCurrentModuleEditorState(showToast = false)
         } else {
             saveCurrentSessionEditorState(activeSessionId, showToast = false)
         }
@@ -659,7 +659,6 @@ class MathWorkspaceFragment : Fragment() {
             addView(drawerSessionsBlock)
 
             // 4. Files Section Header: Label + [+ New] + [📥 Import]
-            // (No duplicate Open/Close/Save/Delete top bar, because each file entry has its own options!)
             val filesHeaderRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -738,13 +737,7 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     /**
-     * Damped-spring slide animation for the Left-Side File Manager Drawer:
-     * - Pre-measured (`View.INVISIBLE` instead of `View.GONE`) so zero layout pass happens on Frame 0.
-     * - Uses hardware texture layer (`LAYER_TYPE_HARDWARE`) during the slide so the GPU composites
-     *   the entire drawer as a single texture instead of re-rendering software shadows per frame.
-     * - Uses a damped-spring translation curve (`e^(-7.5t)·(cos(22t) + (7.5/22)·sin(22t))`) that
-     *   visibly overshoots and bounces back to rest, combined with a left-anchored (`pivotX = 0f`)
-     *   synchronized spring flex. No `.coerceAtMost(0f)` clamp → no mid-bounce freeze at the edge.
+     * Damped-spring slide animation for the Left-Side File Manager Drawer.
      */
     fun toggleFileManagerDrawer(open: Boolean, animate: Boolean) {
         val drawer = fileManagerDrawerPanel ?: return
@@ -791,21 +784,14 @@ class MathWorkspaceFragment : Fragment() {
             interpolator = LinearInterpolator()
             addUpdateListener { anim ->
                 val f = anim.animatedValue as Float
-                // Damped spring (same family as the tab/key pulses): the
-                // springFactor swings past 0 so the drawer visibly overshoots
-                // and bounces back to rest — no mid-animation freeze.
                 val t = f * 0.48
                 val decay = Math.exp(-7.5 * t)
                 val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
-                // Note: overshoot past the resting point is allowed (never clamped);
-                // the left-anchored pivot keeps it attached to the screen edge.
                 drawer.translationX = endTx - deltaTx * springFactor
 
-                // Left-anchored flex synchronized with the bounce
                 val pulse = (decay * Math.sin(t * 22.0)).toFloat()
                 drawer.scaleX = 1f + 0.03f * pulse
 
-                // Scrim fades in quickly during the first part of the slide
                 scrim.alpha = startAlpha + (endAlpha - startAlpha) * (f / 0.35f).coerceIn(0f, 1f)
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -980,7 +966,7 @@ class MathWorkspaceFragment : Fragment() {
                 val btnRowSave = makeEntryActionBtn("Save", false).apply {
                     setOnClickListener {
                         if (activeModuleFileName == fname) {
-                            saveCurrentModuleEditorState(showToast = true, checkPromotion = true)
+                            saveCurrentModuleEditorState(showToast = true)
                         } else {
                             activity.showButtonToast("Saved $fname")
                         }
@@ -1345,45 +1331,19 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.2f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.35f).apply { marginEnd = dp(4f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.6f).apply { marginEnd = dp(6f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
-                        compileOrPromoteCurrentModule()
+                        compileCurrentModule()
                     }
                     setOnLongClickListener { true }
                     holdListener = { held ->
                         if (held) activity.showButtonPopup(
                             this,
-                            "Compile — converts the current [module] block into a binary .mathc bundle and links it " +
-                                "into the running engine so its functions become callable from every session. " +
-                                "If the buffer is a plain .math script instead, it is auto-promoted into a new " +
-                                "isolated Session. Compilation errors are reported in the Log with a line number."
-                        ) else activity.dismissButtonPopup()
-                    }
-                }
-
-                btnPromoteModule = NeumorphicKeyView(ctx).apply {
-                    text = "⚡ To Session"
-                    textSize = 12f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
-                    isAccentKey = false
-                    isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 0.95f).apply { marginEnd = dp(4f) }
-                    setOnClickListener {
-                        springPulse(this, 0.07f)
-                        val code = etModuleEditor?.text?.toString() ?: ""
-                        val modName = activeModuleFileName ?: "promoted_script.math"
-                        promoteModuleFileToSession(modName, code, autoEvaluate = true)
-                    }
-                    setOnLongClickListener { true }
-                    holdListener = { held ->
-                        if (held) activity.showButtonPopup(
-                            this,
-                            "⚡ To Session — promotes this .math file into a fresh, fully isolated evaluation " +
-                                "Session (own variables, own log, own MSP1 state) and runs it once there. The " +
-                                "original file is removed from the Modules library as market rules require: " +
-                                "interpreted scripts are fine, but this keeps code execution scoped per-session."
+                            "Compile & Load — converts the current [module] block into a binary .mathc bundle and " +
+                                "links it into the running engine so its functions become callable everywhere. " +
+                                "If the file contains plain expressions instead of a [module], it evaluates, logs " +
+                                "its values in the Module Log, and exits while staying in Modules."
                         ) else activity.dismissButtonPopup()
                     }
                 }
@@ -1395,7 +1355,7 @@ class MathWorkspaceFragment : Fragment() {
                     shadowPadDp = 3.2f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(dp(74f), dp(38f))
+                    layoutParams = LinearLayout.LayoutParams(dp(88f), dp(38f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         isModuleEditorSubTab = false
@@ -1404,7 +1364,6 @@ class MathWorkspaceFragment : Fragment() {
                 }
 
                 execRow.addView(btnCompileModule)
-                execRow.addView(btnPromoteModule)
                 execRow.addView(btnModuleViewLog)
                 addView(execRow)
 
@@ -1911,14 +1870,6 @@ class MathWorkspaceFragment : Fragment() {
             runCatching { modSeedMarker.writeText("ok") }
         }
 
-        modDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.forEach { file ->
-            val content = runCatching { file.readText() }.getOrDefault("")
-            if (hasNonEmptyStatements(content) && !MathEngineManager.isTrueModuleSource(content)) {
-                File(sess1Dir, file.name).writeText(content)
-                file.delete()
-            }
-        }
-
         val seedMarker = File(sessRoot, ".seeded_session_1_v2")
         val existingSess1Files = sess1Dir.listFiles { f -> f.isFile && f.name.endsWith(".math") } ?: emptyArray()
         if (!seedMarker.exists() && existingSess1Files.isEmpty()) {
@@ -1981,66 +1932,6 @@ class MathWorkspaceFragment : Fragment() {
         sessionVarsCache[sid] = ""
     }
 
-    private fun promoteModuleFileToSession(
-        fileName: String,
-        code: String,
-        autoEvaluate: Boolean
-    ) {
-        val ctx = context ?: return
-        val activity = activity as? MainActivity ?: return
-        val modDir = modulesDir(ctx)
-
-        val safeName = if (fileName.endsWith(".math")) fileName else "$fileName.math"
-        val finalContent = if (code.isBlank()) "# Promoted Evaluation Script: $safeName\n\nx := 10\nx * 2\n" else code
-        File(modDir, safeName).takeIf { it.exists() }?.delete()
-        openModuleFiles.remove(safeName)
-        if (activeModuleFileName == safeName) {
-            activeModuleFileName = openModuleFiles.firstOrNull()
-        }
-        refreshModuleChips()
-        loadModuleStateIntoEditor(animate = false)
-
-        saveCurrentSessionEditorState(activeSessionId, showToast = false)
-
-        MathEngineManager.openSession { newSid ->
-            activity.runOnUiThread {
-                if (newSid <= 0) {
-                    activity.showButtonToast("Engine booting… retry promotion in a moment")
-                    return@runOnUiThread
-                }
-                val sid = newSid
-                if (sid !in openSessionIds) openSessionIds.add(sid)
-
-                initCleanIsolatedSessionState(ctx, sid, wipeDiskFiles = true)
-                File(sessionFilesDir(ctx, sid), safeName).writeText(finalContent)
-                sessionOpenFiles[sid] = mutableListOf(safeName)
-                activeEvalFileBySession[sid] = safeName
-
-                activeSessionId = sid
-                sessionLogs[sid] = "=== Session #$sid ===\n" +
-                    "🚀 Promoted '$safeName' from Modules into isolated Session #$sid."
-
-                val promoMsg = "🚀 Promoted '$safeName' to isolated Session #$sid."
-                tvModuleQuickStatus?.text = promoMsg
-                moduleLogs[safeName] = promoMsg
-
-                isModulesMode = false
-                isSessionEditorSubTab = true
-                refreshEvalFileChips()
-                loadSessionStateIntoEditor(sid, animate = true)
-                refreshActiveSessionLogAndVars()
-                refreshFileManagerDrawer()
-                updateModeVisibility(animate = true)
-                updateSessionSubTabVisibility(animate = false)
-
-                activity.showButtonToast("Promoted $safeName to Session #$sid")
-                if (autoEvaluate) {
-                    runCurrentEvalFileInActiveSession(switchToLogAfterRun = false)
-                }
-            }
-        }
-    }
-
     // =========================================================================
     //  Modules Operations (Managed via Hamburger File Manager Drawer)
     // =========================================================================
@@ -2091,7 +1982,7 @@ class MathWorkspaceFragment : Fragment() {
                     marginEnd = dp(5f)
                 }
                 setOnClickListener {
-                    saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+                    saveCurrentModuleEditorState(showToast = false)
                     activeModuleFileName = modName
                     refreshModuleChips()
                     loadModuleStateIntoEditor(animate = true)
@@ -2124,17 +2015,13 @@ class MathWorkspaceFragment : Fragment() {
         }
     }
 
-    private fun saveCurrentModuleEditorState(showToast: Boolean, checkPromotion: Boolean): Boolean {
+    private fun saveCurrentModuleEditorState(showToast: Boolean): Boolean {
         val ctx = context ?: return false
         val activity = activity as? MainActivity ?: return false
         val code = etModuleEditor?.text?.toString() ?: return false
         val modName = activeModuleFileName
 
         if (modName != null && modName in openModuleFiles) {
-            if (checkPromotion && hasNonEmptyStatements(code) && !MathEngineManager.isTrueModuleSource(code)) {
-                promoteModuleFileToSession(modName, code, autoEvaluate = false)
-                return true
-            }
             val file = File(modulesDir(ctx), modName)
             file.writeText(code)
             getCachedFileMeta(file)
@@ -2157,7 +2044,7 @@ class MathWorkspaceFragment : Fragment() {
             activity.showButtonToast("Module $fileName not found")
             return
         }
-        saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+        saveCurrentModuleEditorState(showToast = false)
         if (fileName !in openModuleFiles) openModuleFiles.add(fileName)
         activeModuleFileName = fileName
         isModulesMode = true
@@ -2181,7 +2068,7 @@ class MathWorkspaceFragment : Fragment() {
             return
         }
         if (activeModuleFileName == fileName) {
-            saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+            saveCurrentModuleEditorState(showToast = false)
         }
         openModuleFiles.remove(fileName)
         if (activeModuleFileName == fileName) {
@@ -2197,7 +2084,7 @@ class MathWorkspaceFragment : Fragment() {
     private fun promptRenameOrCopyModuleFileDialog(targetName: String) {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
-        saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+        saveCurrentModuleEditorState(showToast = false)
         val dark = activity.isDarkMode
         val input = EditText(ctx).apply {
             setText(targetName)
@@ -2280,16 +2167,10 @@ class MathWorkspaceFragment : Fragment() {
             .show()
     }
 
-    private fun compileOrPromoteCurrentModule() {
+    private fun compileCurrentModule() {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         val code = etModuleEditor?.text?.toString() ?: ""
-
-        if (hasNonEmptyStatements(code) && !MathEngineManager.isTrueModuleSource(code)) {
-            val name = activeModuleFileName ?: "promoted_script.math"
-            promoteModuleFileToSession(name, code, autoEvaluate = true)
-            return
-        }
 
         var modFile = activeModuleFileName
         if (modFile == null || modFile !in openModuleFiles) {
@@ -2300,29 +2181,42 @@ class MathWorkspaceFragment : Fragment() {
             refreshModuleChips()
             refreshFileManagerDrawer()
         } else {
-            saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+            saveCurrentModuleEditorState(showToast = false)
         }
 
         val targetMod = modFile
+        val isTrueModule = MathEngineManager.isTrueModuleSource(code)
         MathEngineManager.compileAndLoadExtension(code) { ok, message ->
             activity.runOnUiThread {
-                val logEntry = if (ok) {
-                    "=== Module Build & Link Log ($targetMod) ===\n" +
-                        "✅ Compiled & Linked .mathc Extension:\n$message"
+                val logEntry = if (isTrueModule) {
+                    if (ok) {
+                        "=== Module Build & Link Log ($targetMod) ===\n" +
+                            "✅ Compiled & Linked .mathc Extension:\n$message"
+                    } else {
+                        "=== Module Build & Link Log ($targetMod) ===\n" +
+                            "❌ Extension Compile Error:\n$message"
+                    }
                 } else {
-                    "=== Module Build & Link Log ($targetMod) ===\n" +
-                        "❌ Extension Compile Error:\n$message"
+                    "=== Module Evaluation Log ($targetMod) ===\n$message"
                 }
                 moduleLogs[targetMod] = logEntry
                 tvModuleLogOutput?.text = logEntry
-                tvModuleQuickStatus?.text = if (ok) {
-                    "✅ Linked '$targetMod': $message"
+                tvModuleQuickStatus?.text = if (isTrueModule) {
+                    if (ok) "✅ Linked '$targetMod': $message"
+                    else "❌ Compile error in '$targetMod': $message"
                 } else {
-                    "❌ Compile error in '$targetMod': $message"
+                    val firstLine = message.lines().lastOrNull().orEmpty()
+                    if (ok) "✅ Evaluated '$targetMod': $firstLine"
+                    else "⚠ Evaluated '$targetMod' with warnings (see 📋 Log)"
                 }
                 moduleQuickStatusCard?.let { springPulse(it, 0.045f) }
                 moduleLogCard?.let { springPulse(it, 0.045f) }
-                activity.showButtonToast(if (ok) "Module loaded into engine" else "Compile failed")
+                val toastText = if (isTrueModule) {
+                    if (ok) "Module loaded into engine" else "Compile failed"
+                } else {
+                    if (ok) "Evaluated & logged values" else "Evaluation finished with errors"
+                }
+                activity.showButtonToast(toastText)
             }
         }
     }
@@ -2346,7 +2240,7 @@ class MathWorkspaceFragment : Fragment() {
                     name = "module_${listModuleFiles(ctx).size + 1}.math"
                 }
                 if (!name.endsWith(".math")) name += ".math"
-                saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+                saveCurrentModuleEditorState(showToast = false)
                 val modIdentifier = name.removeSuffix(".math")
                     .replace(Regex("[^a-zA-Z0-9_]"), "_")
                     .ifBlank { "custom_mod" }
@@ -2587,7 +2481,6 @@ class MathWorkspaceFragment : Fragment() {
         val sid = activeSessionId
         if (sid <= 0) return
 
-        // Compact active session badge at the start of the strip (tapping opens ☰ File Manager)
         val sessBadge = NeumorphicKeyView(ctx).apply {
             text = "⚡ Session #$sid"
             textSize = 11f
@@ -3152,7 +3045,7 @@ class MathWorkspaceFragment : Fragment() {
 
     private fun launchImportMathFileForModules() {
         val activity = activity as? MainActivity ?: return
-        saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+        saveCurrentModuleEditorState(showToast = false)
         pendingImportForModules = true
         pendingImportTargetSessionId = -1
         try {
@@ -3200,12 +3093,6 @@ class MathWorkspaceFragment : Fragment() {
                     activity.showButtonToast("Unable to read selected file")
                     return
                 }
-
-            val isTrueModule = MathEngineManager.isTrueModuleSource(content)
-            if (pendingImportForModules && !isTrueModule && hasNonEmptyStatements(content)) {
-                promoteModuleFileToSession(displayName, content, autoEvaluate = false)
-                return
-            }
 
             if (pendingImportForModules) {
                 val file = File(modulesDir(ctx), displayName)
@@ -3255,7 +3142,7 @@ class MathWorkspaceFragment : Fragment() {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         if (activeModuleFileName == fileName) {
-            saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+            saveCurrentModuleEditorState(showToast = false)
         }
         val file = File(modulesDir(ctx), fileName)
         if (!file.exists()) {
@@ -3451,7 +3338,7 @@ class MathWorkspaceFragment : Fragment() {
             btnNewSession, btnResetSession, btnCloseSession, btnLoadSession, btnExportSession,
             btnDrawerCreateNewFile, btnDrawerImportFile,
             btnModuleSubEditor, btnModuleSubLog,
-            btnCompileModule, btnPromoteModule, btnModuleViewLog,
+            btnCompileModule, btnModuleViewLog,
             btnModuleBackToEditor, btnClearModuleLog,
             btnSessionSubEditor, btnSessionSubLog,
             btnRunSessionScript, btnSessionViewLog,
@@ -3581,7 +3468,7 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     override fun onDestroyView() {
-        saveCurrentModuleEditorState(showToast = false, checkPromotion = false)
+        saveCurrentModuleEditorState(showToast = false)
         saveCurrentSessionEditorState(activeSessionId, showToast = false)
         drawerAnimator?.cancel()
         wobbleAnimators.forEach { it.cancel() }

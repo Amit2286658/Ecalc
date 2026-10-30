@@ -3,6 +3,7 @@ package com.ecalc
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -12,6 +13,7 @@ import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.TypedValue
@@ -28,6 +30,7 @@ import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -315,9 +318,6 @@ class MainActivity : AppCompatActivity() {
                 swipeStartX = ev.rawX
                 swipeStartY = ev.rawY
                 isWorkspaceSwiping = false
-                // On page 0 (Calculator), swiping left anywhere on the display section (or from the right edge)
-                // reveals the .math Studio. On page 1 (.math Studio), swiping right from the left edge or header
-                // reveals the Calculator again.
                 val fromRightEdge = ev.rawX >= width - 28f * density
                 val fromLeftEdge = ev.rawX <= 36f * density
                 swipeBlockedByChild = if (currentWorkspacePage == 0) {
@@ -378,7 +378,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupViewPager() {
         binding.viewPager.adapter = EcalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
-        // Start with offscreenPageLimit = 1 for fast cold-start first frame, then expand to 4 after splash reveal
         binding.viewPager.offscreenPageLimit = 1
         binding.viewPager.setPageTransformer { page, position ->
             val absPos = Math.abs(position).coerceIn(0f, 1f)
@@ -413,7 +412,6 @@ class MainActivity : AppCompatActivity() {
                 val tab = tabs[position]
                 tabSpringPulse(tab, direction, distance)
 
-                // Apply distance-dependent damped-spring physics to the tab bar & scroll container
                 binding.tabScroll.post {
                     val density = resources.displayMetrics.density
                     val target = (tab.left - (binding.tabScroll.width - tab.width) / 2)
@@ -454,9 +452,6 @@ class MainActivity : AppCompatActivity() {
                     pendingTabPhysicsPage = -1
                     triggerTabPagePhysics(position, direction, distance)
                 } else {
-                    // For non-adjacent tabs, wait until the multi-page smooth scroll brings
-                    // the destination page onto the screen so the physics animation is visible
-                    // on arrival with full distance-scaled force.
                     pendingTabPhysicsPage = position
                 }
             }
@@ -486,12 +481,6 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    /**
-     * Applies a distance-dependent damped-spring impulse to both the ViewPager2
-     * container and the destination tab's fragment (`KeyGridFragment` / `HistoryFragment`).
-     * Farther tab jumps (`distance` 1..4) produce progressively stronger displacement,
-     * scale bounce, and rotational settle.
-     */
     private fun triggerTabPagePhysics(position: Int, direction: Int, distance: Int) {
         val clampedDist = distance.coerceIn(1, 4)
         val d = clampedDist.toFloat()
@@ -545,7 +534,6 @@ class MainActivity : AppCompatActivity() {
         binding.viewPager.post { invokeFragmentSpring(0) }
     }
 
-    /** Distance-dependent spring kick on the clicked tab icon in the tab bar. */
     private fun tabSpringPulse(view: View, direction: Int, distance: Int) {
         displayPulseAnimators.removeAll { (v, a) ->
             if (v === view) {
@@ -609,20 +597,12 @@ class MainActivity : AppCompatActivity() {
             refreshHistoryUI()
             return
         }
-        // Cascade: entries slide out one by one first, THEN the data resets and
-        // the empty-state placeholder fades back in with the spring pulse.
         frag.animateClearThenReset {
             calculationHistory.clear()
             refreshHistoryUI(fadeInPlaceholder = true)
         }
     }
 
-    /**
-     * Tapping a history entry places its result back onto the calculation.
-     * Entries are stored as "expr = result[unit]"; the stored result (unit
-     * stripped) is typed onto the current operand — replacing "0.0" when fresh,
-     * appending when the user is mid-number, just like manual keying would.
-     */
     fun onHistoryItemClicked(item: String) {
         val trimmed = item.trim()
         if (trimmed.isEmpty()) return
@@ -668,8 +648,8 @@ class MainActivity : AppCompatActivity() {
         bindHoldPopup(binding.tvAngleMode, "Angle mode — taps switch how trigonometric functions interpret angles: " +
             "Degrees (sin 90° = 1) or Radians (sin π/2 = 1). The choice is saved persistently; the label below the " +
             "display always shows the active mode.")
-        bindHoldPopup(binding.btnAboutInfo, "About — opens a blurred-glass modal with Ecalc/version info, the bundled " +
-            "Math-Engine (.math runtime) details, and how the engine boots with its precompiled standard library.")
+        bindHoldPopup(binding.btnAboutInfo, "About & Docs — opens a blurred-glass modal with Ecalc & developer info " +
+            "(Amit kumar), GitHub links, MIT License T&C, and the complete embedded CMath Engine (MEP) documentation.")
 
         binding.themeTogglePill.setOnClickListener {
             toggleThemeWithCircularReveal()
@@ -691,7 +671,6 @@ class MainActivity : AppCompatActivity() {
             displaySpringPulse(binding.tvAngleMode, 0.05f)
         }
 
-        // Tap the memory value to recall it into the current operand
         binding.tvMrValue.setOnClickListener {
             val recalled = formatValue(memoryValue)
             currentPrimaryInput = recalled
@@ -722,7 +701,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     // =========================================================================
-    //  About Info Modal with Blurred Background (Request 3)
+    //  About Info Modal with Blurred Background, Developer Info, MIT License &
+    //  In-Project Embedded CMath Engine Documentation
     // =========================================================================
 
     private fun createBlurredBackdropBitmap(sourceView: View, radius: Int = 8): Bitmap? {
@@ -745,7 +725,6 @@ class MainActivity : AppCompatActivity() {
             val r = radius.coerceIn(2, 14)
             val div = 2 * r + 1
             repeat(2) {
-                // Horizontal box blur pass
                 for (y in 0 until sh) {
                     val rowOffset = y * sw
                     for (x in 0 until sw) {
@@ -765,7 +744,6 @@ class MainActivity : AppCompatActivity() {
                             ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
                     }
                 }
-                // Vertical box blur pass
                 for (x in 0 until sw) {
                     for (y in 0 until sh) {
                         var sumA = 0
@@ -792,7 +770,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showAboutInfoWindow() {
+    private fun readAssetTextOrFallback(assetPath: String, fallback: String): String {
+        return try {
+            assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText().trim() }
+                .ifEmpty { fallback }
+        } catch (_: Throwable) {
+            fallback
+        }
+    }
+
+    private fun openExternalUri(uriString: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString))
+            startActivity(intent)
+        } catch (_: Throwable) {
+            showButtonToast("Link: $uriString")
+        }
+    }
+
+    fun showAboutInfoWindow() {
         if (aboutOverlay != null) {
             dismissAboutInfoWindow()
             return
@@ -804,13 +800,13 @@ class MainActivity : AppCompatActivity() {
 
         val cardBg = Color.parseColor(if (dark) "#2E2E2E" else "#F5F5F5")
         val sectionBg = Color.parseColor(if (dark) "#252525" else "#EAEAEA")
+        val codeBg = Color.parseColor(if (dark) "#1D1D1D" else "#FFFFFF")
         val strokeColor = Color.parseColor(if (dark) "#444444" else "#D5D5D5")
         val primaryText = Color.parseColor(if (dark) "#E8E8E8" else "#2A2A2A")
         val secondaryText = Color.parseColor(if (dark) "#9E9E9E" else "#606060")
         val accentColor = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
         val scrimColor = Color.parseColor(if (dark) "#96141414" else "#88E6E6E6")
 
-        // Apply hardware RenderEffect blur on Android 12+ (API 31+) and blurred bitmap backdrop for all APIs
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val blurEffect = RenderEffect.createBlurEffect(20f, 20f, Shader.TileMode.CLAMP)
             binding.calculatorContainer.setRenderEffect(blurEffect)
@@ -827,7 +823,6 @@ class MainActivity : AppCompatActivity() {
             )
             isClickable = true
             isFocusable = true
-            // Clicking anywhere outside the info card dismisses the window
             setOnClickListener { dismissAboutInfoWindow() }
         }
 
@@ -853,15 +848,16 @@ class MainActivity : AppCompatActivity() {
         }
         overlay.addView(scrimView)
 
-        val cardWidth = (root.width - dp(44f)).coerceIn(dp(270f), dp(340f))
+        val cardWidth = (root.width - dp(28f)).coerceIn(dp(280f), dp(420f))
+        val cardHeight = (root.height * 0.84f).toInt().coerceAtLeast(dp(420f))
         val infoCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(
                 cardWidth,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
+                cardHeight,
                 Gravity.CENTER
             )
-            setPadding(dp(20f), dp(18f), dp(20f), dp(18f))
+            setPadding(dp(18f), dp(16f), dp(18f), dp(16f))
             elevation = 16f * density
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
@@ -871,18 +867,17 @@ class MainActivity : AppCompatActivity() {
             }
             isClickable = true
             isFocusable = true
-            // Consume clicks inside the info card so only outside taps or Close buttons dismiss it
             setOnClickListener { }
         }
 
-        // Header row: App title + version badge + top-right '✕' close button
+        // 1. Header row: App title + version badge + top-right '✕' close button
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(10f) }
+            ).apply { bottomMargin = dp(8f) }
         }
 
         val titleCol = LinearLayout(this).apply {
@@ -921,50 +916,207 @@ class MainActivity : AppCompatActivity() {
         headerRow.addView(btnCloseTop)
         infoCard.addView(headerRow)
 
+        // 2. Scrollable content container holding Overview, Author/Contact/Links, License T&C, and Engine Docs
+        val bodyScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = true
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ).apply { bottomMargin = dp(10f) }
+        }
+        val scrollContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        fun makeSectionBox(bgColor: Int = sectionBg): LinearLayout {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 14f * density
+                    setColor(bgColor)
+                    setStroke(1, strokeColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(10f) }
+            }
+        }
+
+        fun makeSectionTitle(titleText: String): TextView {
+            return TextView(this).apply {
+                text = titleText
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(accentColor)
+                setPadding(0, 0, 0, dp(4f))
+            }
+        }
+
         val tvDesc = TextView(this).apply {
             text = "A scientific Android calculator featuring 3D neumorphic keys, a precompiled C11 symbolic & numeric math engine, and damped-spring wavefront physics."
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             setTextColor(secondaryText)
             setLineSpacing(0f, 1.18f)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(12f) }
+            ).apply { bottomMargin = dp(10f) }
         }
-        infoCard.addView(tvDesc)
+        scrollContent.addView(tvDesc)
 
-        // Highlights box
-        val detailsBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 14f * density
-                setColor(sectionBg)
-                setStroke(1, strokeColor)
+        // Section A: Highlights box
+        val detailsBox = makeSectionBox()
+        detailsBox.addView(makeSectionTitle("Core Highlights"))
+        fun addInfoBullet(target: LinearLayout, label: String, body: String, onClick: (() -> Unit)? = null) {
+            val item = TextView(this).apply {
+                text = "▸ $label : $body"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+                setTextColor(primaryText)
+                setPadding(0, dp(2.5f), 0, dp(2.5f))
+                setTextIsSelectable(onClick == null)
+                if (onClick != null) {
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { onClick() }
+                }
             }
+            target.addView(item)
+        }
+        addInfoBullet(detailsBox, "Math Engine", "O(1) stdlib.mathc boot, symbolic diff/solve & units")
+        addInfoBullet(detailsBox, "UI Physics", "Damped-spring oscillations (e⁻⁷·⁵ᵗ · sin 22t)")
+        addInfoBullet(detailsBox, ".math Studio", "Swipe left on the display for Modules & live Sessions")
+        addInfoBullet(detailsBox, "Tooltips", "Press and hold any button or tab to inspect its action")
+        scrollContent.addView(detailsBox)
+
+        // Section B: Developer, Contact & Repository Info
+        val authorBox = makeSectionBox()
+        authorBox.addView(makeSectionTitle("Developer & Project Information"))
+        addInfoBullet(authorBox, "Author", "Amit kumar")
+        addInfoBullet(authorBox, "Email", "amitkumar13234353@gmail.com") {
+            openExternalUri("mailto:amitkumar13234353@gmail.com?subject=Ecalc%20Query%20/%20Feedback")
+        }
+        addInfoBullet(authorBox, "Project GitHub", "GitHub.com/Ecalc") {
+            openExternalUri("https://github.com/Ecalc")
+        }
+        addInfoBullet(authorBox, "Cmath engine", "GitHub.com/Math-Engine-MEP") {
+            openExternalUri("https://github.com/Amit2286658/Math-Engine-MEP")
+        }
+        addInfoBullet(authorBox, "Engine Docs Guide", "GitHub.com/Math-Engine-MEP (Bundled in-project below)") {
+            openExternalUri("https://github.com/Amit2286658/Math-Engine-MEP")
+        }
+
+        val tvContactNote = TextView(this).apply {
+            text = "Contact the developer on the email address (amitkumar13234353@gmail.com) for any query/bug report/feature request."
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextColor(secondaryText)
+            setLineSpacing(0f, 1.15f)
+            setPadding(0, dp(6f), 0, dp(6f))
+            setTextIsSelectable(true)
+        }
+        authorBox.addView(tvContactNote)
+
+        val quickLinksRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(14f) }
+            )
         }
-
-        fun addInfoBullet(label: String, body: String) {
-            val item = TextView(this).apply {
-                text = "▸ $label: $body"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setTextColor(primaryText)
-                setPadding(0, dp(3f), 0, dp(3f))
+        fun makeQuickLinkBtn(label: String, uri: String): NeumorphicKeyView {
+            return NeumorphicKeyView(this).apply {
+                text = label
+                textSize = 10.2f
+                cornerRadiusDp = 10f
+                shadowPadDp = 2.2f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(0, dp(32f), 1f).apply {
+                    marginEnd = dp(3f)
+                }
+                setOnClickListener {
+                    displaySpringPulse(this, 0.06f)
+                    openExternalUri(uri)
+                }
             }
-            detailsBox.addView(item)
         }
+        quickLinksRow.addView(makeQuickLinkBtn("✉ Email", "mailto:amitkumar13234353@gmail.com?subject=Ecalc%20Query%20/%20Feedback"))
+        quickLinksRow.addView(makeQuickLinkBtn("🌐 Ecalc Repo", "https://github.com/Ecalc"))
+        quickLinksRow.addView(makeQuickLinkBtn("⚙ MEP Engine", "https://github.com/Amit2286658/Math-Engine-MEP").apply {
+            (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
+        })
+        authorBox.addView(quickLinksRow)
+        scrollContent.addView(authorBox)
 
-        addInfoBullet("Math Engine", "O(1) stdlib.mathc boot, symbolic diff/solve & units")
-        addInfoBullet("UI Physics", "Damped-spring oscillations (e⁻⁷·⁵ᵗ · sin 22t)")
-        addInfoBullet(".math Studio", "Swipe left on the display for Modules & live Sessions")
-        addInfoBullet("Tooltips", "Press and hold any button or tab to inspect its action")
-        infoCard.addView(detailsBox)
+        // Section C: License & Terms & Conditions (MIT License)
+        val licenseBox = makeSectionBox(codeBg)
+        licenseBox.addView(makeSectionTitle("License & Terms & Conditions (MIT License)"))
+        val licenseFallback = """
+            MIT License
 
+            Copyright (c) 2026 Amit kumar (amitkumar13234353@gmail.com)
+
+            Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+            The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+            THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+        """.trimIndent()
+        val licenseText = readAssetTextOrFallback("docs/LICENSE.txt", licenseFallback)
+        val tvLicense = TextView(this).apply {
+            text = licenseText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(primaryText)
+            setLineSpacing(0f, 1.15f)
+            setTextIsSelectable(true)
+        }
+        licenseBox.addView(tvLicense)
+        scrollContent.addView(licenseBox)
+
+        // Section D: Embedded CMath Engine (Math-Engine-MEP) Documentation & Guides (Below License & T&C)
+        val docsBox = makeSectionBox(codeBg)
+        docsBox.addView(makeSectionTitle("CMath Engine (Math-Engine-MEP) — Documentation & Guides"))
+        val tvDocsSub = TextView(this).apply {
+            text = "Bundled in-project (docs/CMATH_ENGINE_DOCS.md) • Source: GitHub.com/Math-Engine-MEP"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
+            setTextColor(secondaryText)
+            setPadding(0, 0, 0, dp(6f))
+        }
+        docsBox.addView(tvDocsSub)
+
+        val docsFallback = """
+            # CMath Engine (Math-Engine-MEP) Reference Guide
+            • Architecture: Self-contained C11 symbolic & numerical runtime with 8B NaN-boxed Values, O(1) stdlib.mathc binary boot ("MTHC" v1), topological <[dep] extension linker, and up to 8 isolated MSP1 sessions.
+            • Expressions & Sessions: Implicit multiplication (2x, 2π), dynamic bindings (x := 10, f(t) := ...), ranges (1...10, 1..<10, by), list comprehensions ([x^2 for x in 1...8]), lambdas ((x) => x^2), pipes (x |> f), matrices ([1, 2; 3, 4]), and SI unit conversions (25 km in m).
+            • Symbolic & Numerical Calculus: sym_diff, sym_integ, sym_solve, sym_simplify, sym_taylor, diff, integrate, lim, sigma, prod, solve, fmin, fmax, ode_rk4.
+            • Writing [module] Extensions: Declare [module_name], dependencies <[arith], constants (c = 1.0;), typed functions (fn(x: real) = expr;), custom operators, and $type structs.
+            • Standard Library (18 Modules): [boot_syntax], [boot_types], [boot_control], [arith], [trig], [user_trig], [complex_ext], [vec], [mat], [algebra], [calculus], [units], [conversions], [physics], [chemistry], [biology], [geom_ext], [string].
+        """.trimIndent()
+        val engineDocsText = readAssetTextOrFallback("docs/CMATH_ENGINE_DOCS.md", docsFallback)
+        val tvEngineDocs = TextView(this).apply {
+            text = engineDocsText
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(primaryText)
+            setLineSpacing(0f, 1.16f)
+            setTextIsSelectable(true)
+        }
+        docsBox.addView(tvEngineDocs)
+        scrollContent.addView(docsBox)
+
+        bodyScroll.addView(scrollContent)
+        infoCard.addView(bodyScroll)
+
+        // 3. Bottom Close Button
         val btnCloseBottom = NeumorphicKeyView(this).apply {
             text = "Close"
             textSize = 13.5f
@@ -974,7 +1126,7 @@ class MainActivity : AppCompatActivity() {
             isDarkThemeMode = dark
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(42f)
+                dp(40f)
             )
             setOnClickListener {
                 dismissAboutInfoWindow()
@@ -1095,7 +1247,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             "M+" -> {
-                // Add the displayed value to memory
                 val value = currentPrimaryInput.toDoubleOrNull() ?: 0.0
                 memoryValue += value
                 val displayStr = formatValue(memoryValue)
@@ -1104,7 +1255,6 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             "M-" -> {
-                // Subtract the displayed value from memory
                 val value = currentPrimaryInput.toDoubleOrNull() ?: 0.0
                 memoryValue -= value
                 val displayStr = formatValue(memoryValue)
@@ -1221,8 +1371,6 @@ class MainActivity : AppCompatActivity() {
         displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
     }
 
-    /** Stateless single-shot evaluation via eng_eval (no session needed).
-     *  Each call compiles and runs independently — perfect for a calculator. */
     private fun evaluateCurrent() {
         val fullDisplay = if (currentPrimaryInput == "0.0") exprStatement
                           else exprStatement + currentPrimaryInput
@@ -1256,8 +1404,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Damped-spring kick identical to the water-ripple wavefront:
-     *  decay e⁻⁷·⁵ᵗ · sin(22 t), 480 ms settle, right-edge pivot. */
     private fun displaySpringPulse(view: View, bump: Float) {
         displayPulseAnimators.removeAll { (v, a) -> if (v === view) { a.cancel(); true } else false }
         if (view.width > 0) {
@@ -1286,7 +1432,6 @@ class MainActivity : AppCompatActivity() {
     private fun formatValue(v: Double): String {
         if (v % 1.0 == 0.0) return "${v.toLong()}.0"
         var s = String.format("%.4f", v)
-        // Strip trailing zeros after the decimal point
         val dotIdx = s.indexOf('.')
         if (dotIdx >= 0) {
             s = s.take(dotIdx + 1) + s.substring(dotIdx + 1).trimEnd('0')
@@ -1348,7 +1493,6 @@ class MainActivity : AppCompatActivity() {
             setColor(Color.parseColor(sheetBg))
         }
 
-        // Four keys + history icon — no Units tab anymore
         val tabIcons = listOf(
             binding.ivTabHistory, binding.ivTabBasic,
             binding.ivTabExtended, binding.ivTabTrig, binding.ivTabFx
@@ -1357,7 +1501,6 @@ class MainActivity : AppCompatActivity() {
 
         updateTabIndicators()
 
-        // Propagate theme to every live tab (only 5 now) and the .math studio workspace
         for (pos in 0 until 5) {
             when (val frag = fragmentAt(pos)) {
                 is KeyGridFragment -> frag.applyTheme(dark)
@@ -1439,9 +1582,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Slide-in/out the MR memory cluster with the same damped-spring pulse
-     *  as everything else in the app (e⁻⁷·⁵ᵗ · sin(22 t)).  No generic
-     *  Interpolator — just raw physics so it feels alive. */
     private fun animateMrClusterPhysics(show: Boolean) {
         mrSlideAnimators.forEach { it.cancel() }; mrSlideAnimators.clear()
         val cluster = binding.mrDisplayCluster
@@ -1462,7 +1602,6 @@ class MainActivity : AppCompatActivity() {
                     val t = f * 0.48
                     val decay = Math.exp(-7.5 * t)
                     val pulse = decay * Math.sin(t * 22.0)
-                    // Underdamped spring displacement: slides in from right, overshoots, and settles
                     val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
                     cluster.translationX = distance * springFactor
                     cluster.scaleX = (1.0 + 0.06 * pulse).toFloat()
@@ -1488,7 +1627,6 @@ class MainActivity : AppCompatActivity() {
                     val t = f * 0.48
                     val decay = Math.exp(-7.5 * t)
                     val pulse = decay * Math.sin(t * 22.0)
-                    // Same damped-spring physics when sliding out: spring recoil then slide to distance
                     val springFactor = (1.0 - decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
                     cluster.translationX = startTx + (distance - startTx) * springFactor
                     cluster.scaleX = (1.0 - 0.06 * pulse).toFloat()
@@ -1519,7 +1657,6 @@ class MainActivity : AppCompatActivity() {
             add(Triple(binding.tvAngleMode, 0f, 1f))
             add(Triple(binding.mrToggleRow, 0f, 1f))
             if (binding.cbMrToggle.isChecked) add(Triple(binding.mrDisplayCluster, 0f, 1f))
-            // Only the four keypad tabs — no Units
             listOf(binding.tabHistory, binding.tabBasic, binding.tabExtended,
                    binding.tabTrig, binding.tabFx).forEach { add(Triple(it, 5f, 1.9f)) }
         }
@@ -1629,12 +1766,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun persistTheme() { prefs.edit().putBoolean("dark_mode", isDarkMode).apply() }
 
-    /**
-     * Fast, seamless launch ripple transition:
-     * Starts with the splash dot already visible at the exact geometry of `splash_icon.xml`
-     * (no static pause or alpha-zero blanking), fires an immediate 240ms damped-spring kick
-     * with outward ripple rings, and expands the circular reveal of the calculator right away.
-     */
     private fun playLaunchSplashReveal() {
         styleSplashDots(isDarkMode)
         binding.splashCircle.visibility = View.VISIBLE
@@ -1683,7 +1814,6 @@ class MainActivity : AppCompatActivity() {
                         interpolator = AccelerateDecelerateInterpolator()
                         addListener(object : AnimatorListenerAdapter() {
                             override fun onAnimationEnd(animation: Animator) {
-                                // Pre-warm remaining keypad tabs after launch animation completes
                                 binding.viewPager.offscreenPageLimit = 4
                             }
                         })
@@ -1698,11 +1828,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Collapses the calculator inward with circular reveal + inward ripple rings,
-     * and exits immediately when the reveal reaches zero so no static circle icon
-     * remains visible before the app closes.
-     */
     private fun playExitSplashCollapse() {
         if (isExitingApp) return
         isExitingApp = true

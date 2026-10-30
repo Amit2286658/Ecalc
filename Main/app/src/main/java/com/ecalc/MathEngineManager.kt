@@ -15,7 +15,8 @@ import java.util.concurrent.Executors
  *   with 1-based UI session IDs (`1 .. ENG_MAX_SESSIONS`) mapped cleanly to
  *   the C11 engine's 0-based session slots (`0 .. ENG_MAX_SESSIONS - 1`).
  * - Native `.math` extension compilation & `.mathc` runtime linking
- *   (`user_compile_ext` + `user_load_mathc`)
+ *   (`user_compile_ext` + `user_load_mathc`), plus one-shot ephemeral evaluation
+ *   & value logging for non-module `.math` files kept in the Modules tab.
  */
 object MathEngineManager {
 
@@ -64,7 +65,7 @@ object MathEngineManager {
 
     /**
      * Checks whether a `.math` file's source code is a true native extension `[module]`
-     * definition (rather than a standard stateful `.math` evaluation script).
+     * definition (rather than a standard `.math` evaluation script).
      *
      * True modules contain at least one `[module_name]` section header, `<[dep]`
      * dependency directive, `$type` declaration, or typed module overload declaration
@@ -231,8 +232,98 @@ object MathEngineManager {
         }
     }
 
+    /**
+     * Splits a `.math` script into balanced top-level statements (ignoring `#` comments).
+     */
+    private fun splitScriptStatements(scriptSource: String): List<String> {
+        val statements = mutableListOf<String>()
+        var currentStmt = StringBuilder()
+        var braceDepth = 0
+        var parenDepth = 0
+        var brackDepth = 0
+
+        for (rawLine in scriptSource.trim().lines()) {
+            val line = rawLine.substringBefore("#").trim()
+            if (line.isEmpty()) continue
+            if (currentStmt.isNotEmpty()) currentStmt.append(" ")
+            currentStmt.append(line)
+            for (ch in line) {
+                when (ch) {
+                    '{' -> braceDepth++
+                    '}' -> if (braceDepth > 0) braceDepth--
+                    '(' -> parenDepth++
+                    ')' -> if (parenDepth > 0) parenDepth--
+                    '[' -> brackDepth++
+                    ']' -> if (brackDepth > 0) brackDepth--
+                }
+            }
+            if (braceDepth == 0 && parenDepth == 0 && brackDepth == 0) {
+                statements.add(currentStmt.toString().trim())
+                currentStmt = StringBuilder()
+            }
+        }
+        if (currentStmt.isNotEmpty()) {
+            statements.add(currentStmt.toString().trim())
+        }
+        return statements
+    }
+
+    /**
+     * Evaluates a non-true-module `.math` file in an ephemeral context, logs its values,
+     * and exits immediately (closing the temporary session slot so no session remains open).
+     */
+    @Synchronized
+    private fun evaluateAndExitModuleScriptSync(mathSource: String): Pair<Boolean, String> {
+        if (engineHandle == 0L) return false to "Engine not initialized"
+        val statements = splitScriptStatements(mathSource)
+        if (statements.isEmpty()) return false to "Empty .math source"
+
+        val tempNativeSid = try {
+            MathEngineBridge.nativeSessionOpen(engineHandle)
+        } catch (_: Throwable) { -1 }
+
+        val sb = StringBuilder()
+        var allOk = true
+        try {
+            statements.forEachIndexed { idx, stmt ->
+                val wire = try {
+                    if (tempNativeSid >= 0) {
+                        MathEngineBridge.nativeSessionEval(engineHandle, tempNativeSid, stmt)
+                    } else {
+                        MathEngineBridge.nativeEval(engineHandle, stmt)
+                    }
+                } catch (_: Throwable) { null }
+
+                if (wire == null) {
+                    allOk = false
+                    sb.append("[${idx + 1}] $stmt  ⟹  ⚠ Evaluation failed\n")
+                } else {
+                    val res = MathEngineBridge.EvalResult.parseWire(wire)
+                    if (res.ok) {
+                        val u = if (res.unit != "none") " [${res.unit}]" else ""
+                        sb.append("[${idx + 1}] $stmt  ⟹  ${res.value}$u (${res.type})\n")
+                    } else {
+                        allOk = false
+                        sb.append("[${idx + 1}] $stmt  ⟹  ⚠ ${res.error}\n")
+                    }
+                }
+            }
+        } finally {
+            if (tempNativeSid >= 0) {
+                try {
+                    MathEngineBridge.nativeSessionClose(engineHandle, tempNativeSid)
+                } catch (_: Throwable) { }
+            }
+        }
+        sb.append("(Evaluated ${statements.size} statement(s), logged values & exited)")
+        return allOk to sb.toString().trimEnd()
+    }
+
     @Synchronized
     private fun compileAndLoadSync(mathSource: String): Pair<Boolean, String> {
+        if (!isTrueModuleSource(mathSource)) {
+            return evaluateAndExitModuleScriptSync(mathSource)
+        }
         val (ok, msg, _) = compileAndLoadWithBytesSync(mathSource)
         return ok to msg
     }
@@ -592,39 +683,7 @@ object MathEngineManager {
             }
             val nativeSid = toNativeSid(sessionId)
             val results = mutableListOf<Pair<String, EvalOutcome>>()
-            val trimmed = scriptSource.trim()
-
-            // Split into statements by newline (ignoring # comments and blank lines)
-            // and evaluate strictly inside this isolated sessionId.
-            val statements = mutableListOf<String>()
-            var currentStmt = StringBuilder()
-            var braceDepth = 0
-            var parenDepth = 0
-            var brackDepth = 0
-
-            for (rawLine in trimmed.lines()) {
-                val line = rawLine.substringBefore("#").trim()
-                if (line.isEmpty()) continue
-                if (currentStmt.isNotEmpty()) currentStmt.append(" ")
-                currentStmt.append(line)
-                for (ch in line) {
-                    when (ch) {
-                        '{' -> braceDepth++
-                        '}' -> if (braceDepth > 0) braceDepth--
-                        '(' -> parenDepth++
-                        ')' -> if (parenDepth > 0) parenDepth--
-                        '[' -> brackDepth++
-                        ']' -> if (brackDepth > 0) brackDepth--
-                    }
-                }
-                if (braceDepth == 0 && parenDepth == 0 && brackDepth == 0) {
-                    statements.add(currentStmt.toString().trim())
-                    currentStmt = StringBuilder()
-                }
-            }
-            if (currentStmt.isNotEmpty()) {
-                statements.add(currentStmt.toString().trim())
-            }
+            val statements = splitScriptStatements(scriptSource)
 
             for (stmt in statements) {
                 val wire = try {
