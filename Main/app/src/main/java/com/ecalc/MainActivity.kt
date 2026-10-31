@@ -1816,10 +1816,10 @@ class MainActivity : AppCompatActivity() {
             visibility = View.INVISIBLE
         }
         val overlay = FrameLayout(this).apply { setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dismissButtonPopup() } }
-        // Toned-down frosted backdrop behind the bubble: same frost texture as
-        // the drawer/Info window, at reduced opacity so the UI stays readable.
-        // Captured BEFORE the overlay joins the tree (no self-snapshot).
-        // It FADES in with the bubble entry and fades out on dismiss.
+        // Full-strength frosted backdrop behind the bubble: same frost texture
+        // and opacity as the drawer/Info-window layers. Captured BEFORE the
+        // overlay joins the tree (no self-snapshot). It FADES in with the
+        // bubble entry and fades out on dismiss.
         val frostBmp = Frost.frozenBackdrop(root, downscale = 6, radius = 6)
         if (frostBmp != null) {
             overlay.addView(ImageView(this).apply {
@@ -1871,8 +1871,9 @@ class MainActivity : AppCompatActivity() {
                     bubble.scaleX = s; bubble.scaleY = s
                     bubble.alpha = (f/0.22f).coerceIn(0f, 1f)
                     bubble.translationY = (if (showAbove) 12f*density else -12f*density)*(1f-f)
-                    // Frosted backdrop fades in alongside the bubble
-                    frostChild?.alpha = 0.5f * (f / 0.3f).coerceIn(0f, 1f)
+                    // Frosted backdrop fades in alongside the bubble (full
+                    // frost strength, same as drawer/Info-window layers)
+                    frostChild?.alpha = 0.92f * (f / 0.3f).coerceIn(0f, 1f)
                 }; start()
             }
         }

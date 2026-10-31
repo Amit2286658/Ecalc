@@ -490,10 +490,14 @@ class MathWorkspaceFragment : Fragment() {
             .filter { it.visibility == View.VISIBLE }
         isModulesMode = toModules
         updateModeVisibility(animate = true)
+        // Directional exchange: the incoming mode's content springs in from
+        // the side its button sits on (Modules left, Sessions right), so the
+        // outgoing content exits toward the OPPOSITE side.
+        val incomingDir = if (toModules) -1 else 1
 
         if (outgoing.isEmpty()) {
             refreshFileManagerDrawer()
-            springInDrawerContent()
+            springInDrawerContent(incomingDir)
             drawerExchangeUnderway = false
             return
         }
@@ -504,7 +508,7 @@ class MathWorkspaceFragment : Fragment() {
             if (exchanged) return
             exchanged = true
             refreshFileManagerDrawer()
-            springInDrawerContent()
+            springInDrawerContent(incomingDir)
             drawerExchangeUnderway = false
         }
         outgoing.forEachIndexed { idx, block ->
@@ -516,7 +520,7 @@ class MathWorkspaceFragment : Fragment() {
                 interpolator = AccelerateInterpolator(0.8f)
                 addUpdateListener { a ->
                     val f = a.animatedValue as Float
-                    block.translationX = -exitDist * f
+                    block.translationX = exitDist * incomingDir * f
                     block.alpha = 1f - f
                 }
                 addListener(object : AnimatorListenerAdapter() {
@@ -535,12 +539,13 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     /** Staggered damped-spring entrance for the drawer content that just
-     *  re-materialized after a mode exchange. */
-    private fun springInDrawerContent() {
+     *  re-materialized after a mode exchange. [fromDirection]: -1 arrives
+     *  from the left (Modules), +1 from the right (Sessions). */
+    private fun springInDrawerContent(fromDirection: Int) {
         listOfNotNull(drawerSessionsBlock, drawerFileListContainer)
             .filter { it.visibility == View.VISIBLE }
             .forEachIndexed { idx, block ->
-                block.postDelayed({ springSlideIn(block) }, idx * 40L)
+                block.postDelayed({ springSlideIn(block, fromDirection) }, idx * 40L)
             }
     }
 
@@ -3349,7 +3354,8 @@ class MathWorkspaceFragment : Fragment() {
             refreshModuleChips()
             if (animate) {
                 btnModeModules?.let { springPulse(it, 0.06f) }
-                modulesSection?.let { springSlideIn(it) }
+                // Modules sits LEFT of Sessions: its pane springs in from the left
+                modulesSection?.let { springSlideIn(it, fromDirection = -1) }
             }
         } else {
             modulesSection?.visibility = View.GONE
@@ -3358,7 +3364,8 @@ class MathWorkspaceFragment : Fragment() {
             refreshActiveSessionLogAndVars()
             if (animate) {
                 btnModeSessions?.let { springPulse(it, 0.06f) }
-                sessionsSection?.let { springSlideIn(it) }
+                // Sessions sits right: its pane springs in from the right
+                sessionsSection?.let { springSlideIn(it, fromDirection = 1) }
             }
         }
     }
@@ -3512,9 +3519,12 @@ class MathWorkspaceFragment : Fragment() {
         springAnimators.add(target to anim)
     }
 
-    private fun springSlideIn(target: View) {
+    private fun springSlideIn(target: View, fromDirection: Int = 1) {
         springAnimators.removeAll { (v, a) -> if (v === target) { a.cancel(); true } else false }
-        val dist = 36f * resources.displayMetrics.density
+        // fromDirection: +1 = spring in from the right, -1 = from the left.
+        // The mode switch uses it so content always arrives from the side its
+        // own mode button sits on (🧩 Modules left, ⚡ Sessions right).
+        val dist = fromDirection * 36f * resources.displayMetrics.density
         val anim = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 480L
             interpolator = LinearInterpolator()
