@@ -97,8 +97,8 @@ object Frost {
      * (and on any GPU failure) so the caller can fall back to the static
      * [frozenBackdrop] snapshot.
      */
-    fun tryLiveBlur(target: View, radiusPx: Float): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+    fun tryLiveBlur(target: View?, radiusPx: Float): Boolean {
+        if (target == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
         return try {
             val effect = RenderEffect.createBlurEffect(
                 radiusPx, radiusPx, Shader.TileMode.CLAMP
@@ -111,13 +111,12 @@ object Frost {
     }
 
     /** Removes a blur applied by [tryLiveBlur] (no-op where unsupported). */
-    fun clearLiveBlur(target: View) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                target.setRenderEffect(null)
-            } catch (_: Throwable) {
-                // ignore
-            }
+    fun clearLiveBlur(target: View?) {
+        if (target == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        try {
+            target.setRenderEffect(null)
+        } catch (_: Throwable) {
+            // ignore
         }
     }
 }
