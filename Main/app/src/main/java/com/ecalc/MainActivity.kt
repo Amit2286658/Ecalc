@@ -789,7 +789,9 @@ class MainActivity : AppCompatActivity() {
         }
         overlay.addView(scrimView)
 
-        val cardWidth = (root.width - dp(28f)).coerceIn(dp(280f), dp(420f))
+        // Never let the clamp range invert on narrow windows (a live max in
+        // coerceIn would throw on tiny/split-screen widths).
+        val cardWidth = minOf(root.width - dp(28f), dp(420f)).coerceAtLeast(dp(280f))
         val cardHeight = (root.height * 0.84f).toInt().coerceAtLeast(dp(420f))
         val infoCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1817,12 +1819,13 @@ class MainActivity : AppCompatActivity() {
         // Toned-down frosted backdrop behind the bubble: same frost texture as
         // the drawer/Info window, at reduced opacity so the UI stays readable.
         // Captured BEFORE the overlay joins the tree (no self-snapshot).
+        // It FADES in with the bubble entry and fades out on dismiss.
         val frostBmp = Frost.frozenBackdrop(root, downscale = 6, radius = 6)
         if (frostBmp != null) {
             overlay.addView(ImageView(this).apply {
                 setImageBitmap(frostBmp)
                 scaleType = ImageView.ScaleType.FIT_XY
-                alpha = 0.5f
+                alpha = 0f
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
         overlay.addView(bubble, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
@@ -1832,19 +1835,34 @@ class MainActivity : AppCompatActivity() {
             if (keyPopupOverlay !== overlay) return@post
             val rootLoc = IntArray(2); root.getLocationInWindow(rootLoc)
             val anchorLoc = IntArray(2); anchor.getLocationInWindow(anchorLoc)
-            val bw = bubble.measuredWidth; val bh = bubble.measuredHeight
             val layerPad = (12*density).toInt()
+            // Cap the bubble to the screen: long tooltips used to measure
+            // wider than the window, which made the horizontal clamp below
+            // invert its range and CRASH the app (coerceIn with min > max).
+            val maxW = root.width - 2 * layerPad
+            var bw = bubble.measuredWidth
+            if (bw > maxW && maxW > 0) {
+                bubble.measure(
+                    View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.UNSPECIFIED
+                )
+                (bubble.layoutParams as FrameLayout.LayoutParams).width = maxW
+                bw = bubble.measuredWidth
+            }
+            val bh = bubble.measuredHeight
             val anchorCx = anchorLoc[0] + anchor.width/2 - rootLoc[0]
             val anchorTop = anchorLoc[1] - rootLoc[1]
             val anchorBottom = anchorTop + anchor.height
             val showAbove = anchorTop - bh - layerPad >= layerPad
             val y = if (showAbove) anchorTop - bh - layerPad else anchorBottom + layerPad
-            val x = (anchorCx - bw/2).coerceIn(layerPad, root.width - bw - layerPad)
+            val maxLeft = (root.width - bw - layerPad).coerceAtLeast(layerPad)
+            val x = (anchorCx - bw/2).coerceIn(layerPad, maxLeft)
             (bubble.layoutParams as FrameLayout.LayoutParams).apply { leftMargin = x; topMargin = y }
             bubble.requestLayout()
             bubble.visibility = View.VISIBLE
             bubble.pivotX = bw/2f; bubble.pivotY = if (showAbove) bh.toFloat() else 0f
             bubble.translationY = if (showAbove) 12f*density else -12f*density
+            val frostChild = overlay.getChildAt(0).takeIf { it !== bubble }
             ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 430L; interpolator = LinearInterpolator()
                 addUpdateListener { anim ->
@@ -1853,6 +1871,8 @@ class MainActivity : AppCompatActivity() {
                     bubble.scaleX = s; bubble.scaleY = s
                     bubble.alpha = (f/0.22f).coerceIn(0f, 1f)
                     bubble.translationY = (if (showAbove) 12f*density else -12f*density)*(1f-f)
+                    // Frosted backdrop fades in alongside the bubble
+                    frostChild?.alpha = 0.5f * (f / 0.3f).coerceIn(0f, 1f)
                 }; start()
             }
         }
@@ -1863,6 +1883,10 @@ class MainActivity : AppCompatActivity() {
             keyPopupOverlay = null
             // The bubble is the LAST child (frost backdrop sits below it)
             val bubble = overlay.getChildAt(overlay.childCount - 1)
+            // Frosted backdrop fades out in parallel with the bubble shrink
+            if (overlay.childCount > 1) {
+                overlay.getChildAt(0).animate().alpha(0f).setDuration(170L).start()
+            }
             if (bubble != null) bubble.animate().scaleX(0.62f).scaleY(0.62f).alpha(0f)
                 .setDuration(170L).setInterpolator(AccelerateInterpolator(0.8f))
                 .withEndAction { (overlay.parent as? FrameLayout)?.removeView(overlay) }.start()
