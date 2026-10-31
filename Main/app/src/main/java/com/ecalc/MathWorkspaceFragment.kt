@@ -2145,7 +2145,8 @@ class MathWorkspaceFragment : Fragment() {
             tvModuleLogOutput?.text = "=== Module Build & Link Log ===\nOpen or create a module via ☰ File Manager."
         }
         if (animate) {
-            etModuleEditor?.let { springSlideIn(it) }
+            // Editor pane sits on the LEFT → arrives from the left
+            etModuleEditor?.let { springSlideIn(it, fromDirection = -1) }
             tvActiveModuleName?.let { springPulse(it, 0.05f) }
         }
     }
@@ -2709,7 +2710,8 @@ class MathWorkspaceFragment : Fragment() {
         }
 
         if (animate) {
-            etSessionEditor?.let { springSlideIn(it) }
+            // Editor pane sits on the LEFT → arrives from the left
+            etSessionEditor?.let { springSlideIn(it, fromDirection = -1) }
             tvActiveSessionFileName?.let { springPulse(it, 0.05f) }
         }
     }
@@ -3378,14 +3380,16 @@ class MathWorkspaceFragment : Fragment() {
             moduleEditorPane?.visibility = View.VISIBLE
             if (animate) {
                 btnModuleSubEditor?.let { springPulse(it, 0.06f) }
-                moduleEditorPane?.let { springSlideIn(it) }
+                // Editor is the LEFT sub-tab: its pane springs in from the left
+                moduleEditorPane?.let { springSlideIn(it, fromDirection = -1) }
             }
         } else {
             moduleEditorPane?.visibility = View.GONE
             moduleLogPane?.visibility = View.VISIBLE
             if (animate) {
                 btnModuleSubLog?.let { springPulse(it, 0.06f) }
-                moduleLogPane?.let { springSlideIn(it) }
+                // Log is the RIGHT sub-tab: its pane springs in from the right
+                moduleLogPane?.let { springSlideIn(it, fromDirection = 1) }
             }
         }
     }
@@ -3398,7 +3402,8 @@ class MathWorkspaceFragment : Fragment() {
             sessionEditorPane?.visibility = View.VISIBLE
             if (animate) {
                 btnSessionSubEditor?.let { springPulse(it, 0.06f) }
-                sessionEditorPane?.let { springSlideIn(it) }
+                // Editor is the LEFT sub-tab: its pane springs in from the left
+                sessionEditorPane?.let { springSlideIn(it, fromDirection = -1) }
             }
         } else {
             sessionEditorPane?.visibility = View.GONE
@@ -3406,7 +3411,8 @@ class MathWorkspaceFragment : Fragment() {
             refreshActiveSessionLogAndVars()
             if (animate) {
                 btnSessionSubLog?.let { springPulse(it, 0.06f) }
-                sessionLogPane?.let { springSlideIn(it) }
+                // Log is the RIGHT sub-tab: its pane springs in from the right
+                sessionLogPane?.let { springSlideIn(it, fromDirection = 1) }
             }
         }
     }
