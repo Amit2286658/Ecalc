@@ -849,18 +849,28 @@ class MathWorkspaceFragment : Fragment() {
         isFileManagerDrawerOpen = open
         scrim.isClickable = open
 
-        // Frosted-glass backdrop: snapshot the plain workspace BEFORE any
-        // overlay becomes visible, fade it in for open / out for close.
+        // Frosted-glass backdrop: Android 12+ gets a LIVE RenderEffect blur on
+        // the workspace content (everything behind the drawer keeps animating
+        // through the frost); older versions fall back to a static frosted
+        // snapshot of the plain workspace (captured before overlays show).
         if (open) {
-            val src = workspaceRootFrame
+            val contentRoot = rootLayout
             val frost = drawerFrostView
-            if (src != null && frost != null) {
-                frost.setImageBitmap(Frost.frozenBackdrop(src))
-                frost.alpha = 0f
-                frost.visibility = View.VISIBLE
-                frost.animate().alpha(0.92f).setDuration(240L).start()
+            val densityNow = resources.displayMetrics.density
+            if (contentRoot != null && Frost.tryLiveBlur(contentRoot, 9f * densityNow)) {
+                // liveRenderEffect active: hide the static frost layer
+                frost?.visibility = View.INVISIBLE
+            } else if (frost != null) {
+                val src = workspaceRootFrame
+                if (src != null) {
+                    frost.setImageBitmap(Frost.frozenBackdrop(src))
+                    frost.alpha = 0f
+                    frost.visibility = View.VISIBLE
+                    frost.animate().alpha(0.92f).setDuration(240L).start()
+                }
             }
         } else {
+            Frost.clearLiveBlur(rootLayout)
             drawerFrostView?.let { frost ->
                 frost.animate().alpha(0f).setDuration(200L).withEndAction {
                     frost.visibility = View.INVISIBLE

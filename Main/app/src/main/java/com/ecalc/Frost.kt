@@ -2,6 +2,9 @@ package com.ecalc
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.os.Build
 import android.view.View
 
 /**
@@ -84,6 +87,37 @@ object Frost {
             bmp
         } catch (_: Throwable) {
             null
+        }
+    }
+
+    /**
+     * LIVE frosted blur for Android 12+ (API 31): applies a GPU
+     * [RenderEffect] blur to [target] so everything behind the overlay stays
+     * live-animating through the frost. Returns `false` on older versions
+     * (and on any GPU failure) so the caller can fall back to the static
+     * [frozenBackdrop] snapshot.
+     */
+    fun tryLiveBlur(target: View, radiusPx: Float): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        return try {
+            val effect = RenderEffect.createBlurEffect(
+                radiusPx, radiusPx, Shader.TileMode.CLAMP
+            )
+            target.setRenderEffect(effect)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Removes a blur applied by [tryLiveBlur] (no-op where unsupported). */
+    fun clearLiveBlur(target: View) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                target.setRenderEffect(null)
+            } catch (_: Throwable) {
+                // ignore
+            }
         }
     }
 }
