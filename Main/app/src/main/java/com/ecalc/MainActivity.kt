@@ -706,68 +706,9 @@ class MainActivity : AppCompatActivity() {
     // =========================================================================
 
     private fun createBlurredBackdropBitmap(sourceView: View, radius: Int = 8): Bitmap? {
-        val w = sourceView.width
-        val h = sourceView.height
-        if (w <= 0 || h <= 0) return null
-        return try {
-            val scale = 6
-            val sw = (w / scale).coerceAtLeast(16)
-            val sh = (h / scale).coerceAtLeast(16)
-            val bmp = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bmp)
-            canvas.scale(1f / scale, 1f / scale)
-            sourceView.draw(canvas)
-
-            val pixels = IntArray(sw * sh)
-            val temp = IntArray(sw * sh)
-            bmp.getPixels(pixels, 0, sw, 0, 0, sw, sh)
-
-            val r = radius.coerceIn(2, 14)
-            val div = 2 * r + 1
-            repeat(2) {
-                for (y in 0 until sh) {
-                    val rowOffset = y * sw
-                    for (x in 0 until sw) {
-                        var sumA = 0
-                        var sumR = 0
-                        var sumG = 0
-                        var sumB = 0
-                        for (k in -r..r) {
-                            val px = (x + k).coerceIn(0, sw - 1)
-                            val c = pixels[rowOffset + px]
-                            sumA += (c ushr 24) and 0xFF
-                            sumR += (c ushr 16) and 0xFF
-                            sumG += (c ushr 8) and 0xFF
-                            sumB += c and 0xFF
-                        }
-                        temp[rowOffset + x] =
-                            ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
-                    }
-                }
-                for (x in 0 until sw) {
-                    for (y in 0 until sh) {
-                        var sumA = 0
-                        var sumR = 0
-                        var sumG = 0
-                        var sumB = 0
-                        for (k in -r..r) {
-                            val py = (y + k).coerceIn(0, sh - 1)
-                            val c = temp[py * sw + x]
-                            sumA += (c ushr 24) and 0xFF
-                            sumR += (c ushr 16) and 0xFF
-                            sumG += (c ushr 8) and 0xFF
-                            sumB += c and 0xFF
-                        }
-                        pixels[y * sw + x] =
-                            ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
-                    }
-                }
-            }
-            bmp.setPixels(pixels, 0, sw, 0, 0, sw, sh)
-            bmp
-        } catch (_: Throwable) {
-            null
-        }
+        // Delegated to the shared frosted-glass helper so the Info window, the
+        // File-Manager drawer and hold-tooltips all share one frost texture.
+        return Frost.frozenBackdrop(sourceView, downscale = 6, radius = radius)
     }
 
     private fun readAssetTextOrFallback(assetPath: String, fallback: String): String {
@@ -1873,6 +1814,17 @@ class MainActivity : AppCompatActivity() {
             visibility = View.INVISIBLE
         }
         val overlay = FrameLayout(this).apply { setBackgroundColor(Color.TRANSPARENT); setOnClickListener { dismissButtonPopup() } }
+        // Toned-down frosted backdrop behind the bubble: same frost texture as
+        // the drawer/Info window, at reduced opacity so the UI stays readable.
+        // Captured BEFORE the overlay joins the tree (no self-snapshot).
+        val frostBmp = Frost.frozenBackdrop(root, downscale = 6, radius = 6)
+        if (frostBmp != null) {
+            overlay.addView(ImageView(this).apply {
+                setImageBitmap(frostBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = 0.5f
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
         overlay.addView(bubble, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         root.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         keyPopupOverlay = overlay
@@ -1908,7 +1860,9 @@ class MainActivity : AppCompatActivity() {
 
     fun dismissButtonPopup() {
         keyPopupOverlay?.let { overlay ->
-            keyPopupOverlay = null; val bubble = overlay.getChildAt(0)
+            keyPopupOverlay = null
+            // The bubble is the LAST child (frost backdrop sits below it)
+            val bubble = overlay.getChildAt(overlay.childCount - 1)
             if (bubble != null) bubble.animate().scaleX(0.62f).scaleY(0.62f).alpha(0f)
                 .setDuration(170L).setInterpolator(AccelerateInterpolator(0.8f))
                 .withEndAction { (overlay.parent as? FrameLayout)?.removeView(overlay) }.start()

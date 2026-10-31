@@ -17,10 +17,12 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -76,6 +78,11 @@ class MathWorkspaceFragment : Fragment() {
         private set
     private var drawerScrimView: View? = null
     private var fileManagerDrawerPanel: LinearLayout? = null
+    /** Frosted snapshot of the workspace shown behind the open drawer. */
+    private var drawerFrostView: ImageView? = null
+    /** In-flight Modules↔Sessions exchange animators inside the drawer. */
+    private val drawerExchangeAnimators = mutableListOf<ValueAnimator>()
+    private var drawerExchangeUnderway = false
     private var tvDrawerTitle: TextView? = null
     private var tvDrawerSubtitle: TextView? = null
     private var btnDrawerCloseIcon: NeumorphicKeyView? = null
@@ -379,6 +386,24 @@ class MathWorkspaceFragment : Fragment() {
         outerFrame.addView(root)
 
         // 5. Build Left-Side Sliding File Manager Drawer + Dimmed Scrim
+        // Frosted backdrop sits above the workspace content but below the
+        // scrim and the drawer itself: while the drawer is active the whole
+        // background gets a frosted-glass treatment (snapshot of the plain
+        // workspace, taken while overlays are still invisible).
+        val frost = ImageView(ctx).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
+            alpha = 0f
+            visibility = View.INVISIBLE
+            isClickable = false
+            isFocusable = false
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        drawerFrostView = frost
+        outerFrame.addView(frost)
+
         val scrim = View(ctx).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -439,9 +464,84 @@ class MathWorkspaceFragment : Fragment() {
         } else {
             saveCurrentSessionEditorState(activeSessionId, showToast = false)
         }
+        if (animate && isFileManagerDrawerOpen) {
+            animateDrawerModeExchange(toModules)
+            return
+        }
         isModulesMode = toModules
         updateModeVisibility(animate = animate)
         refreshFileManagerDrawer()
+    }
+
+    /**
+     * Modules↔Sessions exchange inside the open drawer: the current content
+     * slides left out of the drawer's edge (quick fade, 45 ms stagger), then
+     * the new mode's content refreshes and springs in from the right with the
+     * app's damped-spring physics — same family as every other transition.
+     * The getting-covered main pane still gets its plain spring pulse.
+     */
+    private fun animateDrawerModeExchange(toModules: Boolean) {
+        val activity = activity as? MainActivity ?: return
+        drawerExchangeAnimators.forEach { it.cancel() }
+        drawerExchangeAnimators.clear()
+        drawerExchangeUnderway = true
+
+        val outgoing = listOfNotNull(drawerSessionsBlock, drawerFileListContainer)
+            .filter { it.visibility == View.VISIBLE }
+        isModulesMode = toModules
+        updateModeVisibility(animate = true)
+
+        if (outgoing.isEmpty()) {
+            refreshFileManagerDrawer()
+            springInDrawerContent()
+            drawerExchangeUnderway = false
+            return
+        }
+
+        var remaining = outgoing.size
+        var exchanged = false
+        fun finishExchange() {
+            if (exchanged) return
+            exchanged = true
+            refreshFileManagerDrawer()
+            springInDrawerContent()
+            drawerExchangeUnderway = false
+        }
+        outgoing.forEachIndexed { idx, block ->
+            val fallbackW = (activity.resources.displayMetrics.widthPixels * 0.7f).toInt()
+            val exitDist = (block.width.takeIf { it > 0 } ?: fallbackW) * 1.1f
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                startDelay = idx * 45L
+                duration = 170L
+                interpolator = AccelerateInterpolator(0.8f)
+                addUpdateListener { a ->
+                    val f = a.animatedValue as Float
+                    block.translationX = -exitDist * f
+                    block.alpha = 1f - f
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        // Reset before the rebuild so refresh() sees a clean block
+                        block.translationX = 0f
+                        block.alpha = 1f
+                        remaining--
+                        if (remaining == 0) finishExchange()
+                    }
+                })
+                start()
+                drawerExchangeAnimators.add(this)
+            }
+        }
+    }
+
+    /** Staggered damped-spring entrance for the drawer content that just
+     *  re-materialized after a mode exchange. */
+    private fun springInDrawerContent() {
+        listOfNotNull(drawerSessionsBlock, drawerFileListContainer)
+            .filter { it.visibility == View.VISIBLE }
+            .forEachIndexed { idx, block ->
+                block.postDelayed({ springSlideIn(block) }, idx * 40L)
+            }
     }
 
     // =========================================================================
@@ -748,6 +848,26 @@ class MathWorkspaceFragment : Fragment() {
         drawerAnimator?.cancel()
         isFileManagerDrawerOpen = open
         scrim.isClickable = open
+
+        // Frosted-glass backdrop: snapshot the plain workspace BEFORE any
+        // overlay becomes visible, fade it in for open / out for close.
+        if (open) {
+            val src = workspaceRootFrame
+            val frost = drawerFrostView
+            if (src != null && frost != null) {
+                frost.setImageBitmap(Frost.frozenBackdrop(src))
+                frost.alpha = 0f
+                frost.visibility = View.VISIBLE
+                frost.animate().alpha(0.92f).setDuration(240L).start()
+            }
+        } else {
+            drawerFrostView?.let { frost ->
+                frost.animate().alpha(0f).setDuration(200L).withEndAction {
+                    frost.visibility = View.INVISIBLE
+                    frost.setImageBitmap(null)
+                }.start()
+            }
+        }
 
         if (!animate) {
             drawer.setLayerType(View.LAYER_TYPE_NONE, null)
@@ -3471,6 +3591,11 @@ class MathWorkspaceFragment : Fragment() {
         saveCurrentModuleEditorState(showToast = false)
         saveCurrentSessionEditorState(activeSessionId, showToast = false)
         drawerAnimator?.cancel()
+        drawerExchangeAnimators.forEach { it.cancel() }
+        drawerExchangeAnimators.clear()
+        drawerExchangeUnderway = false
+        drawerFrostView?.setImageBitmap(null)
+        drawerFrostView = null
         wobbleAnimators.forEach { it.cancel() }
         wobbleAnimators.clear()
         springAnimators.forEach { it.second.cancel() }
