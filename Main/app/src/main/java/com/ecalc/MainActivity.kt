@@ -125,10 +125,21 @@ class MainActivity : AppCompatActivity() {
 
         Thread {
             MathEngineManager.ensureEngine()
-            // Download any new incremental .math extension patches in the background
-            // and load them if new patches arrived
-            if (MathPatchDownloader.syncMissingPatches(applicationContext) > 0) {
-                MathEngineManager.loadPendingPatches()
+            // Download any new incremental .math extension patches in the
+            // background, then give the on-disk patch folder a load attempt on
+            // EVERY launch: syncMissingPatches returns 0 when files were
+            // already downloaded by an earlier launch, and the previous
+            // "if (>0)" gating meant such patches would never be (re)tried in
+            // a fresh engine. All pipeline feedback is collected and shown as
+            // ONE toast after completion (separate toasts cancel each other),
+            // so "did the patch actually load?" is answerable without adb.
+            val statusLines = java.util.Collections.synchronizedList(ArrayList<String>())
+            val stageToasts: (String) -> Unit = { msg -> statusLines.add(msg) }
+            MathPatchDownloader.syncMissingPatches(applicationContext, stageToasts)
+            MathEngineManager.loadPendingPatches(onStatus = stageToasts)
+            if (statusLines.isNotEmpty()) {
+                val summary = statusLines.joinToString("\n")
+                runOnUiThread { showButtonToast(summary) }
             }
         }.start()
 

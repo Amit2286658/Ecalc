@@ -113,7 +113,8 @@ object MathPatchLoader {
     fun loadUnloadedPatches(
         context: Context,
         engineHandle: Long,
-        compilerLinker: (mathSource: String) -> Triple<Boolean, String, ByteArray?>
+        compilerLinker: (mathSource: String) -> Triple<Boolean, String, ByteArray?>,
+        onStatus: ((String) -> Unit)? = null
     ): Int {
         if (engineHandle == 0L) return 0
         if (trackedEngineHandle != engineHandle) {
@@ -140,11 +141,14 @@ object MathPatchLoader {
                         latestCompiledMathc = mathcBytes
                     }
                     Log.i(TAG, "Compiled & linked patch '${file.name}': $msg")
+                    onStatus?.invoke("Loaded patch '${file.name}' into engine")
                 } else {
                     Log.w(TAG, "Failed to link patch '${file.name}': $msg")
+                    onStatus?.invoke("FAILED to load patch '${file.name}': $msg")
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Error reading patch file '${file.name}'", t)
+                onStatus?.invoke("Error reading patch file '${file.name}': ${t.message}")
             }
         }
 

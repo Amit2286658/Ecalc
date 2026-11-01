@@ -151,15 +151,22 @@ object MathEngineManager {
     }
 
     /** Scans `filesDir/math_patches/` on the engine worker thread and links any
-     *  downloaded `.math` patches that are not yet loaded. */
-    fun loadPendingPatches(onDone: ((loadedCount: Int) -> Unit)? = null) {
+     *  downloaded `.math` patches that are not yet loaded. [onStatus] receives
+     *  one-line pipeline feedback (engine readiness, per-patch load results). */
+    fun loadPendingPatches(
+        onDone: ((loadedCount: Int) -> Unit)? = null,
+        onStatus: ((String) -> Unit)? = null
+    ) {
         worker.execute {
             if (!ensureEngine()) {
+                onStatus?.invoke("Patch load skipped: engine not ready")
                 onDone?.invoke(0)
                 return@execute
             }
             val count = appContext?.let { ctx ->
-                MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
+                MathPatchLoader.loadUnloadedPatches(
+                    ctx, engineHandle, ::compileAndLoadWithBytesSync, onStatus
+                )
             } ?: 0
             onDone?.invoke(count)
         }

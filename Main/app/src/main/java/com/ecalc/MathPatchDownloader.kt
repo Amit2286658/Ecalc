@@ -56,17 +56,28 @@ object MathPatchDownloader {
         File(context.filesDir, PATCHES_FOLDER_NAME).apply { mkdirs() }
 
     /**
-     * Inspects `manifest.json` at [manifestBaseUrl] and downloads any `.math`
-     * files not already present with a matching SHA-256 in `filesDir/math_patches/`.
+     * Inspects `manifest.json` and downloads any `.math` files not already
+     * present with a matching SHA-256 in `filesDir/math_patches/`.
      *
+     * @param onStatus Optional one-line status reporting (mirrors of the CDN
+     *   are retried transparently); lets the caller surface pull results on
+     *   screen instead of only in logcat.
      * @return Number of newly downloaded `.math` patch files.
      */
-    fun syncMissingPatches(context: Context): Int {
+    fun syncMissingPatches(context: Context, onStatus: ((String) -> Unit)? = null): Int {
         return try {
             val patchesDir = getPatchesDir(context)
-            val manifestText = fetchStringWithFallback("/manifest.json") ?: return 0
+            val manifestText = fetchStringWithFallback("/manifest.json")
+            if (manifestText == null) {
+                onStatus?.invoke("Patch sync: no reachable source (offline or CDN blocked)")
+                return 0
+            }
             val root = JSONObject(manifestText)
-            val patchesArray = root.optJSONArray("patches") ?: return 0
+            val patchesArray = root.optJSONArray("patches")
+            if (patchesArray == null) {
+                onStatus?.invoke("Patch sync: manifest.json has no patches[] array")
+                return 0
+            }
 
             var downloadedCount = 0
             for (i in 0 until patchesArray.length()) {
@@ -76,8 +87,9 @@ object MathPatchDownloader {
                 if (!fileName.endsWith(".math") || fileName.contains("/") || fileName.contains("..")) {
                     continue
                 }
-                if (downloadPatchIfNeeded(patchesDir, fileName, expectedSha)) {
+                if (downloadPatchIfNeeded(patchesDir, fileName, expectedSha, onStatus)) {
                     downloadedCount++
+                    onStatus?.invoke("Downloaded patch '$fileName' (SHA-256 verified)")
                 }
             }
             if (downloadedCount > 0) {
@@ -90,7 +102,12 @@ object MathPatchDownloader {
         }
     }
 
-    private fun downloadPatchIfNeeded(dir: File, fileName: String, expectedSha256: String): Boolean {
+    private fun downloadPatchIfNeeded(
+        dir: File,
+        fileName: String,
+        expectedSha256: String,
+        onStatus: ((String) -> Unit)? = null
+    ): Boolean {
         val targetFile = File(dir, fileName)
         if (targetFile.isFile && targetFile.canRead()) {
             if (expectedSha256.isEmpty()) return false
@@ -100,9 +117,13 @@ object MathPatchDownloader {
             }
         }
 
-        val bytes = fetchBytesWithFallback("/$fileName") ?: return false
+        val bytes = fetchBytesWithFallback("/$fileName") ?: run {
+            onStatus?.invoke("Patch download failed: '$fileName' unreachable on all mirrors")
+            return false
+        }
         if (expectedSha256.isNotEmpty() && !sha256Hex(bytes).equals(expectedSha256, ignoreCase = true)) {
             Log.w(TAG, "Patch $fileName failed SHA-256 verification; discarding")
+            onStatus?.invoke("Patch '$fileName' failed SHA-256 verification; discarded")
             return false
         }
 
