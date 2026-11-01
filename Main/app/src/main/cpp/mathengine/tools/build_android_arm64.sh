@@ -35,7 +35,7 @@ LD="$NDK_BIN/lld"
 INCS="-I$ROOT/Core/Headers -I$ROOT/Core/compile -I$ROOT/Core/session -I$ROOT/Core/jni -I$ROOT/Core/lib/delegate -I$ROOT/Core/lib/hardcode"
 
 # -DMATH_ENGINE_SEPARATE_STDLIB=1 excludes k_stdlib_mathc from .rodata (~287 KB .so)
-CFLAGS="-O2 -std=c11 -fPIC -fvisibility=hidden -fstack-protector-strong \
+CFLAGS="--sysroot=$NDK_BIN/../sysroot -O2 -std=c11 -fPIC -fvisibility=hidden -fstack-protector-strong \
  -DANDROID -DMATH_ENGINE_SHARED=1 -DMATH_ENGINE_SEPARATE_STDLIB=1 -D_FORTIFY_SOURCE=2 -ffunction-sections -fdata-sections"
 
 rm -rf "$TMP"; mkdir -p "$TMP" "$OUT"
