@@ -775,6 +775,11 @@ bool ext_compile_slice(MemArena *mem, SymTable *tab,
 
         char c = L.src[L.pos];
 
+        if (c == ';') {
+            L.pos++;
+            continue;
+        }
+
         if (c == '[') {
             L.pos++;
             StrSlice mname = ext_read_ident(&L);

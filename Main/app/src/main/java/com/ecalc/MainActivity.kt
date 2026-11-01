@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     var isDegreeMode: Boolean = true
     private var currentWorkspacePage: Int = 0 // 0 = Calculator, 1 = .math Studio
     private var currentToast: Toast? = null
+    private var patchToast: Toast? = null
     private var launchRevealStarted: Boolean = false
     private var isExitingApp: Boolean = false
 
@@ -123,25 +124,29 @@ class MainActivity : AppCompatActivity() {
         applyThemeColors(isDarkMode)
         applyThemeIconScales(isDarkMode, animate = false)
 
-        Thread {
-            MathEngineManager.ensureEngine()
-            // Download any new incremental .math extension patches in the
-            // background, then give the on-disk patch folder a load attempt on
-            // EVERY launch: syncMissingPatches returns 0 when files were
-            // already downloaded by an earlier launch, and the previous
-            // "if (>0)" gating meant such patches would never be (re)tried in
-            // a fresh engine. All pipeline feedback is collected and shown as
-            // ONE toast after completion (separate toasts cancel each other),
-            // so "did the patch actually load?" is answerable without adb.
-            val statusLines = java.util.Collections.synchronizedList(ArrayList<String>())
-            val stageToasts: (String) -> Unit = { msg -> statusLines.add(msg) }
-            MathPatchDownloader.syncMissingPatches(applicationContext, stageToasts)
-            MathEngineManager.loadPendingPatches(onStatus = stageToasts)
-            if (statusLines.isNotEmpty()) {
-                val summary = statusLines.joinToString("\n")
-                runOnUiThread { showButtonToast(summary) }
+        // Coordinate engine boot, remote .math patch sync, and worker-thread patch
+        // compilation/linking so status feedback is only toasted AFTER all stages
+        // finish (preventing the race where statusLines was checked before the
+        // async worker executed loadPendingPatches, or where ensureEngine()
+        // consumed unloaded patches with a null status callback).
+        val statusLines = java.util.Collections.synchronizedList(ArrayList<String>())
+        val stageToasts: (String) -> Unit = { msg -> statusLines.add(msg) }
+        MathEngineManager.syncAndLoadPatches(
+            context = applicationContext,
+            onStatus = stageToasts,
+            onDone = { _, _ ->
+                val summary = synchronized(statusLines) {
+                    statusLines.distinct().joinToString("\n")
+                }
+                if (summary.isNotBlank()) {
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) {
+                            showPatchStatusToast(summary)
+                        }
+                    }
+                }
             }
-        }.start()
+        )
 
         // Start the in-app ripple animation on the very first pre-draw frame
         binding.rootFrame.viewTreeObserver.addOnPreDrawListener(
@@ -199,6 +204,13 @@ class MainActivity : AppCompatActivity() {
     fun showButtonToast(label: String) {
         currentToast?.cancel()
         currentToast = Toast.makeText(this, label, Toast.LENGTH_SHORT).also { it.show() }
+    }
+
+    /** Dedicated long-duration toast for startup/patch pipeline status so keypad or
+     *  session button toasts do not immediately cancel patch diagnostic messages. */
+    fun showPatchStatusToast(summary: String) {
+        patchToast?.cancel()
+        patchToast = Toast.makeText(this, summary, Toast.LENGTH_LONG).also { it.show() }
     }
 
     private fun setupWorkspaceFragment() {

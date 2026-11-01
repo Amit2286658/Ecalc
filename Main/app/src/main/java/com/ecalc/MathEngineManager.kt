@@ -3,6 +3,7 @@ package com.ecalc
 import android.content.Context
 import android.util.Log
 import com.mathengine.MathEngineBridge
+import java.io.File
 import java.util.concurrent.Executors
 
 /**
@@ -32,12 +33,13 @@ object MathEngineManager {
     private const val TAG = "MathEngineManager"
     private const val BUNDLED_STDLIB_ASSET = "precompiled/stdlib.mathc"
     private const val BUNDLED_USER_TRIG_ASSET = "precompiled/user_trig.math"
+    private const val MAX_NATIVE_SESSIONS = 8
 
     @Volatile
     private var appContext: Context? = null
     private var engineHandle: Long = 0
     private val worker = Executors.newSingleThreadExecutor()
-    private val loadedExtensionSources = mutableSetOf<String>()
+    private val studioExtensionSourcesByKey = linkedMapOf<String, String>()
 
     /** Provides the application context so `assets/precompiled/stdlib.mathc`
      *  and `filesDir/math_patches/` can be loaded automatically on the background
@@ -52,15 +54,40 @@ object MathEngineManager {
 
     /** Seeds `user_trig.math` into `filesDir/math_patches/` on first install so
      *  reciprocal/inverse trig functions work offline before GitHub sync runs. */
+    @Synchronized
     private fun seedDefaultPatchesIfNeeded(context: Context) {
         runCatching {
             val patchesDir = MathPatchDownloader.getPatchesDir(context)
-            val userTrigFile = java.io.File(patchesDir, "user_trig.math")
-            if (!userTrigFile.exists()) {
+            val userTrigFile = File(patchesDir, "user_trig.math")
+            if (!userTrigFile.isFile || userTrigFile.length() == 0L) {
                 val bytes = context.assets.open(BUNDLED_USER_TRIG_ASSET).use { it.readBytes() }
-                userTrigFile.writeBytes(bytes)
+                val tmpFile = File(patchesDir, ".user_trig.math.tmp")
+                tmpFile.writeBytes(bytes)
+                if (!tmpFile.renameTo(userTrigFile)) {
+                    userTrigFile.writeBytes(bytes)
+                    tmpFile.delete()
+                }
             }
         }
+    }
+
+    private fun stripCommentOutsideQuotes(line: String): String {
+        var inQuotes = false
+        var i = 0
+        while (i < line.length) {
+            val ch = line[i]
+            if (ch == '\\' && inQuotes && i + 1 < line.length) {
+                i += 2
+                continue
+            }
+            if (ch == '"') {
+                inQuotes = !inQuotes
+            } else if (ch == '#' && !inQuotes) {
+                return line.substring(0, i).trimEnd()
+            }
+            i++
+        }
+        return line.trimEnd()
     }
 
     /**
@@ -68,33 +95,110 @@ object MathEngineManager {
      * definition (rather than a standard `.math` evaluation script).
      *
      * True modules contain at least one `[module_name]` section header, `<[dep]`
-     * dependency directive, `$type` declaration, or typed module overload declaration
-     * (`fn(x: real) = ...;`) and do not consist of session `:=` variable/function
-     * assignments or standalone evaluation expressions.
+     * dependency directive, `$type` declaration, `@dim` declaration, or typed module
+     * overload declaration (`fn(x: real) = ...;`) and do not consist of session `:=`
+     * variable/function assignments or standalone evaluation expressions.
      */
     fun isTrueModuleSource(raw: String): Boolean {
         val codeLines = raw.lines()
-            .map { it.substringBefore("#").trim() }
+            .map { stripCommentOutsideQuotes(it).trim() }
             .filter { it.isNotEmpty() }
         if (codeLines.isEmpty()) return true // Keep blank module template until edited
 
         val joined = codeLines.joinToString("\n")
-        val hasModuleHeader = Regex("(?m)^\\[[a-zA-Z_][a-zA-Z0-9_]*\\]$").containsMatchIn(joined)
-        val hasDepHeader = Regex("(?m)^<\\[[a-zA-Z_][a-zA-Z0-9_]*\\]$").containsMatchIn(joined)
+        val hasModuleHeader = Regex("(?m)^\\[[a-zA-Z_][a-zA-Z0-9_]*]$").containsMatchIn(joined)
+        val hasDepHeader = Regex("(?m)^<\\[[a-zA-Z_][a-zA-Z0-9_]*]$").containsMatchIn(joined)
         val hasTypeDecl = Regex("(?m)^\\$[a-zA-Z_][a-zA-Z0-9_]*").containsMatchIn(joined)
+        val hasDimDecl = Regex("(?m)^@(dim|unit_dim)\\s*\\(").containsMatchIn(joined)
         val hasTypedOverload = Regex(
-            "(?m)^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\([^)]*:\\s*[a-zA-Z_][a-zA-Z0-9_]*[^)]*\\)\\s*="
+            "(?m)^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\([^)]*:\\s*[a-zA-Z_][a-zA-Z0-9_]*[^)]*\\)\\s*(?::\\s*[<>]?\\s*\\d+\\s*)?(?:->\\s*[a-zA-Z_][a-zA-Z0-9_]*(?:\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_]*)?\\s*)?="
         ).containsMatchIn(joined)
         val hasQuotedOperatorDecl = Regex("(?m)^\"[^\"]+\"").containsMatchIn(joined)
+        val hasParamOperatorDecl = Regex(
+            "(?m)^\\(\\s*[a-zA-Z_][a-zA-Z0-9_]*\\s*(?::[^)]*)?\\)\\s*(?:\"[^\"]+\"|[a-zA-Z_][a-zA-Z0-9_]*)"
+        ).containsMatchIn(joined)
         val hasSessionAssignment = codeLines.any { it.contains(":=") }
 
-        if (hasModuleHeader || hasDepHeader || hasTypeDecl || hasQuotedOperatorDecl) {
+        if (hasModuleHeader || hasDepHeader || hasTypeDecl || hasDimDecl || hasQuotedOperatorDecl || hasParamOperatorDecl) {
             return true
         }
         if (hasTypedOverload && !hasSessionAssignment) {
             return true
         }
         return false
+    }
+
+    /** Creates a blank engine loaded strictly with `assets/precompiled/stdlib.mathc`. */
+    private fun createFreshStdlibEngine(ctx: Context): Long {
+        val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
+        val blank = MathEngineBridge.nativeCreateBlank()
+        if (blank != 0L && MathEngineBridge.nativeLoadMathc(blank, stdlibBytes)) {
+            Log.i(TAG, "Booted blank engine with $BUNDLED_STDLIB_ASSET (${stdlibBytes.size} bytes)")
+            return blank
+        }
+        if (blank != 0L) {
+            MathEngineBridge.nativeDestroy(blank)
+        }
+        val fallback = MathEngineBridge.nativeCreate()
+        if (fallback != 0L) {
+            Log.i(TAG, "Booted engine via nativeCreate() (embedded stdlib)")
+        }
+        return fallback
+    }
+
+    /**
+     * Rebuilds the native engine from `stdlib.mathc` + all current `.math` patches in
+     * `filesDir/math_patches/` + any `.math Studio` user modules while preserving open
+     * session snapshots. Used when an already-loaded patch or Studio module is updated.
+     */
+    @Synchronized
+    private fun rebuildEnginePreservingStateSync(
+        ctx: Context,
+        onStatus: ((String) -> Unit)? = null
+    ): Boolean {
+        val oldHandle = engineHandle
+        val savedSessionSnapshots = mutableMapOf<Int, String>()
+        if (oldHandle != 0L) {
+            for (nativeSid in 0 until MAX_NATIVE_SESSIONS) {
+                val snaps = runCatching {
+                    MathEngineBridge.nativeSessionExportSnapshots(oldHandle, nativeSid)
+                }.getOrNull()
+                if (!snaps.isNullOrBlank()) {
+                    savedSessionSnapshots[nativeSid] = snaps
+                }
+            }
+        }
+
+        MathPatchDownloader.invalidateCompiledCache(MathPatchDownloader.getPatchesDir(ctx))
+        val newHandle = createFreshStdlibEngine(ctx)
+        if (newHandle == 0L) {
+            onStatus?.invoke("Engine rebuild failed: could not load $BUNDLED_STDLIB_ASSET")
+            return false
+        }
+
+        if (oldHandle != 0L) {
+            runCatching { MathEngineBridge.nativeDestroy(oldHandle) }
+        }
+        engineHandle = newHandle
+        MathPatchLoader.resetTracking()
+
+        MathPatchLoader.loadUnloadedPatches(
+            ctx,
+            engineHandle,
+            ::compileAndLoadPatchWithBytesSync,
+            onStatus
+        )
+
+        // Re-link any custom modules compiled interactively in .math Studio
+        for ((_, studioSrc) in studioExtensionSourcesByKey) {
+            compileAndLoadPatchWithBytesSync(studioSrc)
+        }
+
+        // Restore any active sessions that had snapshots
+        for ((_, snaps) in savedSessionSnapshots) {
+            runCatching { MathEngineBridge.nativeSessionRestore(engineHandle, snaps) }
+        }
+        return true
     }
 
     /** Boots the native engine strictly from `stdlib.mathc` (no embedded fallback):
@@ -104,48 +208,59 @@ object MathEngineManager {
      *     `assets/precompiled/stdlib.mathc` (`nativeLoadMathc`), compiles any `.math`
      *     patches in `filesDir/math_patches/`, and saves `compiled_state.mathc`. */
     @Synchronized
-    fun ensureEngine(): Boolean {
+    fun ensureEngine(onStatus: ((String) -> Unit)? = null): Boolean {
+        val ctx = appContext ?: return false
         if (engineHandle != 0L) {
-            appContext?.let { ctx ->
-                MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
+            seedDefaultPatchesIfNeeded(ctx)
+            if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
+                return rebuildEnginePreservingStateSync(ctx, onStatus)
             }
+            MathPatchLoader.loadUnloadedPatches(
+                ctx,
+                engineHandle,
+                ::compileAndLoadPatchWithBytesSync,
+                onStatus
+            )
             return true
         }
-        val ctx = appContext ?: return false
         return try {
             seedDefaultPatchesIfNeeded(ctx)
 
             // 1. Fast path: boot blank engine from cached compiled_state.mathc (stdlib + patches)
-            var handle = MathPatchLoader.tryBootFromCompiledCache(ctx)
+            val cachedHandle = MathPatchLoader.tryBootFromCompiledCache(ctx, onStatus)
+            if (cachedHandle != 0L) {
+                engineHandle = cachedHandle
+                // Also check if any unloaded patches remain (none on exact cache hit)
+                if ( onStatus == null ) {
+                    MathPatchLoader.loadUnloadedPatches(
+                        ctx,
+                        engineHandle,
+                        ::compileAndLoadPatchWithBytesSync,
+                        null
+                    )
+                }
+                return true
+            }
 
             // 2. Standard path: boot blank engine and load bundled assets/precompiled/stdlib.mathc
-            if (handle == 0L) {
-                val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
-                val blank = MathEngineBridge.nativeCreateBlank()
-                if (blank != 0L && MathEngineBridge.nativeLoadMathc(blank, stdlibBytes)) {
-                    handle = blank
-                    Log.i(TAG, "Booted blank engine with $BUNDLED_STDLIB_ASSET (${stdlibBytes.size} bytes)")
-                } else if (blank != 0L) {
-                    MathEngineBridge.nativeDestroy(blank)
-                }
-            }
-
-            // 3. Last resort: legacy embedded-stdlib engine (eng_create)
-            if (handle == 0L) {
-                handle = MathEngineBridge.nativeCreate()
-                if (handle != 0L) Log.i(TAG, "Booted engine via nativeCreate() (embedded stdlib)")
-            }
-
+            val handle = createFreshStdlibEngine(ctx)
             engineHandle = handle
             if (engineHandle != 0L) {
-                MathPatchLoader.loadUnloadedPatches(ctx, engineHandle, ::compileAndLoadWithBytesSync)
+                MathPatchLoader.loadUnloadedPatches(
+                    ctx,
+                    engineHandle,
+                    ::compileAndLoadPatchWithBytesSync,
+                    onStatus
+                )
                 true
             } else {
                 Log.e(TAG, "Failed to initialize blank engine with $BUNDLED_STDLIB_ASSET")
+                onStatus?.invoke("Engine init failed: could not load $BUNDLED_STDLIB_ASSET")
                 false
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Exception while initializing engine from $BUNDLED_STDLIB_ASSET", t)
+            onStatus?.invoke("Engine init exception: ${t.message}")
             false
         }
     }
@@ -158,59 +273,169 @@ object MathEngineManager {
         onStatus: ((String) -> Unit)? = null
     ) {
         worker.execute {
-            if (!ensureEngine()) {
-                onStatus?.invoke("Patch load skipped: engine not ready")
+            val ctx = appContext
+            if (ctx == null) {
+                onStatus?.invoke("Patch load skipped: app context not initialized")
                 onDone?.invoke(0)
                 return@execute
             }
-            val count = appContext?.let { ctx ->
-                MathPatchLoader.loadUnloadedPatches(
-                    ctx, engineHandle, ::compileAndLoadWithBytesSync, onStatus
+            synchronized(this) {
+                if (engineHandle == 0L) {
+                    val ok = ensureEngine(onStatus = onStatus)
+                    if (!ok) {
+                        onStatus?.invoke("Patch load skipped: engine not ready")
+                    }
+                    onDone?.invoke(0)
+                    return@execute
+                }
+                if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
+                    rebuildEnginePreservingStateSync(ctx, onStatus)
+                    onDone?.invoke(1)
+                    return@execute
+                }
+                val count = MathPatchLoader.loadUnloadedPatches(
+                    ctx,
+                    engineHandle,
+                    ::compileAndLoadPatchWithBytesSync,
+                    onStatus
                 )
-            } ?: 0
-            onDone?.invoke(count)
+                onDone?.invoke(count)
+            }
         }
     }
 
-    private fun normalizeExtensionSource(raw: String): String {
-        val sb = StringBuilder()
+    /**
+     * Runs the complete startup patch pipeline in deterministic order:
+     * 1. Ensures the local engine is booted on the worker thread for immediate UI use.
+     * 2. Downloads any missing or updated `.math` patches from the remote manifest.
+     * 3. Compiles & links any newly downloaded (or previously unloaded) `.math` patches
+     *    on the engine worker thread and reports unified status via [onStatus] before
+     *    invoking [onDone].
+     */
+    fun syncAndLoadPatches(
+        context: Context,
+        onStatus: ((String) -> Unit)? = null,
+        onDone: ((downloadedCount: Int, loadedCount: Int) -> Unit)? = null
+    ) {
+        val app = context.applicationContext
+        appContext = app
+        Thread {
+            seedDefaultPatchesIfNeeded(app)
+            val downloaded = MathPatchDownloader.syncMissingPatches(app, onStatus)
+            loadPendingPatches(
+                onDone = { loaded ->
+                    onDone?.invoke(downloaded, loaded)
+                },
+                onStatus = onStatus
+            )
+        }.start()
+    }
+
+    /**
+     * Normalizes `.math` extension source code before passing to `nativeCompileExt`:
+     * - Strips UTF-8 BOM and normalizes CRLF/CR line endings.
+     * - Strips `#` comments only outside `"..."` string literals.
+     * - Strips trailing `;` on non-expression top-level directives (`@dim`, `@unit_dim`,
+     *   `$type`, and `"..." => @...`) because `ext_compile_slice` parses those directly
+     *   without consuming trailing semicolons.
+     * - Joins multi-line expression continuations at depth 0 (e.g. lines ending with
+     *   `=`, `+`, `-`, `*`, `/`, `^`, `?`, `:`, `|>`, `&&`, `||` or next line starting
+     *   with `|>`, `?`, `:`, `else`, `or`) so `stop_at_newline` in the C lexer never
+     *   truncates a multi-line function body at depth 0.
+     */
+    internal fun normalizeExtensionSource(raw: String): String {
+        val cleaned = raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace("\r", "\n")
+        val codeLines = mutableListOf<String>()
+        val syntaxBindingRegex = Regex("^\"[^\"]+\"\\s*=>\\s*@")
+
+        for (rawLine in cleaned.lines()) {
+            var codePart = stripCommentOutsideQuotes(rawLine)
+            val trimmed = codePart.trim()
+            if (trimmed.isEmpty()) continue
+
+            if (trimmed.startsWith("@dim") ||
+                trimmed.startsWith("@unit_dim") ||
+                trimmed.startsWith("$") ||
+                syntaxBindingRegex.containsMatchIn(trimmed)
+            ) {
+                while (codePart.endsWith(";")) {
+                    codePart = codePart.dropLast(1).trimEnd()
+                }
+            }
+            if (codePart.isNotBlank()) {
+                codeLines.add(codePart)
+            }
+        }
+
+        val merged = mutableListOf<String>()
         var parenDepth = 0
         var braceDepth = 0
         var brackDepth = 0
-        for (rawLine in raw.lines()) {
-            val commentIdx = rawLine.indexOf('#')
-            val codePart = (if (commentIdx >= 0) rawLine.substring(0, commentIdx) else rawLine).trimEnd()
-            val commentPart = if (commentIdx >= 0) rawLine.substring(commentIdx) else ""
-            val trimmedCode = codePart.trim()
-            if (trimmedCode.isEmpty()) {
-                sb.append(rawLine).append("\n")
-                continue
+        val contEndRegex = Regex("(\\+=|-=|\\*=|/=|%=|\\^=|==|!=|<=|>=|&&|\\|\\||\\|>|=|\\+|-|\\*|/|\\^|\\?|:)$")
+        val contStartRegex = Regex("^(\\|>|\\?|:|else\\b|or\\b)")
+
+        fun updateDepths(segment: String) {
+            var inQuotes = false
+            var i = 0
+            while (i < segment.length) {
+                val c = segment[i]
+                if (c == '\\' && inQuotes && i + 1 < segment.length) {
+                    i += 2
+                    continue
+                }
+                if (c == '"') {
+                    inQuotes = !inQuotes
+                } else if (!inQuotes) {
+                    when (c) {
+                        '(' -> parenDepth++
+                        ')' -> if (parenDepth > 0) parenDepth--
+                        '{' -> braceDepth++
+                        '}' -> if (braceDepth > 0) braceDepth--
+                        '[' -> brackDepth++
+                        ']' -> if (brackDepth > 0) brackDepth--
+                    }
+                }
+                i++
             }
-            for (ch in trimmedCode) {
-                when (ch) {
-                    '(' -> parenDepth++
-                    ')' -> if (parenDepth > 0) parenDepth--
-                    '{' -> braceDepth++
-                    '}' -> if (braceDepth > 0) braceDepth--
-                    '[' -> brackDepth++
-                    ']' -> if (brackDepth > 0) brackDepth--
+        }
+
+        for (line in codeLines) {
+            val stripped = line.trim()
+            if (merged.isNotEmpty() && parenDepth == 0 && braceDepth == 0 && brackDepth == 0) {
+                val prev = merged.last().trimEnd()
+                val prevStripped = prev.trim()
+                val isPrevHeaderOrDep =
+                    (prevStripped.startsWith("[") && prevStripped.endswith("]")) ||
+                    (prevStripped.startsWith("<[") && prevStripped.endswith("]"))
+                val isCurHeaderOrDep =
+                    (stripped.startsWith("[") && stripped.endswith("]")) ||
+                    (stripped.startsWith("<[") && stripped.endswith("]"))
+
+                if (!isPrevHeaderOrDep && !isCurHeaderOrDep) {
+                    val prevContinues = contEndRegex.containsMatchIn(prevStripped) &&
+                        !prevStripped.endsWith(";") &&
+                        !prevStripped.startsWith("$") &&
+                        !prevStripped.startsWith("@dim") &&
+                        !prevStripped.startsWith("@unit_dim")
+                    val curContinues = contStartRegex.containsMatchIn(stripped)
+                    if (prevContinues || curContinues) {
+                        merged[merged.lastIndex] = "$prev $stripped"
+                        updateDepths(stripped)
+                        continue
+                    }
                 }
             }
-            val isHeaderOrDep = (trimmedCode.startsWith("[") && trimmedCode.endsWith("]")) ||
-                                (trimmedCode.startsWith("<[") && trimmedCode.endsWith("]"))
-            val needsSemicolon = !isHeaderOrDep &&
-                parenDepth == 0 && braceDepth == 0 && brackDepth == 0 &&
-                !trimmedCode.endsWith(";") && !trimmedCode.endsWith("{") && !trimmedCode.endsWith(",")
-            sb.append(codePart)
-            if (needsSemicolon) sb.append(";")
-            if (commentPart.isNotEmpty()) sb.append(" ").append(commentPart)
-            sb.append("\n")
+            merged.add(line)
+            updateDepths(stripped)
         }
-        return sb.toString().trim()
+
+        return merged.joinToString("\n").trim()
     }
 
+    private fun String.endswith(suffix: String): Boolean = this.endsWith(suffix)
+
     @Synchronized
-    private fun compileAndLoadWithBytesSync(mathSource: String): Triple<Boolean, String, ByteArray?> {
+    private fun compileAndLoadPatchWithBytesSync(mathSource: String): Triple<Boolean, String, ByteArray?> {
         if (engineHandle == 0L) return Triple(false, "Engine not initialized", null)
         val trimmed = normalizeExtensionSource(mathSource)
         if (trimmed.isEmpty()) return Triple(false, "Empty .math source", null)
@@ -223,11 +448,10 @@ object MathEngineManager {
                 val err = MathEngineBridge.nativeLastError(engineHandle) ?: "Compilation failed"
                 Triple(false, err, null)
             } else {
-                Regex("(?m)^\\s*\\[([a-zA-Z0-9_]+)\\]").findAll(trimmed).forEach { m ->
+                Regex("(?m)^\\s*\\[([a-zA-Z0-9_]+)]").findAll(trimmed).forEach { m ->
                     val modName = m.groupValues[1]
                     MathEngineBridge.nativeSetModule(engineHandle, modName, true)
                 }
-                loadedExtensionSources.add(trimmed)
                 Triple(
                     true,
                     "Compiled ${mathcBytes.size} bytes (.mathc) and linked into active engine.",
@@ -250,19 +474,31 @@ object MathEngineManager {
         var brackDepth = 0
 
         for (rawLine in scriptSource.trim().lines()) {
-            val line = rawLine.substringBefore("#").trim()
+            val line = stripCommentOutsideQuotes(rawLine).trim()
             if (line.isEmpty()) continue
             if (currentStmt.isNotEmpty()) currentStmt.append(" ")
             currentStmt.append(line)
-            for (ch in line) {
-                when (ch) {
-                    '{' -> braceDepth++
-                    '}' -> if (braceDepth > 0) braceDepth--
-                    '(' -> parenDepth++
-                    ')' -> if (parenDepth > 0) parenDepth--
-                    '[' -> brackDepth++
-                    ']' -> if (brackDepth > 0) brackDepth--
+            var inQuotes = false
+            var i = 0
+            while (i < line.length) {
+                val ch = line[i]
+                if (ch == '\\' && inQuotes && i + 1 < line.length) {
+                    i += 2
+                    continue
                 }
+                if (ch == '"') {
+                    inQuotes = !inQuotes
+                } else if (!inQuotes) {
+                    when (ch) {
+                        '{' -> braceDepth++
+                        '}' -> if (braceDepth > 0) braceDepth--
+                        '(' -> parenDepth++
+                        ')' -> if (parenDepth > 0) parenDepth--
+                        '[' -> brackDepth++
+                        ']' -> if (brackDepth > 0) brackDepth--
+                    }
+                }
+                i++
             }
             if (braceDepth == 0 && parenDepth == 0 && brackDepth == 0) {
                 statements.add(currentStmt.toString().trim())
@@ -331,7 +567,28 @@ object MathEngineManager {
         if (!isTrueModuleSource(mathSource)) {
             return evaluateAndExitModuleScriptSync(mathSource)
         }
-        val (ok, msg, _) = compileAndLoadWithBytesSync(mathSource)
+        val normalized = normalizeExtensionSource(mathSource)
+        val modNames = Regex("(?m)^\\s*\\[([a-zA-Z0-9_]+)]")
+            .findAll(normalized)
+            .map { it.groupValues[1] }
+            .toList()
+        val studioKey = if (modNames.isNotEmpty()) modNames.joinToString(",") else normalized.hashCode().toString()
+
+        var (ok, msg, _) = compileAndLoadPatchWithBytesSync(mathSource)
+        if (!ok && msg.contains("is already loaded", ignoreCase = true)) {
+            val ctx = appContext
+            if (ctx != null) {
+                studioExtensionSourcesByKey.remove(studioKey)
+                if (rebuildEnginePreservingStateSync(ctx, null)) {
+                    val retry = compileAndLoadPatchWithBytesSync(mathSource)
+                    ok = retry.first
+                    msg = retry.second
+                }
+            }
+        }
+        if (ok) {
+            studioExtensionSourcesByKey[studioKey] = mathSource
+        }
         return ok to msg
     }
 
@@ -342,6 +599,7 @@ object MathEngineManager {
             MathEngineBridge.nativeDestroy(engineHandle)
             engineHandle = 0L
         }
+        studioExtensionSourcesByKey.clear()
         MathPatchLoader.resetTracking()
         worker.shutdown()
     }
