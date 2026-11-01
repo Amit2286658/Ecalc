@@ -5,7 +5,7 @@ name: engine-artifacts
 #   - stdlib.mathc  : host `mathc` compiler over Library/*.math (sources from
 #                     Math-Engine-MEP, engine from the vendored copy below)
 #   - libmathengine.so : arm64-v8a NDK build with SEPARATE_STDLIB (API 24) —
-#                     ~287 KB, no stdlib image inside; stdlib.mathc ships
+#                     ~313 KB, no stdlib image inside; stdlib.mathc ships
 #                     alongside and both come from this one build tree
 #
 # Engine sources of truth: Main/app/src/main/cpp/mathengine/

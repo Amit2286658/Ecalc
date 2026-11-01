@@ -30,11 +30,18 @@ object MathPatchDownloader {
     const val PATCHES_FOLDER_NAME = "math_patches"
 
     /**
-     * Points to the static `manifest.json` hosted via jsDelivr's GitHub CDN
-     * (or switch `@main/Main/patches` to `@patches` if using an orphan branch).
+     * Points to the static `manifest.json` hosted via jsDelivr's GitHub CDN.
+     * jsDelivr serves {@code @main} branches through a long-lived CDN cache and
+     * can serve stale (even 404) responses for files added very recently, so
+     * [fallbackBaseUrl] (GitHub raw, always fresh, no CDN cache) is tried
+     * whenever the primary source fails.
      */
     var manifestBaseUrl: String =
         "https://cdn.jsdelivr.net/gh/Amit2286658/Math-Engine-MEP@main/Main/patches"
+
+    /** Fresh, uncached mirror used when jsDelivr is stale or unreachable. */
+    var fallbackBaseUrl: String =
+        "https://raw.githubusercontent.com/Amit2286658/Math-Engine-MEP/main/Main/patches"
 
     private const val CONNECT_TIMEOUT_MS = 4_000L
     private const val DOWNLOAD_TIMEOUT_MS = 15_000L
@@ -57,7 +64,7 @@ object MathPatchDownloader {
     fun syncMissingPatches(context: Context): Int {
         return try {
             val patchesDir = getPatchesDir(context)
-            val manifestText = fetchString("$manifestBaseUrl/manifest.json") ?: return 0
+            val manifestText = fetchStringWithFallback("/manifest.json") ?: return 0
             val root = JSONObject(manifestText)
             val patchesArray = root.optJSONArray("patches") ?: return 0
 
@@ -93,7 +100,7 @@ object MathPatchDownloader {
             }
         }
 
-        val bytes = fetchBytes("$manifestBaseUrl/$fileName") ?: return false
+        val bytes = fetchBytesWithFallback("/$fileName") ?: return false
         if (expectedSha256.isNotEmpty() && !sha256Hex(bytes).equals(expectedSha256, ignoreCase = true)) {
             Log.w(TAG, "Patch $fileName failed SHA-256 verification; discarding")
             return false
@@ -112,6 +119,20 @@ object MathPatchDownloader {
             tmpFile.delete()
             false
         }
+    }
+
+    /** Tries [manifestBaseUrl] first, then the fresh GitHub raw mirror on any
+     *  blank/failed response (jsDelivr can be stale for newly added files). */
+    private fun fetchStringWithFallback(tailPath: String): String? {
+        fetchString("$manifestBaseUrl$tailPath")?.let { return it }
+        fetchString("$fallbackBaseUrl$tailPath")?.let { return it }
+        return null
+    }
+
+    private fun fetchBytesWithFallback(tailPath: String): ByteArray? {
+        fetchBytes("$manifestBaseUrl$tailPath")?.let { return it }
+        fetchBytes("$fallbackBaseUrl$tailPath")?.let { return it }
+        return null
     }
 
     private fun fetchString(url: String): String? = try {

@@ -76,6 +76,15 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
     fun simplify(expr: String): String? =
         MathEngineBridge.nativeSymSimplify(requireOpenHandle(), expr)
 
+    /**
+     * Registers an app-backed extern callable as `@<name>(...)` from `.math`
+     * code. The callback receives `(name, numbers, strings)` — numeric and
+     * string arguments in original call order — and returns the numeric
+     * result (`double`).
+     */
+    fun registerExtern(name: String, callback: MathEngineBridge.ExternCallback): Boolean =
+        MathEngineBridge.nativeRegisterExtern(requireOpenHandle(), name, callback)
+
     @Synchronized
     fun diff(varName: String, expr: String): String? =
         MathEngineBridge.nativeSymDiff(requireOpenHandle(), varName, expr)
