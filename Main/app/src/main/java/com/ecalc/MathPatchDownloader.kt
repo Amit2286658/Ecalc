@@ -120,6 +120,30 @@ object MathPatchDownloader {
                     }
                 }
             }
+            // Sweep stale local patches: any `.math` file left on disk that is
+            // no longer listed in the remote manifest is a leftover from a
+            // retired registry patch (e.g. user_trig.math, whose contents were
+            // folded back into the core stdlib). Keep deleting ONLY after a
+            // successful manifest fetch — the manifest is the source of truth.
+            var removedCount = 0
+            val manifestFilenames = HashSet<String>()
+            for (i in 0 until patchesArray.length()) {
+                val f = patchesArray.optJSONObject(i)?.optString("file", "")?.trim() ?: ""
+                if (f.endsWith(".math") && !f.contains("/") && !f.contains("..")) manifestFilenames.add(f)
+            }
+            val staleFiles = patchesDir.listFiles { file ->
+                file.isFile && file.name.endsWith(".math") && file.name !in manifestFilenames
+            } ?: emptyArray()
+            for (stale in staleFiles) {
+                if (runCatching { stale.delete() }.getOrDefault(false)) {
+                    removedCount++
+                    onStatus?.invoke("Removed stale patch (no longer in registry): ${stale.name}")
+                    Log.i(TAG, "Removed stale patch not present in manifest: ${stale.name}")
+                }
+            }
+            if (removedCount > 0) {
+                invalidateCompiledCache(patchesDir)
+            }
             if (downloadedCount > 0) {
                 invalidateCompiledCache(patchesDir)
                 Log.i(TAG, "Downloaded $downloadedCount new .math patch file(s) into ${patchesDir.path}")

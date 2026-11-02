@@ -719,7 +719,7 @@ object MathEngineManager {
         e = replaceInfixNthRoot(e)
 
         // Apply active Degree / Radian mode to trig and inverse trig functions
-        // (`cosec`, `asec`, `acsc`, `acosec`, and `acot` are provided by `patches/user_trig.math`)
+        // (all of these, incl. the reciprocal family, are standard [trig] stdlib functions)
         if (isDegreeMode) {
             e = rewriteFunctionCalls(
                 e,
