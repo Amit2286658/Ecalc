@@ -133,22 +133,24 @@ object MathEngineManager {
 
     /** Creates a blank engine loaded strictly with `assets/precompiled/stdlib.mathc` and registers host externs. */
     private fun createFreshStdlibEngine(ctx: Context): Long {
+        // The engine boots BLANK by design (no embedded stdlib): both
+        // nativeCreateBlank() and nativeCreate() hand back an empty engine,
+        // and the stdlib image is loaded here from app assets.
         val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
-        val blank = MathEngineBridge.nativeCreateBlank()
-        if (blank != 0L && MathEngineBridge.nativeLoadMathc(blank, stdlibBytes)) {
-            registerHostExternsOnHandle(blank)
+        val handle = MathEngineBridge.nativeCreateBlank().takeIf { it != 0L }
+            ?: MathEngineBridge.nativeCreate().takeIf { it != 0L }
+        if (handle == null) {
+            Log.e(TAG, "Engine allocation failed (nativeCreateBlank + nativeCreate both returned 0)")
+            return 0L
+        }
+        if (MathEngineBridge.nativeLoadMathc(handle, stdlibBytes)) {
+            registerHostExternsOnHandle(handle)
             Log.i(TAG, "Booted blank engine with $BUNDLED_STDLIB_ASSET (${stdlibBytes.size} bytes)")
-            return blank
+            return handle
         }
-        if (blank != 0L) {
-            MathEngineBridge.nativeDestroy(blank)
-        }
-        val fallback = MathEngineBridge.nativeCreate()
-        if (fallback != 0L) {
-            registerHostExternsOnHandle(fallback)
-            Log.i(TAG, "Booted engine via nativeCreate() (embedded stdlib)")
-        }
-        return fallback
+        MathEngineBridge.nativeDestroy(handle)
+        Log.e(TAG, "Failed to load $BUNDLED_STDLIB_ASSET into a blank engine")
+        return 0L
     }
 
     /**

@@ -4,9 +4,8 @@ name: engine-artifacts
 # pair can never drift again:
 #   - stdlib.mathc  : host `mathc` compiler over Library/*.math (sources from
 #                     Math-Engine-MEP, engine from the vendored copy below)
-#   - libmathengine.so : arm64-v8a NDK build with SEPARATE_STDLIB (API 24) —
-#                     ~313 KB, no stdlib image inside; stdlib.mathc ships
-#                     alongside and both come from this one build tree
+#   - libmathengine.so : arm64-v8a NDK build (API 24) — blank-boot engine (no
+#                        embedded stdlib; hosts load stdlib.mathc) — ~283 KB
 #
 # Engine sources of truth: Main/app/src/main/cpp/mathengine/
 # (Core/ + CMakeLists.txt vendored from Math-Engine-MEP; only Library/ is
@@ -56,7 +55,7 @@ jobs:
           cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release -DMATH_ENGINE_BUILD_SHARED=OFF
           cmake --build build-host --target mathc -j2
           cmake --build build-host --target stdlib -j2
-          ls -l precompiled/stdlib.mathc Core/Headers/stdlib_precompiled.h
+          ls -l precompiled/stdlib.mathc
 
       - name: Run engine self-tests (host, informational)
         working-directory: buildtree
@@ -74,10 +73,10 @@ jobs:
         working-directory: buildtree
         run: python3 "$GITHUB_WORKSPACE/.github/workflows/check_mathc.py" precompiled/stdlib.mathc
 
-      # ---- NDK build: libmathengine.so (arm64-v8a, SEPARATE stdlib) ----
-      # Uses the vendored build script (MATH_ENGINE_SEPARATE_STDLIB=1):
-      # the .so carries NO stdlib image; stdlib.mathc ships alongside it in
-      # the APK and is loaded at boot (nativeCreateBlank + nativeLoadMathc).
+      # ---- NDK build: libmathengine.so (arm64-v8a, blank-boot engine) ----
+      # Uses the vendored build script: the .so carries NO stdlib image and
+      # no MTHC constants; stdlib.mathc ships alongside it in the APK and is
+      # loaded at boot (nativeCreateBlank + nativeLoadMathc).
       # Pairing .so <-> stdlib.mathc is guaranteed by this same build tree.
       - name: Locate or install Android NDK
         run: |
@@ -109,7 +108,7 @@ jobs:
           [ "$N" -ge 23 ] || { echo "ERROR: expected >=23 Java_com_mathengine_MathEngineBridge_native* symbols"; exit 1; }
           # Separate-stdlib build: no MTHC image must be embedded in the .so
           if grep -qa "MTHC" "$SO"; then
-            echo "ERROR: found 'MTHC' in .so — stdlib must NOT be embedded (SEPARATE_STDLIB build)"; exit 1
+            echo "ERROR: found 'MTHC' in .so — stdlib must NOT be embedded (blank-boot engine)"; exit 1
           fi
           echo "OK: no embedded stdlib image in .so (separate strategy)"
 
