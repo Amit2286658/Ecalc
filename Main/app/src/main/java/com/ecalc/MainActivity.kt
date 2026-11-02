@@ -342,11 +342,14 @@ class MainActivity : AppCompatActivity() {
                 swipeStartY = ev.rawY
                 isWorkspaceSwiping = false
                 val fromRightEdge = ev.rawX >= width - 28f * density
-                val fromLeftEdge = ev.rawX <= 36f * density
+                // Page-swipe is calculator→workspace only. Swiping back from
+                // the freeform workspace was removed: it steals horizontal
+                // moves from scrollable content (e.g. multiple open editor
+                // tabs). Return to the calculator via the back gesture instead.
                 swipeBlockedByChild = if (currentWorkspacePage == 0) {
                     !fromRightEdge && isTouchInsideInteractiveWorkspaceView(ev)
                 } else {
-                    !fromLeftEdge && ev.rawY > 150f * density
+                    true
                 }
             }
             MotionEvent.ACTION_MOVE -> {
@@ -355,14 +358,11 @@ class MainActivity : AppCompatActivity() {
                     val dy = ev.rawY - swipeStartY
                     if (!isWorkspaceSwiping && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.35f) {
                         val validLeftSwipe = currentWorkspacePage == 0 && dx < 0
-                        val validRightSwipe = currentWorkspacePage == 1 && dx > 0
-                        if (validLeftSwipe || validRightSwipe) {
+                        if (validLeftSwipe) {
                             isWorkspaceSwiping = true
                             workspaceSlideAnimators.forEach { it.cancel() }
                             workspaceSlideAnimators.clear()
-                            if (validLeftSwipe) {
-                                workspaceFragment?.applyTheme(isDarkMode)
-                            }
+                            workspaceFragment?.applyTheme(isDarkMode)
                             binding.calculatorContainer.visibility = View.VISIBLE
                             binding.mathWorkspaceContainer.visibility = View.VISIBLE
                             val cancelEvent = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
@@ -383,10 +383,12 @@ class MainActivity : AppCompatActivity() {
                 if (isWorkspaceSwiping) {
                     val dx = ev.rawX - swipeStartX
                     val threshold = width * 0.22f
-                    val target = when {
-                        currentWorkspacePage == 0 && dx < -threshold -> 1
-                        currentWorkspacePage == 1 && dx > threshold -> 0
-                        else -> currentWorkspacePage
+                    // Only the calculator→workspace direction can still be
+                    // mid-swipe here (workspace→calculator swipes were removed).
+                    val target = if (currentWorkspacePage == 0 && dx < -threshold) {
+                        1
+                    } else {
+                        currentWorkspacePage
                     }
                     isWorkspaceSwiping = false
                     switchWorkspacePage(target)
