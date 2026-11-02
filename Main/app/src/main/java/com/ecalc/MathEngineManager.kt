@@ -18,6 +18,8 @@ import java.util.concurrent.Executors
  * - Native `.math` extension compilation & `.mathc` runtime linking
  *   (`user_compile_ext` + `user_load_mathc`), plus one-shot ephemeral evaluation
  *   & value logging for non-module `.math` files kept in the Modules tab.
+ * - Host-bridge externs (`@currency_convert`, `@fx_rate`, etc.) backed by
+ *   [CurrencyConverter] for real-time currency conversion.
  */
 object MathEngineManager {
 
@@ -32,7 +34,6 @@ object MathEngineManager {
 
     private const val TAG = "MathEngineManager"
     private const val BUNDLED_STDLIB_ASSET = "precompiled/stdlib.mathc"
-    private const val BUNDLED_USER_TRIG_ASSET = "precompiled/user_trig.math"
     private const val MAX_NATIVE_SESSIONS = 8
 
     @Volatile
@@ -40,35 +41,37 @@ object MathEngineManager {
     private var engineHandle: Long = 0
     private val worker = Executors.newSingleThreadExecutor()
     private val studioExtensionSourcesByKey = linkedMapOf<String, String>()
+    private val customExternCallbacks = linkedMapOf<String, MathEngineBridge.ExternCallback>()
 
-    /** Provides the application context so `assets/precompiled/stdlib.mathc`
-     *  and `filesDir/math_patches/` can be loaded automatically on the background
-     *  worker thread without stalling cold-start UI rendering. */
+    /** Provides the application context so `assets/precompiled/stdlib.mathc`,
+     *  remotely fetched patches in `filesDir/math_patches/`, and [CurrencyConverter]
+     *  live rates can be initialized without stalling cold-start UI rendering. */
     fun initialize(context: Context) {
         val app = context.applicationContext
         appContext = app
-        worker.execute {
-            seedDefaultPatchesIfNeeded(app)
+        CurrencyConverter.initialize(app)
+    }
+
+    /** Registers all built-in host externs ([CurrencyConverter]) and any custom app externs on [handle]. */
+    @Synchronized
+    private fun registerHostExternsOnHandle(handle: Long) {
+        if (handle == 0L) return
+        CurrencyConverter.registerWithEngine(handle)
+        for ((extName, cb) in customExternCallbacks) {
+            runCatching { MathEngineBridge.nativeRegisterExtern(handle, extName, cb) }
         }
     }
 
-    /** Seeds `user_trig.math` into `filesDir/math_patches/` on first install so
-     *  reciprocal/inverse trig functions work offline before GitHub sync runs. */
+    /** Registers a custom host extern callback (`@<name>(...)`) on the engine and persists it across rebuilds. */
     @Synchronized
-    private fun seedDefaultPatchesIfNeeded(context: Context) {
-        runCatching {
-            val patchesDir = MathPatchDownloader.getPatchesDir(context)
-            val userTrigFile = File(patchesDir, "user_trig.math")
-            if (!userTrigFile.isFile || userTrigFile.length() == 0L) {
-                val bytes = context.assets.open(BUNDLED_USER_TRIG_ASSET).use { it.readBytes() }
-                val tmpFile = File(patchesDir, ".user_trig.math.tmp")
-                tmpFile.writeBytes(bytes)
-                if (!tmpFile.renameTo(userTrigFile)) {
-                    userTrigFile.writeBytes(bytes)
-                    tmpFile.delete()
-                }
-            }
+    fun registerExtern(name: String, callback: MathEngineBridge.ExternCallback): Boolean {
+        customExternCallbacks[name] = callback
+        if (engineHandle != 0L) {
+            return runCatching {
+                MathEngineBridge.nativeRegisterExtern(engineHandle, name, callback)
+            }.getOrDefault(false)
         }
+        return true
     }
 
     private fun stripCommentOutsideQuotes(line: String): String {
@@ -128,11 +131,12 @@ object MathEngineManager {
         return false
     }
 
-    /** Creates a blank engine loaded strictly with `assets/precompiled/stdlib.mathc`. */
+    /** Creates a blank engine loaded strictly with `assets/precompiled/stdlib.mathc` and registers host externs. */
     private fun createFreshStdlibEngine(ctx: Context): Long {
         val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
         val blank = MathEngineBridge.nativeCreateBlank()
         if (blank != 0L && MathEngineBridge.nativeLoadMathc(blank, stdlibBytes)) {
+            registerHostExternsOnHandle(blank)
             Log.i(TAG, "Booted blank engine with $BUNDLED_STDLIB_ASSET (${stdlibBytes.size} bytes)")
             return blank
         }
@@ -141,6 +145,7 @@ object MathEngineManager {
         }
         val fallback = MathEngineBridge.nativeCreate()
         if (fallback != 0L) {
+            registerHostExternsOnHandle(fallback)
             Log.i(TAG, "Booted engine via nativeCreate() (embedded stdlib)")
         }
         return fallback
@@ -180,6 +185,7 @@ object MathEngineManager {
             runCatching { MathEngineBridge.nativeDestroy(oldHandle) }
         }
         engineHandle = newHandle
+        registerHostExternsOnHandle(engineHandle)
         MathPatchLoader.resetTracking()
 
         MathPatchLoader.loadUnloadedPatches(
@@ -211,7 +217,7 @@ object MathEngineManager {
     fun ensureEngine(onStatus: ((String) -> Unit)? = null): Boolean {
         val ctx = appContext ?: return false
         if (engineHandle != 0L) {
-            seedDefaultPatchesIfNeeded(ctx)
+            registerHostExternsOnHandle(engineHandle)
             if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
                 return rebuildEnginePreservingStateSync(ctx, onStatus)
             }
@@ -224,12 +230,12 @@ object MathEngineManager {
             return true
         }
         return try {
-            seedDefaultPatchesIfNeeded(ctx)
 
             // 1. Fast path: boot blank engine from cached compiled_state.mathc (stdlib + patches)
             val cachedHandle = MathPatchLoader.tryBootFromCompiledCache(ctx, onStatus)
             if (cachedHandle != 0L) {
                 engineHandle = cachedHandle
+                registerHostExternsOnHandle(engineHandle)
                 // Also check if any unloaded patches remain (none on exact cache hit)
                 if ( onStatus == null ) {
                     MathPatchLoader.loadUnloadedPatches(
@@ -246,6 +252,7 @@ object MathEngineManager {
             val handle = createFreshStdlibEngine(ctx)
             engineHandle = handle
             if (engineHandle != 0L) {
+                registerHostExternsOnHandle(engineHandle)
                 MathPatchLoader.loadUnloadedPatches(
                     ctx,
                     engineHandle,
@@ -288,6 +295,7 @@ object MathEngineManager {
                     onDone?.invoke(0)
                     return@execute
                 }
+                registerHostExternsOnHandle(engineHandle)
                 if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
                     rebuildEnginePreservingStateSync(ctx, onStatus)
                     onDone?.invoke(1)
@@ -319,8 +327,8 @@ object MathEngineManager {
     ) {
         val app = context.applicationContext
         appContext = app
+        CurrencyConverter.initialize(app)
         Thread {
-            seedDefaultPatchesIfNeeded(app)
             val downloaded = MathPatchDownloader.syncMissingPatches(app, onStatus)
             loadPendingPatches(
                 onDone = { loaded ->
@@ -437,6 +445,7 @@ object MathEngineManager {
     @Synchronized
     private fun compileAndLoadPatchWithBytesSync(mathSource: String): Triple<Boolean, String, ByteArray?> {
         if (engineHandle == 0L) return Triple(false, "Engine not initialized", null)
+        registerHostExternsOnHandle(engineHandle)
         val trimmed = normalizeExtensionSource(mathSource)
         if (trimmed.isEmpty()) return Triple(false, "Empty .math source", null)
         return try {

@@ -229,6 +229,7 @@ object MathPatchLoader {
         if (blankHandle == 0L) return 0L
 
         return if (MathEngineBridge.nativeLoadMathc(blankHandle, cachedBytes)) {
+            CurrencyConverter.registerWithEngine(blankHandle)
             trackedEngineHandle = blankHandle
             loadedPatchSignatures.clear()
             loadedPatchShaByFileName.clear()
@@ -272,6 +273,7 @@ object MathPatchLoader {
             onStatus?.invoke("Patch load skipped: engine handle is 0")
             return 0
         }
+        CurrencyConverter.registerWithEngine(engineHandle)
         if (trackedEngineHandle != engineHandle) {
             loadedPatchSignatures.clear()
             loadedPatchShaByFileName.clear()

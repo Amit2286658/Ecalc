@@ -3,15 +3,19 @@ package com.ecalc
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.app.AlertDialog
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.text.InputType
+import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -73,9 +77,13 @@ class MathWorkspaceFragment : Fragment() {
     private var btnModeModules: NeumorphicKeyView? = null
     private var btnModeSessions: NeumorphicKeyView? = null
 
-    // --- Left-Side Sliding File Manager Drawer ---
+    // --- Left-Side Sliding File Manager Drawer & Frosted Modal Dialogs ---
     var isFileManagerDrawerOpen: Boolean = false
         private set
+    var isModalDialogOpen: Boolean = false
+        private set
+    private var activeModalOverlay: FrameLayout? = null
+    private var activeModalBlurBitmap: Bitmap? = null
     private var drawerScrimView: View? = null
     private var fileManagerDrawerPanel: LinearLayout? = null
     /** Frosted snapshot of the workspace shown behind the open drawer. */
@@ -448,8 +456,12 @@ class MathWorkspaceFragment : Fragment() {
         (activity as? MainActivity)?.let { applyTheme(it.isDarkMode) }
     }
 
-    /** Handles system Back button when the File Manager drawer is open. */
+    /** Handles system Back button when a frosted modal dialog or the File Manager drawer is open. */
     fun handleBackPressed(): Boolean {
+        if (activeModalOverlay != null) {
+            dismissWorkspaceModalDialog()
+            return true
+        }
         if (isFileManagerDrawerOpen) {
             toggleFileManagerDrawer(open = false, animate = true)
             return true
@@ -2103,7 +2115,7 @@ class MathWorkspaceFragment : Fragment() {
             return
         }
 
-        openModuleFiles.forEach { modName ->
+        openModuleFiles.forEachIndexed { targetIdx, modName ->
             val isSelected = (modName == activeModuleFileName)
             val chip = NeumorphicKeyView(ctx).apply {
                 text = "🧩 $modName"
@@ -2117,10 +2129,20 @@ class MathWorkspaceFragment : Fragment() {
                     marginEnd = dp(5f)
                 }
                 setOnClickListener {
+                    val prevIdx = openModuleFiles.indexOf(activeModuleFileName)
+                    if (targetIdx == prevIdx && isSelected) {
+                        springPulse(this, 0.06f)
+                        return@setOnClickListener
+                    }
+                    // Dynamic starting direction relative to currently selected module:
+                    // Clicking an item to the right (targetIdx > prevIdx) starts from right (+1);
+                    // clicking an item to the left (targetIdx < prevIdx) starts from left (-1).
+                    val fromDir = if (prevIdx < 0 || targetIdx >= prevIdx) 1 else -1
+                    val dist = if (prevIdx < 0) 1 else kotlin.math.abs(targetIdx - prevIdx).coerceAtLeast(1)
                     saveCurrentModuleEditorState(showToast = false)
                     activeModuleFileName = modName
                     refreshModuleChips()
-                    loadModuleStateIntoEditor(animate = true)
+                    loadModuleStateIntoEditor(animate = true, fromDirection = fromDir, distance = dist)
                     refreshFileManagerDrawer()
                 }
             }
@@ -2128,7 +2150,11 @@ class MathWorkspaceFragment : Fragment() {
         }
     }
 
-    private fun loadModuleStateIntoEditor(animate: Boolean) {
+    private fun loadModuleStateIntoEditor(
+        animate: Boolean,
+        fromDirection: Int = -1,
+        distance: Int = 1
+    ) {
         val ctx = context ?: return
         val modName = activeModuleFileName
         if (modName != null && modName in openModuleFiles) {
@@ -2145,8 +2171,9 @@ class MathWorkspaceFragment : Fragment() {
             tvModuleLogOutput?.text = "=== Module Build & Link Log ===\nOpen or create a module via ☰ File Manager."
         }
         if (animate) {
-            // Editor pane sits on the LEFT → arrives from the left
-            etModuleEditor?.let { springSlideIn(it, fromDirection = -1) }
+            etModuleEditor?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
+            moduleQuickStatusCard?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
+            moduleLogCard?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
             tvActiveModuleName?.let { springPulse(it, 0.05f) }
         }
     }
@@ -2180,13 +2207,17 @@ class MathWorkspaceFragment : Fragment() {
             activity.showButtonToast("Module $fileName not found")
             return
         }
+        val prevIdx = openModuleFiles.indexOf(activeModuleFileName)
         saveCurrentModuleEditorState(showToast = false)
         if (fileName !in openModuleFiles) openModuleFiles.add(fileName)
+        val newIdx = openModuleFiles.indexOf(fileName)
+        val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+        val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
         activeModuleFileName = fileName
         isModulesMode = true
         isModuleEditorSubTab = true
         refreshModuleChips()
-        loadModuleStateIntoEditor(animate = true)
+        loadModuleStateIntoEditor(animate = true, fromDirection = fromDir, distance = dist)
         updateModeVisibility(animate = false)
         updateModuleSubTabVisibility(animate = false)
         refreshFileManagerDrawer()
@@ -2203,6 +2234,7 @@ class MathWorkspaceFragment : Fragment() {
             activity.showButtonToast("$fileName is already closed")
             return
         }
+        val closedIdx = openModuleFiles.indexOf(fileName)
         if (activeModuleFileName == fileName) {
             saveCurrentModuleEditorState(showToast = false)
         }
@@ -2210,8 +2242,10 @@ class MathWorkspaceFragment : Fragment() {
         if (activeModuleFileName == fileName) {
             activeModuleFileName = openModuleFiles.lastOrNull()
         }
+        val newIdx = openModuleFiles.indexOf(activeModuleFileName)
+        val fromDir = if (newIdx >= 0 && closedIdx >= 0 && newIdx > closedIdx) 1 else -1
         refreshModuleChips()
-        loadModuleStateIntoEditor(animate = true)
+        loadModuleStateIntoEditor(animate = true, fromDirection = fromDir, distance = 1)
         refreshFileManagerDrawer()
         tvModuleQuickStatus?.text = "✖ Closed module '$fileName' (still stored in ☰ File Manager)."
         activity.showButtonToast("Closed module $fileName")
@@ -2221,18 +2255,22 @@ class MathWorkspaceFragment : Fragment() {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         saveCurrentModuleEditorState(showToast = false)
-        val dark = activity.isDarkMode
-        val input = EditText(ctx).apply {
-            setText(targetName)
-            setSingleLine(true)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("Rename or Copy Module '$targetName'")
-            .setView(input)
-            .setPositiveButton("Rename") { _, _ ->
-                var newName = input.text.toString().trim()
+        val baseStem = targetName.removeSuffix(".math")
+        showFrostedFileNamingModal(
+            badgeIcon = "✏️",
+            title = "Rename or Copy Module",
+            subtitle = "Module '$targetName' • Native [module] Extension",
+            description = "Enter a new name to rename '$targetName' in-place, or tap 'Save Copy' to duplicate it as a new module.",
+            initialText = targetName,
+            hintText = "${baseStem}_v2.math",
+            suggestions = listOf(
+                "${baseStem}_v2.math",
+                "${baseStem}_copy.math",
+                "${baseStem}_ext.math"
+            ),
+            primaryButtonLabel = "Rename",
+            onPrimary = { rawInput ->
+                var newName = rawInput.trim()
                 if (newName.isNotEmpty()) {
                     if (!newName.endsWith(".math")) newName += ".math"
                     if (newName != targetName) {
@@ -2252,9 +2290,10 @@ class MathWorkspaceFragment : Fragment() {
                         }
                     }
                 }
-            }
-            .setNeutralButton("Save Copy") { _, _ ->
-                var copyName = input.text.toString().trim()
+            },
+            secondaryButtonLabel = "Save Copy",
+            onSecondary = { rawInput ->
+                var copyName = rawInput.trim()
                 if (copyName.isNotEmpty()) {
                     if (!copyName.endsWith(".math")) copyName += ".math"
                     if (copyName == targetName) {
@@ -2265,17 +2304,19 @@ class MathWorkspaceFragment : Fragment() {
                     val dstFile = File(dir, copyName)
                     if (srcFile.exists()) {
                         dstFile.writeText(srcFile.readText())
+                        val prevIdx = openModuleFiles.indexOf(activeModuleFileName)
                         if (copyName !in openModuleFiles) openModuleFiles.add(copyName)
+                        val newIdx = openModuleFiles.indexOf(copyName)
+                        val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
                         activeModuleFileName = copyName
                         refreshModuleChips()
-                        loadModuleStateIntoEditor(animate = true)
+                        loadModuleStateIntoEditor(animate = true, fromDirection = fromDir)
                         refreshFileManagerDrawer()
                         activity.showButtonToast("Copied module to $copyName")
                     }
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     private fun confirmDeleteSpecificModuleFile(fileName: String) {
@@ -2283,24 +2324,29 @@ class MathWorkspaceFragment : Fragment() {
         val activity = activity as? MainActivity ?: return
         val file = File(modulesDir(ctx), fileName)
         if (!file.exists()) return
-        AlertDialog.Builder(ctx)
-            .setTitle("Delete Module '$fileName'?")
-            .setMessage("Delete '$fileName' from Modules storage?")
-            .setPositiveButton("Delete") { _, _ ->
+        showFrostedConfirmModal(
+            badgeIcon = "🗑",
+            title = "Delete Module '$fileName'?",
+            subtitle = "Modules Storage • Permanent Action",
+            message = "Delete '$fileName' from Modules storage? Any unsaved edits in this module file will be removed.",
+            confirmLabel = "Delete Module",
+            onConfirm = {
+                val prevIdx = openModuleFiles.indexOf(fileName)
                 file.delete()
                 moduleLogs.remove(fileName)
                 openModuleFiles.remove(fileName)
                 if (activeModuleFileName == fileName) {
                     activeModuleFileName = openModuleFiles.firstOrNull()
                 }
+                val newIdx = openModuleFiles.indexOf(activeModuleFileName)
+                val fromDir = if (newIdx >= 0 && prevIdx >= 0 && newIdx > prevIdx) 1 else -1
                 refreshModuleChips()
-                loadModuleStateIntoEditor(animate = true)
+                loadModuleStateIntoEditor(animate = true, fromDirection = fromDir)
                 refreshFileManagerDrawer()
                 tvModuleQuickStatus?.text = "🗑 Deleted module '$fileName'."
                 activity.showButtonToast("Deleted module $fileName")
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     private fun compileCurrentModule() {
@@ -2360,22 +2406,29 @@ class MathWorkspaceFragment : Fragment() {
     private fun promptNewModuleDialog() {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
-        val dark = activity.isDarkMode
-        val input = EditText(ctx).apply {
-            hint = "module_name.math"
-            setSingleLine(true)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("New .math Module")
-            .setView(input)
-            .setPositiveButton("Create & Open") { _, _ ->
-                var name = input.text.toString().trim()
+        val nextNum = listModuleFiles(ctx).size + 1
+        val defaultName = "module_${nextNum}.math"
+        showFrostedFileNamingModal(
+            badgeIcon = "🧩",
+            title = "New .math Module",
+            subtitle = "Native [module] Extension • Auto-appends .math",
+            description = "Creates a reusable [module] extension file that compiles into native .mathc bytecode and links into the engine.",
+            initialText = "",
+            hintText = defaultName,
+            suggestions = listOf(
+                defaultName,
+                "custom_ops.math",
+                "physics_ext.math",
+                "finance_fx.math"
+            ),
+            primaryButtonLabel = "✨ Create & Open",
+            onPrimary = { rawInput ->
+                var name = rawInput.trim()
                 if (name.isEmpty()) {
-                    name = "module_${listModuleFiles(ctx).size + 1}.math"
+                    name = defaultName
                 }
                 if (!name.endsWith(".math")) name += ".math"
+                val prevIdx = openModuleFiles.indexOf(activeModuleFileName)
                 saveCurrentModuleEditorState(showToast = false)
                 val modIdentifier = name.removeSuffix(".math")
                     .replace(Regex("[^a-zA-Z0-9_]"), "_")
@@ -2390,18 +2443,20 @@ class MathWorkspaceFragment : Fragment() {
                     )
                 }
                 if (name !in openModuleFiles) openModuleFiles.add(name)
+                val newIdx = openModuleFiles.indexOf(name)
+                val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+                val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
                 activeModuleFileName = name
                 isModulesMode = true
                 isModuleEditorSubTab = true
                 refreshModuleChips()
-                loadModuleStateIntoEditor(animate = true)
+                loadModuleStateIntoEditor(animate = true, fromDirection = fromDir, distance = dist)
                 updateModeVisibility(animate = false)
                 updateModuleSubTabVisibility(animate = false)
                 refreshFileManagerDrawer()
                 activity.showButtonToast("Created module $name")
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     // =========================================================================
@@ -2490,35 +2545,52 @@ class MathWorkspaceFragment : Fragment() {
 
     private fun switchToSession(targetSid: Int) {
         if (targetSid <= 0 || targetSid !in openSessionIds) return
+        val prevIdx = openSessionIds.indexOf(activeSessionId)
+        val newIdx = openSessionIds.indexOf(targetSid)
+        // Dynamic starting direction relative to currently selected session:
+        // Clicking a session to the right (newIdx > prevIdx) starts from right (+1);
+        // clicking a session to the left (newIdx < prevIdx) starts from left (-1).
+        val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+        val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
+
         saveCurrentSessionEditorState(activeSessionId, showToast = false)
         activeSessionId = targetSid
         refreshEvalFileChips()
-        loadSessionStateIntoEditor(targetSid, animate = true)
+        loadSessionStateIntoEditor(targetSid, animate = true, fromDirection = fromDir, distance = dist)
         refreshActiveSessionLogAndVars()
         refreshFileManagerDrawer()
+        evalFileChipsRow?.let { springSlideIn(it, fromDirection = fromDir, distance = dist) }
+        drawerFileListContainer?.let { springSlideIn(it, fromDirection = fromDir, distance = dist) }
+        tvDrawerFilesSectionLabel?.let { springSlideIn(it, fromDirection = fromDir, distance = dist) }
+        tvDrawerTitle?.let { springPulse(it, 0.045f) }
         tvActiveSessionFileName?.let { springPulse(it, 0.045f) }
-        varsCard?.let { springPulse(it, 0.045f) }
     }
 
     /** Creates a brand-new isolated Session (`Session #2`, `Session #3`, ...) with zero files from other sessions. */
     private fun openNewStandaloneSession() {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
+        val prevIdx = openSessionIds.indexOf(activeSessionId)
         saveCurrentSessionEditorState(activeSessionId, showToast = false)
 
         MathEngineManager.openSession { sid ->
             activity.runOnUiThread {
                 if (sid > 0) {
                     if (sid !in openSessionIds) openSessionIds.add(sid)
+                    val newIdx = openSessionIds.indexOf(sid)
+                    val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+                    val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
                     initCleanIsolatedSessionState(ctx, sid, wipeDiskFiles = true)
                     activeSessionId = sid
                     sessionLogs[sid] = "=== Session #$sid Log ===\n" +
                         "Opened isolated Session #$sid (no files from other sessions are active here).\n" +
                         "Use '+ New' or '📥 Import' in ☰ File Manager to add files to Session #$sid."
                     refreshEvalFileChips()
-                    loadSessionStateIntoEditor(sid, animate = true)
+                    loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir, distance = dist)
                     refreshActiveSessionLogAndVars()
                     refreshFileManagerDrawer()
+                    drawerFileListContainer?.let { springSlideIn(it, fromDirection = fromDir, distance = dist) }
+                    tvDrawerFilesSectionLabel?.let { springSlideIn(it, fromDirection = fromDir, distance = dist) }
                     tvSessionQuickStatus?.text =
                         "Opened isolated Session #$sid. No files open yet — use ☰ File Manager to create or import."
                     activity.showButtonToast("Opened isolated Session #$sid")
@@ -2556,6 +2628,7 @@ class MathWorkspaceFragment : Fragment() {
             resetActiveSession()
             return
         }
+        val closedIdx = openSessionIds.indexOf(sid)
         MathEngineManager.closeSession(sid) { _ ->
             activity.runOnUiThread {
                 initCleanIsolatedSessionState(ctx, sid, wipeDiskFiles = true)
@@ -2567,10 +2640,14 @@ class MathWorkspaceFragment : Fragment() {
                 sessionUnsavedBuffers.remove(sid)
 
                 activeSessionId = openSessionIds.first()
+                val newIdx = openSessionIds.indexOf(activeSessionId)
+                val fromDir = if (newIdx >= 0 && closedIdx >= 0 && newIdx > closedIdx) 1 else -1
                 refreshEvalFileChips()
-                loadSessionStateIntoEditor(activeSessionId, animate = true)
+                loadSessionStateIntoEditor(activeSessionId, animate = true, fromDirection = fromDir, distance = 1)
                 refreshActiveSessionLogAndVars()
                 refreshFileManagerDrawer()
+                drawerFileListContainer?.let { springSlideIn(it, fromDirection = fromDir, distance = 1) }
+                tvDrawerFilesSectionLabel?.let { springSlideIn(it, fromDirection = fromDir, distance = 1) }
                 activity.showButtonToast("Closed Session #$sid")
             }
         }
@@ -2662,7 +2739,7 @@ class MathWorkspaceFragment : Fragment() {
             return
         }
 
-        openList.forEach { fileName ->
+        openList.forEachIndexed { targetIdx, fileName ->
             val selected = (fileName == activeFile)
             val chip = NeumorphicKeyView(ctx).apply {
                 text = "📄 $fileName"
@@ -2676,10 +2753,24 @@ class MathWorkspaceFragment : Fragment() {
                     marginEnd = dp(5f)
                 }
                 setOnClickListener {
+                    val prevIdx = openList.indexOf(activeEvalFileBySession[sid])
+                    if (targetIdx == prevIdx && selected) {
+                        springPulse(this, 0.06f)
+                        if (!isSessionEditorSubTab) {
+                            animateSessionLogWindow(fromDirection = 1, distance = 1)
+                        }
+                        return@setOnClickListener
+                    }
+                    // Dynamic starting direction relative to currently selected file:
+                    // Clicking an item to the right (targetIdx > prevIdx) starts from right (+1);
+                    // clicking an item to the left (targetIdx < prevIdx) starts from left (-1).
+                    val fromDir = if (prevIdx < 0 || targetIdx >= prevIdx) 1 else -1
+                    val dist = if (prevIdx < 0) 1 else kotlin.math.abs(targetIdx - prevIdx).coerceAtLeast(1)
                     saveCurrentSessionEditorState(sid, showToast = false)
                     activeEvalFileBySession[sid] = fileName
                     refreshEvalFileChips()
-                    loadSessionStateIntoEditor(sid, animate = true)
+                    loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir, distance = dist)
+                    refreshActiveSessionLogAndVars()
                     refreshFileManagerDrawer()
                 }
             }
@@ -2687,7 +2778,22 @@ class MathWorkspaceFragment : Fragment() {
         }
     }
 
-    private fun loadSessionStateIntoEditor(sid: Int, animate: Boolean) {
+    /**
+     * Animates the session log window (`varsCard` & `sessionLogCard`) with a directional
+     * damped-spring entrance even when switching between files in the same session whose
+     * shared session log content remains unchanged.
+     */
+    private fun animateSessionLogWindow(fromDirection: Int, distance: Int = 1) {
+        varsCard?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
+        sessionLogCard?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
+    }
+
+    private fun loadSessionStateIntoEditor(
+        sid: Int,
+        animate: Boolean,
+        fromDirection: Int = -1,
+        distance: Int = 1
+    ) {
         val ctx = context ?: return
         if (sid <= 0) return
         val activeFile = activeEvalFileBySession[sid]
@@ -2710,8 +2816,9 @@ class MathWorkspaceFragment : Fragment() {
         }
 
         if (animate) {
-            // Editor pane sits on the LEFT → arrives from the left
-            etSessionEditor?.let { springSlideIn(it, fromDirection = -1) }
+            etSessionEditor?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
+            sessionQuickStatusCard?.let { springSlideIn(it, fromDirection = fromDirection, distance = distance) }
+            animateSessionLogWindow(fromDirection = fromDirection, distance = distance)
             tvActiveSessionFileName?.let { springPulse(it, 0.05f) }
         }
     }
@@ -2767,38 +2874,45 @@ class MathWorkspaceFragment : Fragment() {
     private fun promptSaveUntitledBufferAsFileDialog(sid: Int, codeToSave: String) {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
-        val dark = activity.isDarkMode
-        val input = EditText(ctx).apply {
-            setText("session_${sid}_script.math")
-            setSingleLine(true)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("Save File in Session #$sid")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                var name = input.text.toString().trim()
-                if (name.isNotEmpty()) {
-                    if (!name.endsWith(".math")) name += ".math"
-                    val finalCode = if (codeToSave.isBlank()) "# Session #$sid Script: $name\n\n" else codeToSave
-                    val file = File(sessionFilesDir(ctx, sid), name)
-                    file.writeText(finalCode)
-                    getCachedFileMeta(file)
-                    val openList = getOpenFilesForSession(sid)
-                    if (name !in openList) openList.add(name)
-                    activeEvalFileBySession[sid] = name
-                    sessionUnsavedBuffers[sid] = ""
-                    refreshEvalFileChips()
-                    loadSessionStateIntoEditor(sid, animate = true)
-                    refreshActiveSessionLogAndVars()
-                    refreshFileManagerDrawer()
-                    tvSessionQuickStatus?.text = "💾 Saved & opened '$name' in Session #$sid."
-                    activity.showButtonToast("Saved $name in Session #$sid")
-                }
+        val defaultName = "session_${sid}_script.math"
+        showFrostedFileNamingModal(
+            badgeIcon = "💾",
+            title = "Save File in Session #$sid",
+            subtitle = "Isolated Session #$sid • Auto-appends .math",
+            description = "Choose a file name to save the current scratchpad buffer inside isolated Session #$sid.",
+            initialText = defaultName,
+            hintText = defaultName,
+            suggestions = listOf(
+                defaultName,
+                "calc_notes.math",
+                "currency_fx.math",
+                "matrix_lab.math"
+            ),
+            primaryButtonLabel = "💾 Save & Open",
+            onPrimary = { rawInput ->
+                var name = rawInput.trim()
+                if (name.isEmpty()) name = defaultName
+                if (!name.endsWith(".math")) name += ".math"
+                val finalCode = if (codeToSave.isBlank()) "# Session #$sid Script: $name\n\n" else codeToSave
+                val file = File(sessionFilesDir(ctx, sid), name)
+                file.writeText(finalCode)
+                getCachedFileMeta(file)
+                val openList = getOpenFilesForSession(sid)
+                val prevIdx = openList.indexOf(activeEvalFileBySession[sid])
+                if (name !in openList) openList.add(name)
+                val newIdx = openList.indexOf(name)
+                val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+                val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
+                activeEvalFileBySession[sid] = name
+                sessionUnsavedBuffers[sid] = ""
+                refreshEvalFileChips()
+                loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir, distance = dist)
+                refreshActiveSessionLogAndVars()
+                refreshFileManagerDrawer()
+                tvSessionQuickStatus?.text = "💾 Saved & opened '$name' in Session #$sid."
+                activity.showButtonToast("Saved $name in Session #$sid")
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     private fun promptNewEvalFileDialog() {
@@ -2809,23 +2923,30 @@ class MathWorkspaceFragment : Fragment() {
             activity.showButtonToast("Wait for session to initialize")
             return
         }
-        val dark = activity.isDarkMode
         val existingCount = listSessionFiles(ctx, sid).size + 1
-        val input = EditText(ctx).apply {
-            hint = "session_${sid}_file_${existingCount}.math"
-            setSingleLine(true)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("New File in Session #$sid")
-            .setView(input)
-            .setPositiveButton("Create & Open") { _, _ ->
-                var name = input.text.toString().trim()
+        val defaultName = "session_${sid}_file_${existingCount}.math"
+        showFrostedFileNamingModal(
+            badgeIcon = "📄",
+            title = "New File in Session #$sid",
+            subtitle = "Isolated Session #$sid Workspace • Auto-appends .math",
+            description = "Creates a new evaluation script isolated to Session #$sid with starter expressions and opens it in the editor.",
+            initialText = "",
+            hintText = defaultName,
+            suggestions = listOf(
+                defaultName,
+                "calc_notes.math",
+                "currency_fx.math",
+                "matrix_lab.math"
+            ),
+            primaryButtonLabel = "✨ Create & Open",
+            onPrimary = { rawInput ->
+                var name = rawInput.trim()
                 if (name.isEmpty()) {
-                    name = "session_${sid}_file_${existingCount}.math"
+                    name = defaultName
                 }
                 if (!name.endsWith(".math")) name += ".math"
+                val openList = getOpenFilesForSession(sid)
+                val prevIdx = openList.indexOf(activeEvalFileBySession[sid])
                 saveCurrentSessionEditorState(sid, showToast = false)
 
                 val newFile = File(sessionFilesDir(ctx, sid), name)
@@ -2838,13 +2959,15 @@ class MathWorkspaceFragment : Fragment() {
                     )
                 }
                 getCachedFileMeta(newFile)
-                val openList = getOpenFilesForSession(sid)
                 if (name !in openList) openList.add(name)
+                val newIdx = openList.indexOf(name)
+                val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+                val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
                 activeEvalFileBySession[sid] = name
                 isModulesMode = false
                 isSessionEditorSubTab = true
                 refreshEvalFileChips()
-                loadSessionStateIntoEditor(sid, animate = true)
+                loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir, distance = dist)
                 refreshActiveSessionLogAndVars()
                 refreshFileManagerDrawer()
                 updateModeVisibility(animate = false)
@@ -2852,8 +2975,7 @@ class MathWorkspaceFragment : Fragment() {
                 tvSessionQuickStatus?.text = "Created & opened '$name' in isolated Session #$sid."
                 activity.showButtonToast("Created $name in Session #$sid")
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     private fun openFileInSession(sid: Int, fileName: String, closeDrawerAfter: Boolean) {
@@ -2866,14 +2988,18 @@ class MathWorkspaceFragment : Fragment() {
         }
         saveCurrentSessionEditorState(sid, showToast = false)
         val openList = getOpenFilesForSession(sid)
+        val prevIdx = openList.indexOf(activeEvalFileBySession[sid])
         if (fileName !in openList) {
             openList.add(fileName)
         }
+        val newIdx = openList.indexOf(fileName)
+        val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
+        val dist = if (prevIdx < 0) 1 else kotlin.math.abs(newIdx - prevIdx).coerceAtLeast(1)
         activeEvalFileBySession[sid] = fileName
         isModulesMode = false
         isSessionEditorSubTab = true
         refreshEvalFileChips()
-        loadSessionStateIntoEditor(sid, animate = true)
+        loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir, distance = dist)
         refreshActiveSessionLogAndVars()
         refreshFileManagerDrawer()
         updateModeVisibility(animate = false)
@@ -2892,6 +3018,7 @@ class MathWorkspaceFragment : Fragment() {
             activity.showButtonToast("$fileName is already closed in Session #$sid")
             return
         }
+        val closedIdx = openList.indexOf(fileName)
         if (activeEvalFileBySession[sid] == fileName) {
             saveCurrentSessionEditorState(sid, showToast = false)
         }
@@ -2899,8 +3026,10 @@ class MathWorkspaceFragment : Fragment() {
         if (activeEvalFileBySession[sid] == fileName) {
             activeEvalFileBySession[sid] = openList.lastOrNull()
         }
+        val newIdx = openList.indexOf(activeEvalFileBySession[sid])
+        val fromDir = if (newIdx >= 0 && closedIdx >= 0 && newIdx > closedIdx) 1 else -1
         refreshEvalFileChips()
-        loadSessionStateIntoEditor(sid, animate = true)
+        loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir, distance = 1)
         refreshActiveSessionLogAndVars()
         refreshFileManagerDrawer()
         tvSessionQuickStatus?.text =
@@ -2912,18 +3041,22 @@ class MathWorkspaceFragment : Fragment() {
         val ctx = context ?: return
         val activity = activity as? MainActivity ?: return
         saveCurrentSessionEditorState(sid, showToast = false)
-        val dark = activity.isDarkMode
-        val input = EditText(ctx).apply {
-            setText(targetName)
-            setSingleLine(true)
-            setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
-            setHintTextColor(Color.parseColor(if (dark) "#8E8E8E" else "#666666"))
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle("Rename or Copy '$targetName' (Session #$sid)")
-            .setView(input)
-            .setPositiveButton("Rename") { _, _ ->
-                var newName = input.text.toString().trim()
+        val baseStem = targetName.removeSuffix(".math")
+        showFrostedFileNamingModal(
+            badgeIcon = "✏️",
+            title = "Rename or Copy File",
+            subtitle = "Session #$sid • '$targetName'",
+            description = "Enter a new name to rename '$targetName' in Session #$sid, or tap 'Save Copy' to duplicate it.",
+            initialText = targetName,
+            hintText = "${baseStem}_v2.math",
+            suggestions = listOf(
+                "${baseStem}_v2.math",
+                "${baseStem}_copy.math",
+                "session_${sid}_${baseStem}.math"
+            ),
+            primaryButtonLabel = "Rename",
+            onPrimary = { rawInput ->
+                var newName = rawInput.trim()
                 if (newName.isNotEmpty()) {
                     if (!newName.endsWith(".math")) newName += ".math"
                     if (newName != targetName) {
@@ -2948,9 +3081,10 @@ class MathWorkspaceFragment : Fragment() {
                         }
                     }
                 }
-            }
-            .setNeutralButton("Save Copy") { _, _ ->
-                var copyName = input.text.toString().trim()
+            },
+            secondaryButtonLabel = "Save Copy",
+            onSecondary = { rawInput ->
+                var copyName = rawInput.trim()
                 if (copyName.isNotEmpty()) {
                     if (!copyName.endsWith(".math")) copyName += ".math"
                     if (copyName == targetName) {
@@ -2963,18 +3097,20 @@ class MathWorkspaceFragment : Fragment() {
                         dstFile.writeText(srcFile.readText())
                         getCachedFileMeta(dstFile)
                         val openList = getOpenFilesForSession(sid)
+                        val prevIdx = openList.indexOf(activeEvalFileBySession[sid])
                         if (copyName !in openList) openList.add(copyName)
+                        val newIdx = openList.indexOf(copyName)
+                        val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
                         activeEvalFileBySession[sid] = copyName
                         refreshEvalFileChips()
-                        loadSessionStateIntoEditor(sid, animate = true)
+                        loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir)
                         refreshActiveSessionLogAndVars()
                         refreshFileManagerDrawer()
                         activity.showButtonToast("Copied to $copyName in Session #$sid")
                     }
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     private fun confirmDeleteSpecificFileInSession(sid: Int, fileName: String) {
@@ -2985,25 +3121,30 @@ class MathWorkspaceFragment : Fragment() {
             activity.showButtonToast("File not found in Session #$sid")
             return
         }
-        AlertDialog.Builder(ctx)
-            .setTitle("Delete '$fileName'?")
-            .setMessage("Delete '$fileName' from isolated Session #$sid? Other sessions will not be affected.")
-            .setPositiveButton("Delete") { _, _ ->
-                file.delete()
+        showFrostedConfirmModal(
+            badgeIcon = "🗑",
+            title = "Delete '$fileName'?",
+            subtitle = "Isolated Session #$sid • Permanent Action",
+            message = "Delete '$fileName' from isolated Session #$sid? Other sessions will not be affected.",
+            confirmLabel = "Delete File",
+            onConfirm = {
                 val openList = getOpenFilesForSession(sid)
+                val prevIdx = openList.indexOf(fileName)
+                file.delete()
                 openList.remove(fileName)
                 if (activeEvalFileBySession[sid] == fileName) {
                     activeEvalFileBySession[sid] = openList.firstOrNull()
                 }
+                val newIdx = openList.indexOf(activeEvalFileBySession[sid])
+                val fromDir = if (newIdx >= 0 && prevIdx >= 0 && newIdx > prevIdx) 1 else -1
                 refreshEvalFileChips()
-                loadSessionStateIntoEditor(sid, animate = true)
+                loadSessionStateIntoEditor(sid, animate = true, fromDirection = fromDir)
                 refreshActiveSessionLogAndVars()
                 refreshFileManagerDrawer()
                 tvSessionQuickStatus?.text = "🗑 Deleted '$fileName' from Session #$sid."
                 activity.showButtonToast("Deleted $fileName from Session #$sid")
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        )
     }
 
     private fun runCurrentEvalFileInActiveSession(switchToLogAfterRun: Boolean) {
@@ -3159,9 +3300,11 @@ class MathWorkspaceFragment : Fragment() {
                                     "📂 Loaded & restored isolated MSP1 session state from storage.\n\n" +
                                     (if (summary.isNotBlank()) "--- Restored Variables ---\n$summary" else "(No bound variables)")
                                 refreshEvalFileChips()
-                                loadSessionStateIntoEditor(newSid, animate = true)
+                                loadSessionStateIntoEditor(newSid, animate = true, fromDirection = 1)
                                 refreshActiveSessionLogAndVars()
                                 refreshFileManagerDrawer()
+                                drawerFileListContainer?.let { springSlideIn(it, fromDirection = 1) }
+                                tvDrawerFilesSectionLabel?.let { springSlideIn(it, fromDirection = 1) }
                                 tvSessionQuickStatus?.text = "📂 Loaded isolated Session #$newSid from storage."
                                 activity.showButtonToast("Loaded Session #$newSid")
                             }
@@ -3240,7 +3383,7 @@ class MathWorkspaceFragment : Fragment() {
                 isModulesMode = true
                 isModuleEditorSubTab = true
                 refreshModuleChips()
-                loadModuleStateIntoEditor(animate = true)
+                loadModuleStateIntoEditor(animate = true, fromDirection = 1)
                 refreshFileManagerDrawer()
                 updateModeVisibility(animate = false)
                 updateModuleSubTabVisibility(animate = false)
@@ -3261,7 +3404,7 @@ class MathWorkspaceFragment : Fragment() {
                 isModulesMode = false
                 isSessionEditorSubTab = true
                 refreshEvalFileChips()
-                loadSessionStateIntoEditor(targetSid, animate = true)
+                loadSessionStateIntoEditor(targetSid, animate = true, fromDirection = 1)
                 refreshActiveSessionLogAndVars()
                 refreshFileManagerDrawer()
                 updateModeVisibility(animate = false)
@@ -3525,14 +3668,17 @@ class MathWorkspaceFragment : Fragment() {
         springAnimators.add(target to anim)
     }
 
-    private fun springSlideIn(target: View, fromDirection: Int = 1) {
+    private fun springSlideIn(target: View, fromDirection: Int = 1, distance: Int = 1) {
         springAnimators.removeAll { (v, a) -> if (v === target) { a.cancel(); true } else false }
         // fromDirection: +1 = spring in from the right, -1 = from the left.
-        // The mode switch uses it so content always arrives from the side its
-        // own mode button sits on (🧩 Modules left, ⚡ Sessions right).
-        val dist = fromDirection * 36f * resources.displayMetrics.density
+        // Scales proportionally with item distance (1 = adjacent item, up to 4 = farther item).
+        val clampedDist = distance.coerceIn(1, 4)
+        val d = clampedDist.toFloat()
+        val dist = fromDirection * (36f + (d - 1f) * 14f) * resources.displayMetrics.density
+        val scaleAmp = 0.025 + (d - 1.0) * 0.01
+        val dur = 480L + (clampedDist - 1) * 45L
         val anim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 480L
+            duration = dur
             interpolator = LinearInterpolator()
             addUpdateListener { a ->
                 val f = a.animatedValue as Float
@@ -3541,8 +3687,8 @@ class MathWorkspaceFragment : Fragment() {
                 val pulse = decay * Math.sin(t * 22.0)
                 val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
                 target.translationX = dist * springFactor
-                target.scaleX = (1.0 + 0.025 * pulse).toFloat()
-                target.scaleY = (1.0 + 0.025 * pulse).toFloat()
+                target.scaleX = (1.0 + scaleAmp * pulse).toFloat()
+                target.scaleY = (1.0 + scaleAmp * pulse).toFloat()
                 target.alpha = (f / 0.22f).coerceIn(0f, 1f)
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -3556,6 +3702,755 @@ class MathWorkspaceFragment : Fragment() {
             start()
         }
         springAnimators.add(target to anim)
+    }
+
+    // =========================================================================
+    //  Frosted-Glass Neumorphic Modal Dialogs (New File, Rename/Copy, Confirm)
+    // =========================================================================
+
+    private fun hideSoftKeyboardFrom(view: View?) {
+        val ctx = context ?: return
+        val target = view ?: return
+        runCatching {
+            val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(target.windowToken, 0)
+        }
+    }
+
+    fun dismissWorkspaceModalDialog(onEnd: (() -> Unit)? = null) {
+        val overlay = activeModalOverlay
+        if (overlay == null) {
+            isModalDialogOpen = false
+            onEnd?.invoke()
+            return
+        }
+        activeModalOverlay = null
+        isModalDialogOpen = false
+        hideSoftKeyboardFrom(overlay)
+
+        // Restore live blur state: if File Manager drawer is open, keep rootLayout blurred
+        // and unblur the drawer panel; otherwise clear blur on both.
+        Frost.clearLiveBlur(fileManagerDrawerPanel)
+        if (!isFileManagerDrawerOpen) {
+            Frost.clearLiveBlur(rootLayout)
+        }
+
+        val card = overlay.getChildAt(overlay.childCount - 1)
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 190L
+            interpolator = AccelerateInterpolator(0.9f)
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                overlay.alpha = 1f - f
+                if (card != null) {
+                    val s = 1f - 0.18f * f
+                    card.scaleX = s
+                    card.scaleY = s
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    (overlay.parent as? ViewGroup)?.removeView(overlay)
+                    activeModalBlurBitmap?.recycle()
+                    activeModalBlurBitmap = null
+                    onEnd?.invoke()
+                }
+            })
+            start()
+        }
+    }
+
+    /**
+     * Displays a modern, tactile neumorphic modal dialog for naming a new or existing `.math` file,
+     * backed by the same frosted-glass blur backdrop as the Info window, File Manager drawer,
+     * and hold-tooltip popups.
+     */
+    private fun showFrostedFileNamingModal(
+        badgeIcon: String,
+        title: String,
+        subtitle: String,
+        description: String,
+        initialText: String,
+        hintText: String,
+        suggestions: List<String>,
+        primaryButtonLabel: String,
+        onPrimary: (String) -> Unit,
+        secondaryButtonLabel: String? = null,
+        onSecondary: ((String) -> Unit)? = null
+    ) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val outerFrame = workspaceRootFrame ?: return
+
+        activeModalOverlay?.let { existing ->
+            (existing.parent as? ViewGroup)?.removeView(existing)
+            activeModalOverlay = null
+        }
+        activeModalBlurBitmap?.recycle()
+        activeModalBlurBitmap = null
+
+        val dark = activity.isDarkMode
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+
+        val cardBg = Color.parseColor(if (dark) "#2E2E2E" else "#F5F5F5")
+        val sectionBg = Color.parseColor(if (dark) "#252525" else "#EAEAEA")
+        val inputBg = Color.parseColor(if (dark) "#1D1D1D" else "#FFFFFF")
+        val strokeColor = Color.parseColor(if (dark) "#444444" else "#D5D5D5")
+        val primaryText = Color.parseColor(if (dark) "#E8E8E8" else "#2A2A2A")
+        val secondaryText = Color.parseColor(if (dark) "#9E9E9E" else "#606060")
+        val accentColor = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
+        val badgeTintBg = Color.parseColor(if (dark) "#1D3638" else "#FCEAE6")
+        val scrimColor = Color.parseColor(if (dark) "#96141414" else "#88E6E6E6")
+
+        // Capture frosted snapshot of the entire workspace (including the open File Manager drawer)
+        // before attaching the modal overlay, and apply live GPU RenderEffect blur on Android 12+.
+        val frostBmp = Frost.frozenBackdrop(outerFrame, downscale = 6, radius = 8)
+        activeModalBlurBitmap = frostBmp
+        Frost.tryLiveBlur(rootLayout, 18f * density)
+        if (isFileManagerDrawerOpen) {
+            Frost.tryLiveBlur(fileManagerDrawerPanel, 18f * density)
+        }
+
+        val overlay = FrameLayout(ctx).apply {
+            elevation = dp(28f).toFloat()
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        }
+
+        if (frostBmp != null) {
+            val bgImage = ImageView(ctx).apply {
+                setImageBitmap(frostBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.55f else 0.94f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            overlay.addView(bgImage)
+        }
+
+        val scrimView = View(ctx).apply {
+            setBackgroundColor(scrimColor)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        overlay.addView(scrimView)
+
+        val availWidth = if (outerFrame.width > 0) outerFrame.width else resources.displayMetrics.widthPixels
+        val cardWidth = minOf(availWidth - dp(28f), dp(388f)).coerceAtLeast(dp(272f))
+
+        val dialogCard = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                cardWidth,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            setPadding(dp(18f), dp(16f), dp(18f), dp(16f))
+            elevation = dp(32f).toFloat()
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 22f * density
+                setColor(cardBg)
+                setStroke(dp(1.2f).coerceAtLeast(1), strokeColor)
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { }
+        }
+
+        // 1. Header Row: Badge Icon + Title/Subtitle + Top-Right '✕' Close Button
+        val headerRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10f) }
+        }
+
+        val iconBadge = TextView(ctx).apply {
+            text = badgeIcon
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(badgeTintBg)
+                setStroke(dp(1f).coerceAtLeast(1), accentColor)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(38f), dp(38f)).apply {
+                marginEnd = dp(10f)
+            }
+        }
+        headerRow.addView(iconBadge)
+
+        val titleCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val tvTitle = TextView(ctx).apply {
+            text = title
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17.5f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(primaryText)
+        }
+        val tvSub = TextView(ctx).apply {
+            text = subtitle
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(accentColor)
+        }
+        titleCol.addView(tvTitle)
+        titleCol.addView(tvSub)
+        headerRow.addView(titleCol)
+
+        val btnCloseTop = NeumorphicKeyView(ctx).apply {
+            text = "✕"
+            textSize = 13f
+            cornerRadiusDp = 16f
+            shadowPadDp = 2.8f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f))
+            setOnClickListener {
+                springPulse(this, 0.07f)
+                dismissWorkspaceModalDialog()
+            }
+        }
+        headerRow.addView(btnCloseTop)
+        dialogCard.addView(headerRow)
+
+        // 2. Description Box
+        val descBox = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(sectionBg)
+                setStroke(1, strokeColor)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12f) }
+        }
+        val tvDesc = TextView(ctx).apply {
+            text = description
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+            setTextColor(secondaryText)
+            setLineSpacing(0f, 1.15f)
+        }
+        descBox.addView(tvDesc)
+        dialogCard.addView(descBox)
+
+        // 3. Recessed Input Field with Accent Focus Border & '.math' Pill
+        val tvInputLabel = TextView(ctx).apply {
+            text = "FILE NAME"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(secondaryText)
+            setPadding(dp(2f), 0, dp(2f), dp(4f))
+        }
+        dialogCard.addView(tvInputLabel)
+
+        val inputFrameBg = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 14f * density
+            setColor(inputBg)
+            setStroke(dp(1.4f).coerceAtLeast(1), accentColor)
+        }
+        val inputRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = inputFrameBg
+            setPadding(dp(12f), dp(4f), dp(8f), dp(4f))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10f) }
+        }
+
+        val inputEdit = EditText(ctx).apply {
+            setText(initialText)
+            hint = hintText
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(primaryText)
+            setHintTextColor(secondaryText)
+            background = null
+            setPadding(0, dp(8f), dp(8f), dp(8f))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            if (initialText.isNotEmpty()) {
+                val dotIdx = initialText.lastIndexOf(".math")
+                setSelection(if (dotIdx > 0) dotIdx else initialText.length)
+            }
+            setOnFocusChangeListener { _, hasFocus ->
+                inputFrameBg.setStroke(
+                    dp(if (hasFocus) 1.6f else 1.1f).coerceAtLeast(1),
+                    if (hasFocus) accentColor else strokeColor
+                )
+            }
+        }
+
+        val extBadge = TextView(ctx).apply {
+            text = ".math"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.MONOSPACE
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(accentColor)
+            setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 8f * density
+                setColor(badgeTintBg)
+                setStroke(1, accentColor)
+            }
+        }
+
+        inputRow.addView(inputEdit)
+        inputRow.addView(extBadge)
+        dialogCard.addView(inputRow)
+
+        // 4. Quick-Pick Name Suggestion Chips
+        if (suggestions.isNotEmpty()) {
+            val tvSuggLabel = TextView(ctx).apply {
+                text = "QUICK SUGGESTIONS (TAP TO FILL)"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(secondaryText)
+                setPadding(dp(2f), 0, dp(2f), dp(3f))
+            }
+            dialogCard.addView(tvSuggLabel)
+
+            val suggScroll = HorizontalScrollView(ctx).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(32f)
+                ).apply { bottomMargin = dp(12f) }
+            }
+            val suggRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            suggestions.forEach { suggestion ->
+                val chipWidth = (suggestion.length * 7.4f + 26f).coerceAtLeast(88f)
+                val chip = NeumorphicKeyView(ctx).apply {
+                    text = suggestion
+                    textSize = 10.5f
+                    cornerRadiusDp = 10f
+                    shadowPadDp = 2.2f
+                    isAccentKey = false
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(dp(chipWidth), dp(28f)).apply {
+                        marginEnd = dp(4f)
+                    }
+                    setOnClickListener {
+                        springPulse(this, 0.06f)
+                        inputEdit.setText(suggestion)
+                        val dotIdx = suggestion.lastIndexOf(".math")
+                        inputEdit.setSelection(if (dotIdx > 0) dotIdx else suggestion.length)
+                    }
+                }
+                suggRow.addView(chip)
+            }
+            suggScroll.addView(suggRow)
+            dialogCard.addView(suggScroll)
+        }
+
+        fun submitPrimary() {
+            val entered = inputEdit.text?.toString().orEmpty()
+            dismissWorkspaceModalDialog {
+                onPrimary(entered)
+            }
+        }
+
+        inputEdit.setOnEditorActionListener { _, actionId, event ->
+            val isEnter = event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN
+            if (actionId == EditorInfo.IME_ACTION_DONE || isEnter) {
+                submitPrimary()
+                true
+            } else {
+                false
+            }
+        }
+
+        // 5. Action Buttons Row (Cancel + Optional Secondary + Primary Action)
+        val actionsRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val btnCancel = NeumorphicKeyView(ctx).apply {
+            text = "Cancel"
+            textSize = 12.5f
+            cornerRadiusDp = 14f
+            shadowPadDp = 3f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(40f), 0.9f).apply {
+                marginEnd = dp(6f)
+            }
+            setOnClickListener {
+                springPulse(this, 0.06f)
+                dismissWorkspaceModalDialog()
+            }
+        }
+        actionsRow.addView(btnCancel)
+
+        if (secondaryButtonLabel != null && onSecondary != null) {
+            val btnSecondary = NeumorphicKeyView(ctx).apply {
+                text = secondaryButtonLabel
+                textSize = 12f
+                cornerRadiusDp = 14f
+                shadowPadDp = 3f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.05f).apply {
+                    marginEnd = dp(6f)
+                }
+                setOnClickListener {
+                    springPulse(this, 0.06f)
+                    val entered = inputEdit.text?.toString().orEmpty()
+                    dismissWorkspaceModalDialog {
+                        onSecondary(entered)
+                    }
+                }
+            }
+            actionsRow.addView(btnSecondary)
+        }
+
+        val btnPrimary = NeumorphicKeyView(ctx).apply {
+            text = primaryButtonLabel
+            textSize = 12.8f
+            cornerRadiusDp = 14f
+            shadowPadDp = 3.2f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.3f)
+            setOnClickListener {
+                springPulse(this, 0.07f)
+                submitPrimary()
+            }
+        }
+        actionsRow.addView(btnPrimary)
+        dialogCard.addView(actionsRow)
+
+        overlay.addView(dialogCard)
+        outerFrame.addView(overlay)
+        activeModalOverlay = overlay
+        isModalDialogOpen = true
+
+        // Animate backdrop fade + damped-spring entrance of the dialog card
+        overlay.alpha = 0f
+        dialogCard.scaleX = 0.78f
+        dialogCard.scaleY = 0.78f
+        dialogCard.translationY = 18f * density
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 440L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.44
+                val decay = Math.exp(-7.5 * t)
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                overlay.alpha = (f / 0.28f).coerceIn(0f, 1f)
+                val s = 1f - 0.22f * springFactor + 0.04f * pulse
+                dialogCard.scaleX = s
+                dialogCard.scaleY = s
+                dialogCard.translationY = (18f * density) * springFactor
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    overlay.alpha = 1f
+                    dialogCard.scaleX = 1f
+                    dialogCard.scaleY = 1f
+                    dialogCard.translationY = 0f
+                    inputEdit.requestFocus()
+                    runCatching {
+                        val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                        imm?.showSoftInput(inputEdit, InputMethodManager.SHOW_IMPLICIT)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    /**
+     * Displays a frosted-glass neumorphic confirmation modal (e.g., for deleting a file/module).
+     */
+    private fun showFrostedConfirmModal(
+        badgeIcon: String,
+        title: String,
+        subtitle: String,
+        message: String,
+        confirmLabel: String,
+        onConfirm: () -> Unit
+    ) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val outerFrame = workspaceRootFrame ?: return
+
+        activeModalOverlay?.let { existing ->
+            (existing.parent as? ViewGroup)?.removeView(existing)
+            activeModalOverlay = null
+        }
+        activeModalBlurBitmap?.recycle()
+        activeModalBlurBitmap = null
+
+        val dark = activity.isDarkMode
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+
+        val cardBg = Color.parseColor(if (dark) "#2E2E2E" else "#F5F5F5")
+        val sectionBg = Color.parseColor(if (dark) "#252525" else "#EAEAEA")
+        val strokeColor = Color.parseColor(if (dark) "#444444" else "#D5D5D5")
+        val primaryText = Color.parseColor(if (dark) "#E8E8E8" else "#2A2A2A")
+        val secondaryText = Color.parseColor(if (dark) "#9E9E9E" else "#606060")
+        val accentColor = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
+        val badgeTintBg = Color.parseColor(if (dark) "#1D3638" else "#FCEAE6")
+        val scrimColor = Color.parseColor(if (dark) "#96141414" else "#88E6E6E6")
+
+        val frostBmp = Frost.frozenBackdrop(outerFrame, downscale = 6, radius = 8)
+        activeModalBlurBitmap = frostBmp
+        Frost.tryLiveBlur(rootLayout, 18f * density)
+        if (isFileManagerDrawerOpen) {
+            Frost.tryLiveBlur(fileManagerDrawerPanel, 18f * density)
+        }
+
+        val overlay = FrameLayout(ctx).apply {
+            elevation = dp(28f).toFloat()
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        }
+
+        if (frostBmp != null) {
+            val bgImage = ImageView(ctx).apply {
+                setImageBitmap(frostBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.55f else 0.94f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            overlay.addView(bgImage)
+        }
+
+        val scrimView = View(ctx).apply {
+            setBackgroundColor(scrimColor)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        overlay.addView(scrimView)
+
+        val availWidth = if (outerFrame.width > 0) outerFrame.width else resources.displayMetrics.widthPixels
+        val cardWidth = minOf(availWidth - dp(28f), dp(370f)).coerceAtLeast(dp(268f))
+
+        val dialogCard = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                cardWidth,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            setPadding(dp(18f), dp(16f), dp(18f), dp(16f))
+            elevation = dp(32f).toFloat()
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 22f * density
+                setColor(cardBg)
+                setStroke(dp(1.2f).coerceAtLeast(1), strokeColor)
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { }
+        }
+
+        val headerRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10f) }
+        }
+        val iconBadge = TextView(ctx).apply {
+            text = badgeIcon
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(badgeTintBg)
+                setStroke(dp(1f).coerceAtLeast(1), accentColor)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(38f), dp(38f)).apply {
+                marginEnd = dp(10f)
+            }
+        }
+        headerRow.addView(iconBadge)
+
+        val titleCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleCol.addView(TextView(ctx).apply {
+            text = title
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(primaryText)
+        })
+        titleCol.addView(TextView(ctx).apply {
+            text = subtitle
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(accentColor)
+        })
+        headerRow.addView(titleCol)
+
+        val btnCloseTop = NeumorphicKeyView(ctx).apply {
+            text = "✕"
+            textSize = 13f
+            cornerRadiusDp = 16f
+            shadowPadDp = 2.8f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f))
+            setOnClickListener {
+                springPulse(this, 0.07f)
+                dismissWorkspaceModalDialog()
+            }
+        }
+        headerRow.addView(btnCloseTop)
+        dialogCard.addView(headerRow)
+
+        val msgBox = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(sectionBg)
+                setStroke(1, strokeColor)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(14f) }
+        }
+        msgBox.addView(TextView(ctx).apply {
+            text = message
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setTextColor(secondaryText)
+            setLineSpacing(0f, 1.18f)
+        })
+        dialogCard.addView(msgBox)
+
+        val actionsRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val btnCancel = NeumorphicKeyView(ctx).apply {
+            text = "Cancel"
+            textSize = 12.5f
+            cornerRadiusDp = 14f
+            shadowPadDp = 3f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1f).apply {
+                marginEnd = dp(6f)
+            }
+            setOnClickListener {
+                springPulse(this, 0.06f)
+                dismissWorkspaceModalDialog()
+            }
+        }
+        val btnConfirm = NeumorphicKeyView(ctx).apply {
+            text = confirmLabel
+            textSize = 12.8f
+            cornerRadiusDp = 14f
+            shadowPadDp = 3.2f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(40f), 1.2f)
+            setOnClickListener {
+                springPulse(this, 0.07f)
+                dismissWorkspaceModalDialog {
+                    onConfirm()
+                }
+            }
+        }
+        actionsRow.addView(btnCancel)
+        actionsRow.addView(btnConfirm)
+        dialogCard.addView(actionsRow)
+
+        overlay.addView(dialogCard)
+        outerFrame.addView(overlay)
+        activeModalOverlay = overlay
+        isModalDialogOpen = true
+
+        overlay.alpha = 0f
+        dialogCard.scaleX = 0.78f
+        dialogCard.scaleY = 0.78f
+        dialogCard.translationY = 18f * density
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 440L
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedValue as Float
+                val t = f * 0.44
+                val decay = Math.exp(-7.5 * t)
+                val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                overlay.alpha = (f / 0.28f).coerceIn(0f, 1f)
+                val s = 1f - 0.22f * springFactor + 0.04f * pulse
+                dialogCard.scaleX = s
+                dialogCard.scaleY = s
+                dialogCard.translationY = (18f * density) * springFactor
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    overlay.alpha = 1f
+                    dialogCard.scaleX = 1f
+                    dialogCard.scaleY = 1f
+                    dialogCard.translationY = 0f
+                }
+            })
+            start()
+        }
     }
 
     fun wobbleRound(cx: Float, cy: Float, maxRadius: Float, revealDurationMs: Long) {
@@ -3620,6 +4515,11 @@ class MathWorkspaceFragment : Fragment() {
         drawerExchangeAnimators.forEach { it.cancel() }
         drawerExchangeAnimators.clear()
         drawerExchangeUnderway = false
+        activeModalOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        activeModalOverlay = null
+        isModalDialogOpen = false
+        activeModalBlurBitmap?.recycle()
+        activeModalBlurBitmap = null
         drawerFrostView?.setImageBitmap(null)
         drawerFrostView = null
         wobbleAnimators.forEach { it.cancel() }

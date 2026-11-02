@@ -1,5 +1,6 @@
 package com.mathengine
 
+import com.ecalc.CurrencyConverter
 import java.io.Closeable
 
 /**
@@ -7,7 +8,8 @@ import java.io.Closeable
  *
  * If [stdlibMathcBytes] is provided, boots from the separate precompiled
  * `stdlib.mathc` binary image (`nativeCreateBlank` + `nativeLoadMathc`);
- * otherwise falls back to `nativeCreate()`.
+ * otherwise falls back to `nativeCreate()`. Automatically hooks up the
+ * real-time [CurrencyConverter] extern callbacks (`@currency_convert`, etc.).
  */
 class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
     private var handle: Long = if (stdlibMathcBytes != null && stdlibMathcBytes.isNotEmpty()) {
@@ -24,6 +26,7 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
 
     init {
         check(handle != 0L) { "Failed to initialize native MEP Engine" }
+        runCatching { CurrencyConverter.registerWithEngine(handle) }
     }
 
     private fun requireOpenHandle(): Long {

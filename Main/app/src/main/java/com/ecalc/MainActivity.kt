@@ -329,7 +329,7 @@ class MainActivity : AppCompatActivity() {
         if (aboutOverlay != null) {
             return super.dispatchTouchEvent(ev)
         }
-        if (currentWorkspacePage == 1 && workspaceFragment?.isFileManagerDrawerOpen == true) {
+        if (currentWorkspacePage == 1 && (workspaceFragment?.isFileManagerDrawerOpen == true || workspaceFragment?.isModalDialogOpen == true)) {
             return super.dispatchTouchEvent(ev)
         }
         val density = resources.displayMetrics.density
@@ -1297,6 +1297,13 @@ class MainActivity : AppCompatActivity() {
             "0","1","2","3","4","5","6","7","8","9" -> {
                 currentPrimaryInput = if (currentPrimaryInput == "0.0" || currentPrimaryInput == "0") label else currentPrimaryInput + label
             }
+            "," -> {
+                flushOperand()
+                val trimmed = exprStatement.trimEnd()
+                if (trimmed.isNotEmpty() && trimmed.last() !in "(,+-×÷/*^") {
+                    exprStatement = "$trimmed,"
+                }
+            }
             "(" -> { flushOperand(); exprStatement += "(" }
             ")" -> {
                 flushOperand()
@@ -1314,7 +1321,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             else -> {
-                if (label.isNotEmpty() && (label[0].isLetterOrDigit() || label[0] == '√') && label != "d/dx") {
+                if (label.isNotEmpty() && (label[0].isLetterOrDigit() || label[0] == '√')) {
                     if (currentPrimaryInput != "0.0") {
                         flushOperand()
                         if (exprStatement.isNotEmpty() && exprStatement.trimEnd().last() !in "+-×÷/*^,(") {
@@ -1936,7 +1943,7 @@ class MainActivity : AppCompatActivity() {
         "Trig" -> "Trig keypad — sin / cos / tan with their inverses and reciprocals, the hyperbolic family, and the " +
             "constants π and e. Angles follow the deg/rad mode shown under the display."
         "Fx" -> "Fx keypad — general functions: abs, log / log₂, powers (x², x³, xʸ, 10ˣ, eˣ), roots (cbrt), " +
-            "combinatorics (nPr, nCr), gcd / lcm, round / ceil / floor, rand, the derivative d/dx, and Ans recall."
+            "combinatorics (nPr, nCr), gcd / lcm, round / ceil / floor, rand, the parameter separator comma (,), and Ans recall."
         else -> "$name — open this tab"
     }
 
@@ -1977,7 +1984,7 @@ class MainActivity : AppCompatActivity() {
         "ceil" -> "ceil(x) — rounds up: ceil(2.001) = 3, ceil(−2.1) = −2."
         "floor" -> "floor(x) — rounds down: floor(2.999) = 2, floor(−2.001) = −3."
         "rand" -> "rand() — a fresh uniform random number in [0, 1) each time it is evaluated in a session."
-        "d/dx" -> "d/dx — symbolic derivative: d/dx(x^2+1) → 2·x. In sessions the derivative rule set of the Math-Engine is applied."
+        "," -> ", — parameter separator for multi-argument functions such as gcd(a, b), lcm(a, b), nPr(n, r), nCr(n, r), and ⁿ√(x, n)."
         "(" -> "( — opening parenthesis; also starts a function's argument list, e.g. log(100)"
         ")" -> ") — closing parenthesis (or comma in 2-arg functions)"
         "sin" -> "sin — sine of the angle in the active deg/rad mode"

@@ -53,7 +53,7 @@ class KeyGridFragment : Fragment() {
             KeySpec("abs", true), KeySpec("log", true), KeySpec("log₂", true), KeySpec("round", true),
             KeySpec("x²", true), KeySpec("x³", true), KeySpec("xʸ", true), KeySpec("10ˣ", true),
             KeySpec("eˣ", true), KeySpec("nPr", true), KeySpec("nCr", true), KeySpec("cbrt", true),
-            KeySpec("ceil", true), KeySpec("floor", true), KeySpec("rand", true), KeySpec("d/dx", true),
+            KeySpec("ceil", true), KeySpec("floor", true), KeySpec("rand", true), KeySpec(",", true),
             KeySpec("gcd", true), KeySpec("lcm", true), KeySpec("Ans", true), KeySpec("=", true)
         )
     }
