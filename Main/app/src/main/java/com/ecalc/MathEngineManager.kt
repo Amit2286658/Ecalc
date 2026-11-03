@@ -400,7 +400,53 @@ object MathEngineManager {
             updateDepths(stripped)
         }
 
-        return merged.joinToString("\n").trim()
+        val unitVarDeclRegex = Regex(
+            "^(\\s*(?:(?:pub|priv|const|mut)\\s+)*)([a-zA-Z_][a-zA-Z0-9_]*)(\\s*:\\s*[a-zA-Z_][a-zA-Z0-9_]*\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_]*\\s*(?::=|=)(?![=>]).*)$"
+        )
+        val reservedWords = setOf(
+            "pub", "priv", "const", "mut", "if", "else", "while", "for", "in",
+            "return", "break", "continue", "or"
+        )
+        var dParen = 0
+        var dBrace = 0
+        var dBrack = 0
+        val finalLines = merged.map { line ->
+            val out = if (dParen == 0 && dBrace == 0 && dBrack == 0) {
+                val m = unitVarDeclRegex.matchEntire(line)
+                if (m != null && m.groupValues[2] !in reservedWords) {
+                    "${m.groupValues[1]}\"${m.groupValues[2]}\"${m.groupValues[3]}"
+                } else {
+                    line
+                }
+            } else {
+                line
+            }
+            var inQ = false
+            var idx = 0
+            while (idx < line.length) {
+                val ch = line[idx]
+                if (ch == '\\' && inQ && idx + 1 < line.length) {
+                    idx += 2
+                    continue
+                }
+                if (ch == '\"') {
+                    inQ = !inQ
+                } else if (!inQ) {
+                    when (ch) {
+                        '(' -> dParen++
+                        ')' -> if (dParen > 0) dParen--
+                        '{' -> dBrace++
+                        '}' -> if (dBrace > 0) dBrace--
+                        '[' -> dBrack++
+                        ']' -> if (dBrack > 0) dBrack--
+                    }
+                }
+                idx++
+            }
+            out
+        }
+
+        return finalLines.joinToString("\n").trim()
     }
 
     @Synchronized

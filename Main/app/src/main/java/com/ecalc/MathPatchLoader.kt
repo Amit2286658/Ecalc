@@ -37,8 +37,10 @@ object MathPatchLoader {
      */
     private val loadedPatchSignatures = mutableSetOf<String>()
     private val loadedPatchShaByFileName = mutableMapOf<String, String>()
+    private const val CACHE_SCHEMA_VERSION = "v2"
     private val unreportedCompiledFiles = linkedSetOf<String>()
     private val unreportedCachedFiles = linkedSetOf<String>()
+    private val unreportedFailedFiles = linkedMapOf<String, String>()
     private var trackedEngineHandle: Long = 0L
 
     @Synchronized
@@ -47,6 +49,7 @@ object MathPatchLoader {
         loadedPatchShaByFileName.clear()
         unreportedCompiledFiles.clear()
         unreportedCachedFiles.clear()
+        unreportedFailedFiles.clear()
         trackedEngineHandle = 0L
     }
 
@@ -218,7 +221,7 @@ object MathPatchLoader {
         val sigFile = File(patchesDir, CACHE_SIG_FILE)
         if (!cacheFile.canRead() || !sigFile.canRead()) return 0L
 
-        val expectedCompositeSig = entries.joinToString("\n") { it.second }
+        val expectedCompositeSig = "$CACHE_SCHEMA_VERSION\n" + entries.joinToString("\n") { it.second }
         val cachedSig = runCatching { sigFile.readText(Charsets.UTF_8).trim() }.getOrNull()
         if (cachedSig != expectedCompositeSig) return 0L
 
@@ -306,6 +309,13 @@ object MathPatchLoader {
                 unreportedCompiledFiles.clear()
                 flushedSilentBoot = true
             }
+            if (unreportedFailedFiles.isNotEmpty()) {
+                for ((name, err) in unreportedFailedFiles) {
+                    onStatus.invoke("FAILED to load patch '$name': $err")
+                }
+                unreportedFailedFiles.clear()
+                flushedSilentBoot = true
+            }
         }
 
         val orderedEntries = orderEntriesTopologically(entries)
@@ -361,7 +371,11 @@ object MathPatchLoader {
         // Report any patches that still failed after all dependency passes settled
         for ((fileName, errMsg) in failureMessages) {
             Log.w(TAG, "Failed to link patch '$fileName': $errMsg")
-            onStatus?.invoke("FAILED to load patch '$fileName': $errMsg")
+            if (onStatus != null) {
+                onStatus.invoke("FAILED to load patch '$fileName': $errMsg")
+            } else {
+                unreportedFailedFiles[fileName] = errMsg
+            }
         }
 
         // Persist the cumulative .mathc image returned by nativeCompileExt()
@@ -386,7 +400,7 @@ object MathPatchLoader {
                     }
                 }
                 if (saved) {
-                    sigTarget.writeText(entries.joinToString("\n") { it.second }, Charsets.UTF_8)
+                    sigTarget.writeText("$CACHE_SCHEMA_VERSION\n" + entries.joinToString("\n") { it.second }, Charsets.UTF_8)
                     Log.i(TAG, "Saved precompiled patch cache $CACHE_MATHC_FILE (${latestCompiledMathc.size} bytes)")
                 } else {
                     cacheTmp.delete()
