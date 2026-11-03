@@ -3,21 +3,21 @@ package com.ecalc
 import android.content.Context
 import android.util.Log
 import com.mathengine.MathEngineBridge
-import java.io.File
 import java.util.concurrent.Executors
 
 /**
- * App-side wrapper for the CMath engine (Cmath_engine_project).
+ * App-side manager for the C11 Math Engine (MEP) under the unified,
+ * session-free top-to-bottom executable module architecture.
  *
  * One persistent engine handle lives for the whole app lifetime. Supports:
- * - Stateless single-shot evaluation (`eng_eval`) for the calculator keypad
- * - Stateful multi-session evaluation (`eng_session_open`, `eng_session_eval`,
- *   `eng_session_reset`, `eng_session_close`, MSP1 snapshot export/restore)
- *   with 1-based UI session IDs (`1 .. ENG_MAX_SESSIONS`) mapped cleanly to
- *   the C11 engine's 0-based session slots (`0 .. ENG_MAX_SESSIONS - 1`).
- * - Native `.math` extension compilation & `.mathc` runtime linking
- *   (`user_compile_ext` + `user_load_mathc`), plus one-shot ephemeral evaluation
- *   & value logging for non-module `.math` files kept in the Modules tab.
+ * - Stateless single-shot evaluation (`eng_eval`, isolated in `[eval]`) for the calculator keypad
+ * - Top-to-bottom executable `.math` modules (`eng_mod_eval`, `eng_mod_reset`,
+ *   `eng_mod_format_vars`, `eng_mod_export_source`) where every `.math` file is
+ *   executable on its own with no entry point required, supporting multi-file
+ *   `<[dep]` projects, top-level expressions, and explicit variable privacy
+ *   (`pub`/`priv`), 3-tier lexical scoping, and mutability (`:=`/`mut` vs `=`/`const`).
+ * - Native `.math` extension compilation & `.mathc` binary caching
+ *   (`user_compile_ext` + `user_load_mathc`).
  * - Host-bridge externs (`@currency_convert`, `@fx_rate`, etc.) backed by
  *   [CurrencyConverter] for real-time currency conversion.
  */
@@ -34,13 +34,12 @@ object MathEngineManager {
 
     private const val TAG = "MathEngineManager"
     private const val BUNDLED_STDLIB_ASSET = "precompiled/stdlib.mathc"
-    private const val MAX_NATIVE_SESSIONS = 8
 
     @Volatile
     private var appContext: Context? = null
     private var engineHandle: Long = 0
     private val worker = Executors.newSingleThreadExecutor()
-    private val studioExtensionSourcesByKey = linkedMapOf<String, String>()
+    private val studioModuleSourcesByName = linkedMapOf<String, String>()
     private val customExternCallbacks = linkedMapOf<String, MathEngineBridge.ExternCallback>()
 
     /** Provides the application context so `assets/precompiled/stdlib.mathc`,
@@ -94,48 +93,44 @@ object MathEngineManager {
     }
 
     /**
-     * Checks whether a `.math` file's source code is a true native extension `[module]`
-     * definition (rather than a standard `.math` evaluation script).
-     *
-     * True modules contain at least one `[module_name]` section header, `<[dep]`
-     * dependency directive, `$type` declaration, `@dim` declaration, or typed module
-     * overload declaration (`fn(x: real) = ...;`) and do not consist of session `:=`
-     * variable/function assignments or standalone evaluation expressions.
+     * Derives the canonical `[module]` name for a `.math` file:
+     * - If [rawSource] declares an explicit `[mod_name]` header, returns that name.
+     * - Otherwise derives a clean identifier from [fileName] (e.g. `physics_sim.math` -> `physics_sim`).
      */
-    fun isTrueModuleSource(raw: String): Boolean {
-        val codeLines = raw.lines()
-            .map { stripCommentOutsideQuotes(it).trim() }
-            .filter { it.isNotEmpty() }
-        if (codeLines.isEmpty()) return true // Keep blank module template until edited
-
-        val joined = codeLines.joinToString("\n")
-        val hasModuleHeader = Regex("(?m)^\\[[a-zA-Z_][a-zA-Z0-9_]*]$").containsMatchIn(joined)
-        val hasDepHeader = Regex("(?m)^<\\[[a-zA-Z_][a-zA-Z0-9_]*]$").containsMatchIn(joined)
-        val hasTypeDecl = Regex("(?m)^\\$[a-zA-Z_][a-zA-Z0-9_]*").containsMatchIn(joined)
-        val hasDimDecl = Regex("(?m)^@(dim|unit_dim)\\s*\\(").containsMatchIn(joined)
-        val hasTypedOverload = Regex(
-            "(?m)^[a-zA-Z_][a-zA-Z0-9_]*\\s*\\([^)]*:\\s*[a-zA-Z_][a-zA-Z0-9_]*[^)]*\\)\\s*(?::\\s*[<>]?\\s*\\d+\\s*)?(?:->\\s*[a-zA-Z_][a-zA-Z0-9_]*(?:\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_]*)?\\s*)?="
-        ).containsMatchIn(joined)
-        val hasQuotedOperatorDecl = Regex("(?m)^\"[^\"]+\"").containsMatchIn(joined)
-        val hasParamOperatorDecl = Regex(
-            "(?m)^\\(\\s*[a-zA-Z_][a-zA-Z0-9_]*\\s*(?::[^)]*)?\\)\\s*(?:\"[^\"]+\"|[a-zA-Z_][a-zA-Z0-9_]*)"
-        ).containsMatchIn(joined)
-        val hasSessionAssignment = codeLines.any { it.contains(":=") }
-
-        if (hasModuleHeader || hasDepHeader || hasTypeDecl || hasDimDecl || hasQuotedOperatorDecl || hasParamOperatorDecl) {
-            return true
+    fun deriveModuleName(fileName: String?, rawSource: String): String {
+        val modRegex = Regex("^\\[([a-zA-Z_][a-zA-Z0-9_]*)]$")
+        for (rawLine in rawSource.lineSequence()) {
+            val trimmed = stripCommentOutsideQuotes(rawLine).trim()
+            if (trimmed.isEmpty()) continue
+            val m = modRegex.matchEntire(trimmed)
+            if (m != null) {
+                return m.groupValues[1]
+            }
         }
-        if (hasTypedOverload && !hasSessionAssignment) {
-            return true
+        val stem = (fileName ?: "workspace")
+            .removeSuffix(".math")
+            .replace(Regex("[^a-zA-Z0-9_]"), "_")
+            .trim('_')
+        if (stem.isEmpty()) return "workspace"
+        return if (stem[0].isDigit()) "mod_$stem" else stem
+    }
+
+    /** Extracts all `<[dep]` module names referenced in [rawSource]. */
+    fun extractModuleDependencies(rawSource: String): List<String> {
+        val deps = LinkedHashSet<String>()
+        val depRegex = Regex("^<\\[([a-zA-Z_][a-zA-Z0-9_]*)]$")
+        for (rawLine in rawSource.lineSequence()) {
+            val trimmed = stripCommentOutsideQuotes(rawLine).trim()
+            if (trimmed.isEmpty()) continue
+            depRegex.matchEntire(trimmed)?.let { m ->
+                deps.add(m.groupValues[1])
+            }
         }
-        return false
+        return deps.toList()
     }
 
     /** Creates a blank engine loaded strictly with `assets/precompiled/stdlib.mathc` and registers host externs. */
     private fun createFreshStdlibEngine(ctx: Context): Long {
-        // The engine boots BLANK by design (no embedded stdlib): both
-        // nativeCreateBlank() and nativeCreate() hand back an empty engine,
-        // and the stdlib image is loaded here from app assets.
         val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
         val handle = MathEngineBridge.nativeCreateBlank().takeIf { it != 0L }
             ?: MathEngineBridge.nativeCreate().takeIf { it != 0L }
@@ -155,8 +150,7 @@ object MathEngineManager {
 
     /**
      * Rebuilds the native engine from `stdlib.mathc` + all current `.math` patches in
-     * `filesDir/math_patches/` + any `.math Studio` user modules while preserving open
-     * session snapshots. Used when an already-loaded patch or Studio module is updated.
+     * `filesDir/math_patches/` + any active `.math Studio` user modules.
      */
     @Synchronized
     private fun rebuildEnginePreservingStateSync(
@@ -164,18 +158,6 @@ object MathEngineManager {
         onStatus: ((String) -> Unit)? = null
     ): Boolean {
         val oldHandle = engineHandle
-        val savedSessionSnapshots = mutableMapOf<Int, String>()
-        if (oldHandle != 0L) {
-            for (nativeSid in 0 until MAX_NATIVE_SESSIONS) {
-                val snaps = runCatching {
-                    MathEngineBridge.nativeSessionExportSnapshots(oldHandle, nativeSid)
-                }.getOrNull()
-                if (!snaps.isNullOrBlank()) {
-                    savedSessionSnapshots[nativeSid] = snaps
-                }
-            }
-        }
-
         MathPatchDownloader.invalidateCompiledCache(MathPatchDownloader.getPatchesDir(ctx))
         val newHandle = createFreshStdlibEngine(ctx)
         if (newHandle == 0L) {
@@ -197,24 +179,19 @@ object MathEngineManager {
             onStatus
         )
 
-        // Re-link any custom modules compiled interactively in .math Studio
-        for ((_, studioSrc) in studioExtensionSourcesByKey) {
-            compileAndLoadPatchWithBytesSync(studioSrc)
-        }
-
-        // Restore any active sessions that had snapshots
-        for ((_, snaps) in savedSessionSnapshots) {
-            runCatching { MathEngineBridge.nativeSessionRestore(engineHandle, snaps) }
+        // Re-evaluate any custom modules active in .math Studio
+        for ((modName, studioSrc) in studioModuleSourcesByName) {
+            val normalized = normalizeExtensionSource(studioSrc)
+            if (normalized.isNotEmpty()) {
+                runCatching {
+                    MathEngineBridge.nativeModuleEval(engineHandle, modName, normalized)
+                }
+            }
         }
         return true
     }
 
-    /** Boots the native engine strictly from `stdlib.mathc` (no embedded fallback):
-     *  1. If `compiled_state.mathc` (cached `stdlib.mathc` + compiled `.math` patches)
-     *     is valid on disk, loads it into a blank engine (`nativeCreateBlank` + `nativeLoadMathc`).
-     *  2. Otherwise creates a blank engine (`nativeCreateBlank`), loads the bundled
-     *     `assets/precompiled/stdlib.mathc` (`nativeLoadMathc`), compiles any `.math`
-     *     patches in `filesDir/math_patches/`, and saves `compiled_state.mathc`. */
+    /** Boots the native engine strictly from `stdlib.mathc` (or cached `compiled_state.mathc`). */
     @Synchronized
     fun ensureEngine(onStatus: ((String) -> Unit)? = null): Boolean {
         val ctx = appContext ?: return false
@@ -232,14 +209,11 @@ object MathEngineManager {
             return true
         }
         return try {
-
-            // 1. Fast path: boot blank engine from cached compiled_state.mathc (stdlib + patches)
             val cachedHandle = MathPatchLoader.tryBootFromCompiledCache(ctx, onStatus)
             if (cachedHandle != 0L) {
                 engineHandle = cachedHandle
                 registerHostExternsOnHandle(engineHandle)
-                // Also check if any unloaded patches remain (none on exact cache hit)
-                if ( onStatus == null ) {
+                if (onStatus == null) {
                     MathPatchLoader.loadUnloadedPatches(
                         ctx,
                         engineHandle,
@@ -250,7 +224,6 @@ object MathEngineManager {
                 return true
             }
 
-            // 2. Standard path: boot blank engine and load bundled assets/precompiled/stdlib.mathc
             val handle = createFreshStdlibEngine(ctx)
             engineHandle = handle
             if (engineHandle != 0L) {
@@ -274,9 +247,7 @@ object MathEngineManager {
         }
     }
 
-    /** Scans `filesDir/math_patches/` on the engine worker thread and links any
-     *  downloaded `.math` patches that are not yet loaded. [onStatus] receives
-     *  one-line pipeline feedback (engine readiness, per-patch load results). */
+    /** Scans `filesDir/math_patches/` on the engine worker thread and links any unloaded `.math` patches. */
     fun loadPendingPatches(
         onDone: ((loadedCount: Int) -> Unit)? = null,
         onStatus: ((String) -> Unit)? = null
@@ -314,14 +285,7 @@ object MathEngineManager {
         }
     }
 
-    /**
-     * Runs the complete startup patch pipeline in deterministic order:
-     * 1. Ensures the local engine is booted on the worker thread for immediate UI use.
-     * 2. Downloads any missing or updated `.math` patches from the remote manifest.
-     * 3. Compiles & links any newly downloaded (or previously unloaded) `.math` patches
-     *    on the engine worker thread and reports unified status via [onStatus] before
-     *    invoking [onDone].
-     */
+    /** Runs the complete startup patch pipeline in deterministic order. */
     fun syncAndLoadPatches(
         context: Context,
         onStatus: ((String) -> Unit)? = null,
@@ -342,21 +306,18 @@ object MathEngineManager {
     }
 
     /**
-     * Normalizes `.math` extension source code before passing to `nativeCompileExt`:
+     * Normalizes `.math` module source code before passing to `nativeCompileExt` or `nativeModuleEval`:
      * - Strips UTF-8 BOM and normalizes CRLF/CR line endings.
      * - Strips `#` comments only outside `"..."` string literals.
      * - Strips trailing `;` on non-expression top-level directives (`@dim`, `@unit_dim`,
-     *   `$type`, and `"..." => @...`) because `ext_compile_slice` parses those directly
-     *   without consuming trailing semicolons.
-     * - Joins multi-line expression continuations at depth 0 (e.g. lines ending with
-     *   `=`, `+`, `-`, `*`, `/`, `^`, `?`, `:`, `|>`, `&&`, `||` or next line starting
-     *   with `|>`, `?`, `:`, `else`, `or`) so `stop_at_newline` in the C lexer never
-     *   truncates a multi-line function body at depth 0.
+     *   `$type`, and `"..." => @...`).
+     * - Joins multi-line expression continuations at depth 0 so multi-line definitions stay intact.
      */
     internal fun normalizeExtensionSource(raw: String): String {
         val cleaned = raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace("\r", "\n")
         val codeLines = mutableListOf<String>()
-        val syntaxBindingRegex = Regex("^\"[^\"]+\"\\s*=>\\s*@")
+        val syntaxBindingRegex = Regex("^(?:(?:pub|priv)\\s+)*\"[^\"]+\"\\s*=>\\s*@")
+        val typeDeclRegex = Regex("^(?:(?:pub|priv)\\s+)*\\$[a-zA-Z_]")
 
         for (rawLine in cleaned.lines()) {
             var codePart = stripCommentOutsideQuotes(rawLine)
@@ -365,7 +326,7 @@ object MathEngineManager {
 
             if (trimmed.startsWith("@dim") ||
                 trimmed.startsWith("@unit_dim") ||
-                trimmed.startsWith("$") ||
+                typeDeclRegex.containsMatchIn(trimmed) ||
                 syntaxBindingRegex.containsMatchIn(trimmed)
             ) {
                 while (codePart.endsWith(";")) {
@@ -381,7 +342,7 @@ object MathEngineManager {
         var parenDepth = 0
         var braceDepth = 0
         var brackDepth = 0
-        val contEndRegex = Regex("(\\+=|-=|\\*=|/=|%=|\\^=|==|!=|<=|>=|&&|\\|\\||\\|>|=|\\+|-|\\*|/|\\^|\\?|:)$")
+        val contEndRegex = Regex("(:=|\\+=|-=|\\*=|/=|%=|\\^=|==|!=|<=|>=|&&|\\|\\||\\|>|=|\\+|-|\\*|/|\\^|\\?|:)$")
         val contStartRegex = Regex("^(\\|>|\\?|:|else\\b|or\\b)")
 
         fun updateDepths(segment: String) {
@@ -415,16 +376,16 @@ object MathEngineManager {
                 val prev = merged.last().trimEnd()
                 val prevStripped = prev.trim()
                 val isPrevHeaderOrDep =
-                    (prevStripped.startsWith("[") && prevStripped.endswith("]")) ||
-                    (prevStripped.startsWith("<[") && prevStripped.endswith("]"))
+                    (prevStripped.startsWith("[") && prevStripped.endsWith("]")) ||
+                    (prevStripped.startsWith("<[") && prevStripped.endsWith("]"))
                 val isCurHeaderOrDep =
-                    (stripped.startsWith("[") && stripped.endswith("]")) ||
-                    (stripped.startsWith("<[") && stripped.endswith("]"))
+                    (stripped.startsWith("[") && stripped.endsWith("]")) ||
+                    (stripped.startsWith("<[") && stripped.endsWith("]"))
 
                 if (!isPrevHeaderOrDep && !isCurHeaderOrDep) {
                     val prevContinues = contEndRegex.containsMatchIn(prevStripped) &&
                         !prevStripped.endsWith(";") &&
-                        !prevStripped.startsWith("$") &&
+                        !typeDeclRegex.containsMatchIn(prevStripped) &&
                         !prevStripped.startsWith("@dim") &&
                         !prevStripped.startsWith("@unit_dim")
                     val curContinues = contStartRegex.containsMatchIn(stripped)
@@ -442,8 +403,6 @@ object MathEngineManager {
         return merged.joinToString("\n").trim()
     }
 
-    private fun String.endswith(suffix: String): Boolean = this.endsWith(suffix)
-
     @Synchronized
     private fun compileAndLoadPatchWithBytesSync(mathSource: String): Triple<Boolean, String, ByteArray?> {
         if (engineHandle == 0L) return Triple(false, "Engine not initialized", null)
@@ -451,9 +410,6 @@ object MathEngineManager {
         val trimmed = normalizeExtensionSource(mathSource)
         if (trimmed.isEmpty()) return Triple(false, "Empty .math source", null)
         return try {
-            // nativeCompileExt compiles & links the .math source directly into engineHandle
-            // (with new [module] headers enabled by default) AND returns the serialized
-            // cumulative .mathc binary image of the entire engine.
             val mathcBytes = MathEngineBridge.nativeCompileExt(engineHandle, trimmed)
             if (mathcBytes == null || mathcBytes.isEmpty()) {
                 val err = MathEngineBridge.nativeLastError(engineHandle) ?: "Compilation failed"
@@ -475,20 +431,25 @@ object MathEngineManager {
     }
 
     /**
-     * Splits a `.math` script into balanced top-level statements (ignoring `#` comments).
+     * Splits a normalized `.math` module source into balanced top-level declarations,
+     * headers, and statements so top-to-bottom execution can log every item's result.
      */
-    private fun splitScriptStatements(scriptSource: String): List<String> {
+    internal fun splitModuleStatements(rawSource: String): List<String> {
+        val normalized = normalizeExtensionSource(rawSource)
+        if (normalized.isEmpty()) return emptyList()
+
         val statements = mutableListOf<String>()
-        var currentStmt = StringBuilder()
+        val currentStmt = StringBuilder()
         var braceDepth = 0
         var parenDepth = 0
         var brackDepth = 0
 
-        for (rawLine in scriptSource.trim().lines()) {
-            val line = stripCommentOutsideQuotes(rawLine).trim()
+        for (rawLine in normalized.lines()) {
+            val line = rawLine.trim()
             if (line.isEmpty()) continue
-            if (currentStmt.isNotEmpty()) currentStmt.append(" ")
+            if (currentStmt.isNotEmpty()) currentStmt.append("\n")
             currentStmt.append(line)
+
             var inQuotes = false
             var i = 0
             while (i < line.length) {
@@ -512,95 +473,63 @@ object MathEngineManager {
                 i++
             }
             if (braceDepth == 0 && parenDepth == 0 && brackDepth == 0) {
-                statements.add(currentStmt.toString().trim())
-                currentStmt = StringBuilder()
+                var built = currentStmt.toString().trim()
+                while (built.endsWith(";")) {
+                    built = built.dropLast(1).trimEnd()
+                }
+                if (built.isNotEmpty()) {
+                    statements.add(built)
+                }
+                currentStmt.setLength(0)
             }
         }
         if (currentStmt.isNotEmpty()) {
-            statements.add(currentStmt.toString().trim())
+            var built = currentStmt.toString().trim()
+            while (built.endsWith(";")) {
+                built = built.dropLast(1).trimEnd()
+            }
+            if (built.isNotEmpty()) {
+                statements.add(built)
+            }
         }
         return statements
     }
 
     /**
-     * Evaluates a non-true-module `.math` file in an ephemeral context, logs its values,
-     * and exits immediately (closing the temporary session slot so no session remains open).
+     * Formats the bound variables and constants of [modName] using `nativeModuleFormatVars`:
+     *   `<name>|<type>|<unit>|<mutability>|<visibility>|<formatted_value>`
+     * into readable lines such as:
+     *   `pub mut  v0 : real [speed] = 25`
+     *   `priv const g : real = 9.80665`
      */
     @Synchronized
-    private fun evaluateAndExitModuleScriptSync(mathSource: String): Pair<Boolean, String> {
-        if (engineHandle == 0L) return false to "Engine not initialized"
-        val statements = splitScriptStatements(mathSource)
-        if (statements.isEmpty()) return false to "Empty .math source"
+    private fun formatModuleVariablesSync(modName: String): String {
+        if (engineHandle == 0L || modName.isBlank()) return ""
+        val raw = runCatching {
+            MathEngineBridge.nativeModuleFormatVars(engineHandle, modName)
+        }.getOrNull() ?: return ""
+        if (raw.isBlank()) return ""
 
-        val tempNativeSid = try {
-            MathEngineBridge.nativeSessionOpen(engineHandle)
-        } catch (_: Throwable) { -1 }
-
-        val sb = StringBuilder()
-        var allOk = true
-        try {
-            statements.forEachIndexed { idx, stmt ->
-                val wire = try {
-                    if (tempNativeSid >= 0) {
-                        MathEngineBridge.nativeSessionEval(engineHandle, tempNativeSid, stmt)
-                    } else {
-                        MathEngineBridge.nativeEval(engineHandle, stmt)
-                    }
-                } catch (_: Throwable) { null }
-
-                if (wire == null) {
-                    allOk = false
-                    sb.append("[${idx + 1}] $stmt  ⟹  ⚠ Evaluation failed\n")
-                } else {
-                    val res = MathEngineBridge.EvalResult.parseWire(wire)
-                    if (res.ok) {
-                        val u = if (res.unit != "none") " [${res.unit}]" else ""
-                        sb.append("[${idx + 1}] $stmt  ⟹  ${res.value}$u (${res.type})\n")
-                    } else {
-                        allOk = false
-                        sb.append("[${idx + 1}] $stmt  ⟹  ⚠ ${res.error}\n")
-                    }
+        return raw.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .mapNotNull { record ->
+                val parts = record.split("|", limit = 6)
+                if (parts.size < 6) null
+                else {
+                    val vName = parts[0]
+                    val vType = parts[1]
+                    val vUnit = parts[2]
+                    val vMut = parts[3]  // "mut" or "const"
+                    val vVis = parts[4]  // "pub" or "priv"
+                    val vVal = parts[5]
+                    val unitBadge = if (vUnit != "none" && vUnit.isNotEmpty()) " [$vUnit]" else ""
+                    val visPad = if (vVis == "priv") "priv" else "pub "
+                    val mutPad = if (vMut == "const") "const" else "mut  "
+                    "$visPad $mutPad $vName : $vType$unitBadge = $vVal"
                 }
             }
-        } finally {
-            if (tempNativeSid >= 0) {
-                try {
-                    MathEngineBridge.nativeSessionClose(engineHandle, tempNativeSid)
-                } catch (_: Throwable) { }
-            }
-        }
-        sb.append("(Evaluated ${statements.size} statement(s), logged values & exited)")
-        return allOk to sb.toString().trimEnd()
-    }
-
-    @Synchronized
-    private fun compileAndLoadSync(mathSource: String): Pair<Boolean, String> {
-        if (!isTrueModuleSource(mathSource)) {
-            return evaluateAndExitModuleScriptSync(mathSource)
-        }
-        val normalized = normalizeExtensionSource(mathSource)
-        val modNames = Regex("(?m)^\\s*\\[([a-zA-Z0-9_]+)]")
-            .findAll(normalized)
-            .map { it.groupValues[1] }
-            .toList()
-        val studioKey = if (modNames.isNotEmpty()) modNames.joinToString(",") else normalized.hashCode().toString()
-
-        var (ok, msg, _) = compileAndLoadPatchWithBytesSync(mathSource)
-        if (!ok && msg.contains("is already loaded", ignoreCase = true)) {
-            val ctx = appContext
-            if (ctx != null) {
-                studioExtensionSourcesByKey.remove(studioKey)
-                if (rebuildEnginePreservingStateSync(ctx, null)) {
-                    val retry = compileAndLoadPatchWithBytesSync(mathSource)
-                    ok = retry.first
-                    msg = retry.second
-                }
-            }
-        }
-        if (ok) {
-            studioExtensionSourcesByKey[studioKey] = mathSource
-        }
-        return ok to msg
+            .joinToString("\n")
     }
 
     /** Destroy the engine when the process exits. */
@@ -610,7 +539,7 @@ object MathEngineManager {
             MathEngineBridge.nativeDestroy(engineHandle)
             engineHandle = 0L
         }
-        studioExtensionSourcesByKey.clear()
+        studioModuleSourcesByName.clear()
         MathPatchLoader.resetTracking()
         worker.shutdown()
     }
@@ -707,7 +636,6 @@ object MathEngineManager {
 
         e = Regex("\\bans\\b").replace(e, "($lastAnswer)")
 
-        // Balance unmatched opening parens first so every function call has a closing ')'
         var depth = 0
         for (ch in e) {
             when (ch) {
@@ -717,11 +645,8 @@ object MathEngineManager {
         }
         if (depth > 0) e += ")".repeat(depth)
 
-        // Support infix n√(x) -> root(x, n)
         e = replaceInfixNthRoot(e)
 
-        // Apply active Degree / Radian mode to trig and inverse trig functions
-        // (all of these, incl. the reciprocal family, are standard [trig] stdlib functions)
         if (isDegreeMode) {
             e = rewriteFunctionCalls(
                 e,
@@ -738,13 +663,12 @@ object MathEngineManager {
             }
         }
 
-        // Standard calculator log(x) is base-10 log10(x)
         e = Regex("\\blog\\(").replace(e, "log10(")
 
         return e.trim()
     }
 
-    /** Stateless single-shot evaluation via eng_eval. */
+    /** Stateless single-shot evaluation via `eng_eval` (isolated in `[eval]`). */
     fun evaluate(
         displayExpr: String,
         isDegreeMode: Boolean = true,
@@ -776,207 +700,199 @@ object MathEngineManager {
     }
 
     // =========================================================================
-    //  Stateful Sessions & .math Extension Compiler API
-    //  Note: UI sessionId is 1-based (1..8), mapped to native 0-based (0..7).
+    //  Unified Top-to-Bottom Executable Modules & Multi-File Project API
     // =========================================================================
 
-    private fun toNativeSid(sessionId: Int): Int = sessionId - 1
-
-    fun compileAndLoadExtension(
-        mathSource: String,
-        onDone: (ok: Boolean, message: String) -> Unit
-    ) {
-        worker.execute {
-            if (!ensureEngine()) {
-                onDone(false, "Engine init failed")
-                return@execute
+    /**
+     * Resolves and executes any `<[dep]` modules from [projectFilesByModName] in
+     * topological dependency order before executing [targetModName].
+     */
+    @Synchronized
+    private fun ensureProjectDependenciesSync(
+        targetModName: String,
+        targetSource: String,
+        projectFilesByModName: Map<String, String>,
+        visited: MutableSet<String>
+    ): String? {
+        visited.add(targetModName)
+        val deps = extractModuleDependencies(targetSource)
+        for (dep in deps) {
+            if (dep == targetModName) {
+                return "Circular module dependency involving '[$dep]'"
             }
-            val (ok, msg) = compileAndLoadSync(mathSource)
-            onDone(ok, msg)
-        }
-    }
-
-    fun openSession(onDone: (sessionId: Int) -> Unit) {
-        worker.execute {
-            if (!ensureEngine()) {
-                onDone(-1)
-                return@execute
-            }
-            val rawSid = try {
-                MathEngineBridge.nativeSessionOpen(engineHandle)
-            } catch (_: Throwable) { -1 }
-            val uiSid = if (rawSid >= 0) rawSid + 1 else -1
-            onDone(uiSid)
-        }
-    }
-
-    fun resetSession(sessionId: Int, onDone: (ok: Boolean) -> Unit) {
-        worker.execute {
-            if (!ensureEngine() || sessionId <= 0) {
-                onDone(false)
-                return@execute
-            }
-            val ok = try {
-                MathEngineBridge.nativeSessionReset(engineHandle, toNativeSid(sessionId))
-            } catch (_: Throwable) { false }
-            onDone(ok)
-        }
-    }
-
-    fun closeSession(sessionId: Int, onDone: (ok: Boolean) -> Unit) {
-        worker.execute {
-            if (!ensureEngine() || sessionId <= 0) {
-                onDone(false)
-                return@execute
-            }
-            val ok = try {
-                MathEngineBridge.nativeSessionClose(engineHandle, toNativeSid(sessionId))
-            } catch (_: Throwable) { false }
-            onDone(ok)
-        }
-    }
-
-    fun exportSessionSnapshots(sessionId: Int, onDone: (snapshots: String) -> Unit) {
-        worker.execute {
-            if (!ensureEngine() || sessionId <= 0) {
-                onDone("")
-                return@execute
-            }
-            val snaps = try {
-                MathEngineBridge.nativeSessionExportSnapshots(engineHandle, toNativeSid(sessionId)) ?: ""
-            } catch (_: Throwable) { "" }
-            onDone(snaps)
-        }
-    }
-
-    fun restoreSession(snapshots: String, onDone: (newSessionId: Int, error: String?) -> Unit) {
-        worker.execute {
-            if (!ensureEngine()) {
-                onDone(-1, "Engine init failed")
-                return@execute
-            }
-            val rawSid = try {
-                MathEngineBridge.nativeSessionRestore(engineHandle, snapshots)
-            } catch (_: Throwable) { -1 }
-            val uiSid = if (rawSid >= 0) rawSid + 1 else -1
-            val err = if (uiSid <= 0) {
-                try { MathEngineBridge.nativeLastError(engineHandle) } catch (_: Throwable) { null }
-            } else null
-            onDone(uiSid, err)
-        }
-    }
-
-    /** Parse the latest MSP1 snapshot for `sessionId` to display bound variables. */
-    private fun parseSessionVariablesSync(sessionId: Int): String {
-        if (sessionId <= 0) return ""
-        return try {
-            val nativeSid = toNativeSid(sessionId)
-            val count = MathEngineBridge.nativeSessionSnapshotCount(engineHandle, nativeSid)
-            if (count <= 0) return ""
-            val latest = MathEngineBridge.nativeSessionSnapshotAt(engineHandle, nativeSid, count - 1) ?: return ""
-            // Format: MSP1|seq:...|prev:...|hash:...|vars:N|name:type:unit:ltype:lunit=val;...|res:type:unit=val
-            val varsMarker = "|vars:"
-            val resMarker = "|res:"
-            val vStart = latest.indexOf(varsMarker)
-            val rStart = latest.indexOf(resMarker)
-            if (vStart < 0 || rStart <= vStart) return ""
-            val varsSection = latest.substring(vStart + varsMarker.length, rStart)
-            val pipeIdx = varsSection.indexOf('|')
-            if (pipeIdx < 0) return ""
-            val payload = varsSection.substring(pipeIdx + 1)
-            if (payload.isBlank()) return ""
-            payload.split(";").mapNotNull { entry ->
-                val eqIdx = entry.indexOf('=')
-                if (eqIdx <= 0) null
-                else {
-                    val meta = entry.substring(0, eqIdx).split(":")
-                    val vVal = entry.substring(eqIdx + 1)
-                    val vName = meta.getOrNull(0) ?: "?"
-                    val vType = meta.getOrNull(1) ?: "real"
-                    val vUnit = meta.getOrNull(2) ?: "none"
-                    val unitStr = if (vUnit != "none" && vUnit.isNotEmpty()) " [$vUnit]" else ""
-                    "$vName : $vType$unitStr = $vVal"
+            val depSource = projectFilesByModName[dep]
+            if (depSource != null) {
+                if (dep !in visited) {
+                    val depErr = ensureProjectDependenciesSync(dep, depSource, projectFilesByModName, visited)
+                    if (depErr != null) return depErr
+                    val prevLoaded = studioModuleSourcesByName[dep]
+                    if (prevLoaded != depSource) {
+                        MathEngineBridge.nativeModuleReset(engineHandle, dep)
+                        val normDep = normalizeExtensionSource(depSource)
+                        if (normDep.isNotEmpty()) {
+                            val wire = MathEngineBridge.nativeModuleEval(engineHandle, dep, normDep)
+                            val parsed = MathEngineBridge.EvalResult.parseWire(wire)
+                            if (!parsed.ok) {
+                                return "Error in dependency '[$dep]': ${parsed.error}"
+                            }
+                            MathEngineBridge.nativeSetModule(engineHandle, dep, true)
+                            studioModuleSourcesByName[dep] = depSource
+                        }
+                    }
                 }
-            }.joinToString("\n")
-        } catch (_: Throwable) { "" }
-    }
-
-    fun inspectSessionVariables(sessionId: Int, onDone: (summary: String) -> Unit) {
-        worker.execute {
-            if (!ensureEngine() || sessionId <= 0) {
-                onDone("")
-                return@execute
-            }
-            onDone(parseSessionVariablesSync(sessionId))
-        }
-    }
-
-    fun evalInSession(
-        sessionId: Int,
-        expr: String,
-        isDegreeMode: Boolean = false,
-        onDone: (outcome: EvalOutcome, varsSummary: String) -> Unit
-    ) {
-        if (sessionId <= 0) {
-            onDone(EvalOutcome(false, "0.0", "", "none", "Session not ready (no session open yet)"), "")
-            return
-        }
-        worker.execute {
-            if (!ensureEngine()) {
-                onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"), "")
-                return@execute
-            }
-            val nativeSid = toNativeSid(sessionId)
-            val wire = try {
-                MathEngineBridge.nativeSessionEval(engineHandle, nativeSid, expr.trim())
-            } catch (_: Throwable) { null }
-            val outcome = if (wire == null) {
-                EvalOutcome(false, "0.0", "", "none", "Session call failed")
             } else {
-                val res = MathEngineBridge.EvalResult.parseWire(wire)
-                if (res.ok) EvalOutcome(true, res.value, res.type, res.unit, null)
-                else EvalOutcome(false, "0.0", "", "none", res.error)
+                // Check if dep is a loaded stdlib or patch module
+                val active = MathEngineBridge.nativeIsModuleActive(engineHandle, dep)
+                if (!active && !MathEngineBridge.nativeSetModule(engineHandle, dep, true)) {
+                    return "Unresolved module dependency '<[$dep]' required by '[$targetModName]'"
+                }
             }
-            val vars = parseSessionVariablesSync(sessionId)
-            onDone(outcome, vars)
+        }
+        return null
+    }
+
+    /**
+     * Executes a `.math` module file top-to-bottom on its own (Python-style, no entry point),
+     * automatically resolving any `<[dep]` sibling modules from [projectSourcesByFileName].
+     *
+     * Supports interleaved `[module]` headers, `<[dep]` dependencies, `@dim` directives,
+     * `$type` structs, `pub`/`priv` functions & operators, `pub`/`priv` + `mut`/`const`
+     * variables (`:=` vs `=`), control flow, and standalone expressions.
+     */
+    fun runModuleFile(
+        fileName: String?,
+        mathSource: String,
+        projectSourcesByFileName: Map<String, String> = emptyMap(),
+        resetBeforeRun: Boolean = true,
+        onDone: (modName: String, results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
+    ) {
+        worker.execute {
+            if (!ensureEngine()) {
+                val fallbackMod = deriveModuleName(fileName, mathSource)
+                onDone(
+                    fallbackMod,
+                    listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "Engine init failed")),
+                    ""
+                )
+                return@execute
+            }
+
+            synchronized(this) {
+                registerHostExternsOnHandle(engineHandle)
+                val primaryMod = deriveModuleName(fileName, mathSource)
+
+                // Map all project files by their module name so <[dep] resolves across project files
+                val projectByMod = LinkedHashMap<String, String>()
+                for ((fName, fSrc) in projectSourcesByFileName) {
+                    val mName = deriveModuleName(fName, fSrc)
+                    projectByMod[mName] = fSrc
+                }
+                projectByMod[primaryMod] = mathSource
+
+                val depErr = ensureProjectDependenciesSync(
+                    primaryMod,
+                    mathSource,
+                    projectByMod,
+                     mutableSetOf()
+                )
+                if (depErr != null) {
+                    onDone(
+                        primaryMod,
+                        listOf("<[dep]" to EvalOutcome(false, "0.0", "void", "none", depErr)),
+                        formatModuleVariablesSync(primaryMod)
+                    )
+                    return@execute
+                }
+
+                if (resetBeforeRun) {
+                    runCatching { MathEngineBridge.nativeModuleReset(engineHandle, primaryMod) }
+                }
+
+                val statements = splitModuleStatements(mathSource)
+                val results = mutableListOf<Pair<String, EvalOutcome>>()
+                var curMod = primaryMod
+                val modHeaderRegex = Regex("^\\[([a-zA-Z_][a-zA-Z0-9_]*)]$")
+                var allOk = true
+
+                for (stmt in statements) {
+                    val hdrMatch = modHeaderRegex.matchEntire(stmt.trim())
+                    if (hdrMatch != null) {
+                        curMod = hdrMatch.groupValues[1]
+                        if (resetBeforeRun && curMod != primaryMod) {
+                            runCatching { MathEngineBridge.nativeModuleReset(engineHandle, curMod) }
+                        }
+                        MathEngineBridge.nativeSetModule(engineHandle, curMod, true)
+                        continue
+                    }
+
+                    val wire = try {
+                        MathEngineBridge.nativeModuleEval(engineHandle, curMod, stmt)
+                    } catch (t: Throwable) {
+                        "ERR|${t.message ?: "Native exception"}"
+                    }
+
+                    val parsed = MathEngineBridge.EvalResult.parseWire(wire)
+                    val outcome = if (parsed.ok) {
+                        EvalOutcome(true, parsed.value, parsed.type, parsed.unit, null)
+                    } else {
+                        allOk = false
+                        EvalOutcome(false, "0.0", "void", "none", parsed.error)
+                    }
+                    results.add(stmt to outcome)
+                    if (!parsed.ok) break
+                }
+
+                MathEngineBridge.nativeSetModule(engineHandle, curMod, true)
+                if (allOk) {
+                    studioModuleSourcesByName[primaryMod] = mathSource
+                }
+                val varsSummary = formatModuleVariablesSync(curMod)
+                onDone(curMod, results, varsSummary)
+            }
         }
     }
 
-    /** Executes a multi-line `.math` evaluation script strictly inside isolated `sessionId`. */
-    fun runProgramScript(
-        sessionId: Int,
-        scriptSource: String,
-        onDone: (results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
-    ) {
-        if (sessionId <= 0) {
-            onDone(emptyList(), "")
-            return
-        }
+    /** Resets all runtime variables, constants, and overloads in [modName]. */
+    fun resetModule(modName: String, onDone: (ok: Boolean) -> Unit) {
         worker.execute {
-            if (!ensureEngine()) {
-                onDone(emptyList(), "")
+            if (!ensureEngine() || modName.isBlank()) {
+                onDone(false)
                 return@execute
             }
-            val nativeSid = toNativeSid(sessionId)
-            val results = mutableListOf<Pair<String, EvalOutcome>>()
-            val statements = splitScriptStatements(scriptSource)
-
-            for (stmt in statements) {
-                val wire = try {
-                    MathEngineBridge.nativeSessionEval(engineHandle, nativeSid, stmt)
-                } catch (_: Throwable) { null }
-                val outcome = if (wire == null) {
-                    EvalOutcome(false, "0.0", "", "none", "Session eval failed")
-                } else {
-                    val res = MathEngineBridge.EvalResult.parseWire(wire)
-                    if (res.ok) EvalOutcome(true, res.value, res.type, res.unit, null)
-                    else EvalOutcome(false, "0.0", "", "none", res.error)
-                }
-                results.add(stmt to outcome)
+            val ok = synchronized(this) {
+                studioModuleSourcesByName.remove(modName)
+                runCatching {
+                    MathEngineBridge.nativeModuleReset(engineHandle, modName)
+                }.getOrDefault(false)
             }
+            onDone(ok)
+        }
+    }
 
-            val vars = parseSessionVariablesSync(sessionId)
-            onDone(results, vars)
+    /** Inspects all variables and constants currently bound in [modName]. */
+    fun inspectModuleVariables(modName: String, onDone: (summary: String) -> Unit) {
+        worker.execute {
+            if (!ensureEngine() || modName.isBlank()) {
+                onDone("")
+                return@execute
+            }
+            onDone(formatModuleVariablesSync(modName))
+        }
+    }
+
+    /** Exports [modName]'s current variables and constants as reproducible `.math` module source. */
+    fun exportModuleSource(modName: String, onDone: (source: String) -> Unit) {
+        worker.execute {
+            if (!ensureEngine() || modName.isBlank()) {
+                onDone("")
+                return@execute
+            }
+            val src = synchronized(this) {
+                runCatching {
+                    MathEngineBridge.nativeModuleExportSource(engineHandle, modName) ?: ""
+                }.getOrDefault("")
+            }
+            onDone(src)
         }
     }
 }

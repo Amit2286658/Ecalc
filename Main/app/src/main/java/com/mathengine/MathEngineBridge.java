@@ -89,28 +89,20 @@ public final class MathEngineBridge implements AutoCloseable {
         return EvalResult.parseWire(nativeEval(requireOpenHandle(), expr));
     }
 
-    public synchronized int openSession() {
-        return nativeSessionOpen(requireOpenHandle());
+    public synchronized EvalResult evalModule(String moduleName, String expr) {
+        return EvalResult.parseWire(nativeModuleEval(requireOpenHandle(), moduleName, expr));
     }
 
-    public synchronized boolean closeSession(int sessionId) {
-        return nativeSessionClose(requireOpenHandle(), sessionId);
+    public synchronized boolean resetModule(String moduleName) {
+        return nativeModuleReset(requireOpenHandle(), moduleName);
     }
 
-    public synchronized boolean resetSession(int sessionId) {
-        return nativeSessionReset(requireOpenHandle(), sessionId);
+    public synchronized String formatModuleVars(String moduleName) {
+        return nativeModuleFormatVars(requireOpenHandle(), moduleName);
     }
 
-    public synchronized EvalResult evalSession(int sessionId, String expr) {
-        return EvalResult.parseWire(nativeSessionEval(requireOpenHandle(), sessionId, expr));
-    }
-
-    public synchronized String exportSessionSnapshots(int sessionId) {
-        return nativeSessionExportSnapshots(requireOpenHandle(), sessionId);
-    }
-
-    public synchronized int restoreSession(String newlineJoinedSnapshots) {
-        return nativeSessionRestore(requireOpenHandle(), newlineJoinedSnapshots);
+    public synchronized String exportModuleSource(String moduleName) {
+        return nativeModuleExportSource(requireOpenHandle(), moduleName);
     }
 
     public synchronized byte[] compileExtension(String mathSource) {
@@ -170,14 +162,10 @@ public final class MathEngineBridge implements AutoCloseable {
     public static native void    nativeDestroy(long handle);
     public static native String  nativeEval(long handle, String expr);
     public static native String  nativeLastError(long handle);
-    public static native int     nativeSessionOpen(long handle);
-    public static native boolean nativeSessionClose(long handle, int sessionId);
-    public static native boolean nativeSessionReset(long handle, int sessionId);
-    public static native String  nativeSessionEval(long handle, int sessionId, String expr);
-    public static native int     nativeSessionSnapshotCount(long handle, int sessionId);
-    public static native String  nativeSessionSnapshotAt(long handle, int sessionId, int index);
-    public static native String  nativeSessionExportSnapshots(long handle, int sessionId);
-    public static native int     nativeSessionRestore(long handle, String newlineJoinedSnapshots);
+    public static native String  nativeModuleEval(long handle, String modName, String expr);
+    public static native boolean nativeModuleReset(long handle, String modName);
+    public static native String  nativeModuleFormatVars(long handle, String modName);
+    public static native String  nativeModuleExportSource(long handle, String modName);
     public static native byte[]  nativeCompileExt(long handle, String mathSource);
     public static native boolean nativeLoadMathc(long handle, byte[] mathcBytes);
     public static native boolean nativeSetModule(long handle, String modName, boolean enabled);

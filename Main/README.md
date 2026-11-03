@@ -1,6 +1,6 @@
 # Ecalc
 
-A scientific Android calculator featuring neumorphic keys, a native C11 math engine, and damped-spring UI physics.
+A scientific Android calculator featuring neumorphic keys, a native C11 math engine, a unified `.math` Module Studio, and damped-spring UI physics.
 
 ## Author & Project Information
 
@@ -20,6 +20,10 @@ A scientific Android calculator featuring neumorphic keys, a native C11 math eng
 3. Run the app on an emulator or physical device, or build from the command line:
    ```bash
    ./gradlew assembleDebug
+   ```
+   Or compile the vendored C11 engine from source via NDK:
+   ```bash
+   ./gradlew assembleDebug -PmepSourceBuild
    ```
 
 ## License

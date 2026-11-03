@@ -207,7 +207,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Dedicated long-duration toast for startup/patch pipeline status so keypad or
-     *  session button toasts do not immediately cancel patch diagnostic messages. */
+     *  studio button toasts do not immediately cancel patch diagnostic messages. */
     fun showPatchStatusToast(summary: String) {
         patchToast?.cancel()
         patchToast = Toast.makeText(this, summary, Toast.LENGTH_LONG).also { it.show() }
@@ -960,7 +960,7 @@ class MainActivity : AppCompatActivity() {
         }
         addInfoBullet(detailsBox, "Math Engine", "O(1) stdlib.mathc boot, symbolic diff/solve & units")
         addInfoBullet(detailsBox, "UI Physics", "Damped-spring oscillations (e⁻⁷·⁵ᵗ · sin 22t)")
-        addInfoBullet(detailsBox, ".math Studio", "Swipe left on the display for Modules & live Sessions")
+        addInfoBullet(detailsBox, ".math Studio", "Swipe left on the display for executable .math Modules & multi-file projects")
         addInfoBullet(detailsBox, "Tooltips", "Press and hold any button or tab to inspect its action")
         scrollContent.addView(detailsBox)
 
@@ -1063,10 +1063,10 @@ class MainActivity : AppCompatActivity() {
 
         val docsFallback = """
             # CMath Engine (Math-Engine-MEP) Reference Guide
-            • Architecture: Self-contained C11 symbolic & numerical runtime with 8B NaN-boxed Values, O(1) stdlib.mathc binary boot ("MTHC" v1), topological <[dep] extension linker, and up to 8 isolated MSP1 sessions.
-            • Expressions & Sessions: Implicit multiplication (2x, 2π), dynamic bindings (x := 10, f(t) := ...), ranges (1...10, 1..<10, by), list comprehensions ([x^2 for x in 1...8]), lambdas ((x) => x^2), pipes (x |> f), matrices ([1, 2; 3, 4]), and SI unit conversions (25 km in m).
+            • Architecture: Self-contained C11 symbolic & numerical runtime with 8B NaN-boxed Values, O(1) stdlib.mathc binary boot ("MTHC" v1), and a unified, Python-style top-to-bottom executable .math module architecture with topological <[dep] multi-file linking.
+            • Executable Modules & Expressions: Every .math file runs top-to-bottom on its own with no entry point required—mixing ${'$'}type structs, @dim units, overloaded functions/operators, module variables, and top-level expressions. Supports implicit multiplication (2x, 2π), ranges (1...10, 1..<10, by), comprehensions ([x^2 for x in 1...8]), lambdas ((x) => x^2), pipes (x |> f), matrices ([1, 2; 3, 4]), and SI unit conversions (25 km in m).
+            • Privacy, Scoping & Mutability: Declarations default to pub; prefixing with priv encapsulates variables, constants, functions, or types within the declaring module. 3-tier lexical scoping: local { ... } blocks/params shadow current-module variables, which shadow imported public variables. Mutability: ':=' or 'mut' declares mutable variables, while 'const' (or '=' on a new module binding) creates immutable constants that reject reassignment and in-place mutation.
             • Symbolic & Numerical Calculus: sym_diff, sym_integ, sym_solve, sym_simplify, sym_taylor, diff, integrate, lim, sigma, prod, solve, fmin, fmax, ode_rk4.
-            • Writing [module] Extensions: Declare [module_name], dependencies <[arith], constants (c = 1.0;), typed functions (fn(x: real) = expr;), custom operators, and ${'$'}type structs.
             • Standard Library (18 Modules): [boot_syntax], [boot_types], [boot_control], [arith], [trig], [complex_ext], [vec], [mat], [algebra], [calculus], [units], [conversions], [physics], [chemistry], [biology], [geom_ext], [string].
         """.trimIndent()
         val engineDocsText = readAssetTextOrFallback("docs/CMATH_ENGINE_DOCS.md", docsFallback)
@@ -1985,7 +1985,7 @@ class MainActivity : AppCompatActivity() {
         "nCr" -> "nCr(n, r) — combinations: ORDER does not matter — nCr(5, 2) = 10 (binomial coefficient)."
         "ceil" -> "ceil(x) — rounds up: ceil(2.001) = 3, ceil(−2.1) = −2."
         "floor" -> "floor(x) — rounds down: floor(2.999) = 2, floor(−2.001) = −3."
-        "rand" -> "rand() — a fresh uniform random number in [0, 1) each time it is evaluated in a session."
+        "rand" -> "rand() — a fresh uniform random number in [0, 1) each time it is evaluated."
         "," -> ", — parameter separator for multi-argument functions such as gcd(a, b), lcm(a, b), nPr(n, r), nCr(n, r), and ⁿ√(x, n)."
         "(" -> "( — opening parenthesis; also starts a function's argument list, e.g. log(100)"
         ")" -> ") — closing parenthesis (or comma in 2-arg functions)"

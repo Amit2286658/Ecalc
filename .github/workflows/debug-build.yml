@@ -26,10 +26,21 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
 
+      - name: Build libmathengine.so from vendored C11 sources
+        run: |
+          set -eu
+          NDK_DIR="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$NDK_DIR" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
+            NDK_DIR="$ANDROID_HOME/ndk/27.0.12077973"
+          fi
+          (cd app/src/main/cpp/mathengine && sh tools/build_android_arm64.sh "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin")
+          cp app/src/main/cpp/mathengine/precompiled/arm64-v8a/libmathengine.so app/src/main/jniLibs/arm64-v8a/libmathengine.so
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --console=plain
+          ./gradlew assembleDebug -PusePrebuiltMepSo --console=plain
 
       - uses: actions/upload-artifact@v4
         with:

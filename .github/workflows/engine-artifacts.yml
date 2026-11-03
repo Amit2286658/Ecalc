@@ -5,7 +5,7 @@ name: engine-artifacts
 #   - stdlib.mathc  : host `mathc` compiler over Library/*.math (sources from
 #                     Math-Engine-MEP, engine from the vendored copy below)
 #   - libmathengine.so : arm64-v8a NDK build (API 24) — blank-boot engine (no
-#                        embedded stdlib; hosts load stdlib.mathc) — ~283 KB
+#                        embedded stdlib; hosts load stdlib.mathc)
 #
 # Engine sources of truth: Main/app/src/main/cpp/mathengine/
 # (Core/ + CMakeLists.txt vendored from Math-Engine-MEP; only Library/ is
@@ -47,7 +47,7 @@ jobs:
           echo "vendored engine: $(git log -1 --format='%h %s' -- Main/app/src/main/cpp/mathengine)"
           echo "engine repo HEAD: $(git -C mep log -1 --format='%h %s')"
 
-      # ---- Host build: mathc compiler -> stdlib.mathc (+ embedded header) ----
+      # ---- Host build: mathc compiler -> stdlib.mathc ----
       - name: Build stdlib.mathc (host)
         working-directory: buildtree
         run: |
@@ -105,7 +105,7 @@ jobs:
           SO=dist/arm64-v8a/libmathengine.so
           N="$(strings -t d "$SO" | grep -o 'Java_com_mathengine_MathEngineBridge_native[A-Za-z_0-9]*' | sort -u | wc -l)"
           echo "JNI symbols exported: $N"
-          [ "$N" -ge 23 ] || { echo "ERROR: expected >=23 Java_com_mathengine_MathEngineBridge_native* symbols"; exit 1; }
+          [ "$N" -ge 19 ] || { echo "ERROR: expected >=19 Java_com_mathengine_MathEngineBridge_native* symbols"; exit 1; }
           # Separate-stdlib build: no MTHC image must be embedded in the .so
           if grep -qa "MTHC" "$SO"; then
             echo "ERROR: found 'MTHC' in .so — stdlib must NOT be embedded (blank-boot engine)"; exit 1

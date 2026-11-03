@@ -39,29 +39,22 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
         MathEngineBridge.EvalResult.parseWire(MathEngineBridge.nativeEval(requireOpenHandle(), expr))
 
     @Synchronized
-    fun openSession(): Int = MathEngineBridge.nativeSessionOpen(requireOpenHandle())
-
-    @Synchronized
-    fun closeSession(sessionId: Int): Boolean =
-        MathEngineBridge.nativeSessionClose(requireOpenHandle(), sessionId)
-
-    @Synchronized
-    fun resetSession(sessionId: Int): Boolean =
-        MathEngineBridge.nativeSessionReset(requireOpenHandle(), sessionId)
-
-    @Synchronized
-    fun evalSession(sessionId: Int, expr: String): MathEngineBridge.EvalResult =
+    fun evalModule(moduleName: String, expr: String): MathEngineBridge.EvalResult =
         MathEngineBridge.EvalResult.parseWire(
-            MathEngineBridge.nativeSessionEval(requireOpenHandle(), sessionId, expr)
+            MathEngineBridge.nativeModuleEval(requireOpenHandle(), moduleName, expr)
         )
 
     @Synchronized
-    fun exportSnapshots(sessionId: Int): String? =
-        MathEngineBridge.nativeSessionExportSnapshots(requireOpenHandle(), sessionId)
+    fun resetModule(moduleName: String): Boolean =
+        MathEngineBridge.nativeModuleReset(requireOpenHandle(), moduleName)
 
     @Synchronized
-    fun restoreSession(snapshots: String): Int =
-        MathEngineBridge.nativeSessionRestore(requireOpenHandle(), snapshots)
+    fun formatModuleVars(moduleName: String): String? =
+        MathEngineBridge.nativeModuleFormatVars(requireOpenHandle(), moduleName)
+
+    @Synchronized
+    fun exportModuleSource(moduleName: String): String? =
+        MathEngineBridge.nativeModuleExportSource(requireOpenHandle(), moduleName)
 
     @Synchronized
     fun compileExt(mathSource: String): ByteArray? =
@@ -74,6 +67,10 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
     @Synchronized
     fun setModule(name: String, enabled: Boolean): Boolean =
         MathEngineBridge.nativeSetModule(requireOpenHandle(), name, enabled)
+
+    @Synchronized
+    fun isModuleActive(name: String): Boolean =
+        MathEngineBridge.nativeIsModuleActive(requireOpenHandle(), name)
 
     @Synchronized
     fun simplify(expr: String): String? =
