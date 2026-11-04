@@ -102,6 +102,20 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
         MathEngineBridge.nativeCompactScratch(requireOpenHandle())
 
     @Synchronized
+    fun setImportDir(dirPath: String) {
+        MathEngineBridge.nativeSetImportDir(requireOpenHandle(), dirPath)
+    }
+
+    @Synchronized
+    fun getOutput(): String =
+        MathEngineBridge.nativeGetOutput(requireOpenHandle()) ?: ""
+
+    @Synchronized
+    fun clearOutput() {
+        MathEngineBridge.nativeClearOutput(requireOpenHandle())
+    }
+
+    @Synchronized
     override fun close() {
         if (handle != 0L) {
             MathEngineBridge.nativeDestroy(handle)

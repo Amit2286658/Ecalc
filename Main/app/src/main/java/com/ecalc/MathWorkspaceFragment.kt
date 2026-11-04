@@ -105,8 +105,12 @@ class MathWorkspaceFragment : Fragment() {
 
     private var moduleEditorPane: LinearLayout? = null
     private var tvActiveModuleName: TextView? = null
-    private var etModuleEditor: EditText? = null
+    private var etModuleEditor: MathCodeEditText? = null
+    private var symbolChipsRow: LinearLayout? = null
+    private val symbolChipViews = mutableListOf<NeumorphicKeyView>()
     private var btnCompileModule: NeumorphicKeyView? = null
+    private var btnPlotModule: NeumorphicKeyView? = null
+    private var btnBytecodeModule: NeumorphicKeyView? = null
     private var btnResetActiveModule: NeumorphicKeyView? = null
     private var btnModuleViewLog: NeumorphicKeyView? = null
     private var moduleQuickStatusCard: LinearLayout? = null
@@ -116,9 +120,19 @@ class MathWorkspaceFragment : Fragment() {
     private var varsCard: LinearLayout? = null
     private var tvVarsHeader: TextView? = null
     private var tvVarsContent: TextView? = null
+    private var inspectorCard: LinearLayout? = null
+    private var tvInspectorHeader: TextView? = null
+    private var inspectorChipsRow: LinearLayout? = null
+    private var inspectorTableContainer: LinearLayout? = null
+    private var consoleCard: LinearLayout? = null
+    private var tvConsoleHeader: TextView? = null
+    private var tvConsoleOutput: TextView? = null
+    private var btnClearConsole: NeumorphicKeyView? = null
     private var moduleLogCard: LinearLayout? = null
     private var tvModuleLogOutput: TextView? = null
     private var btnModuleBackToEditor: NeumorphicKeyView? = null
+    private var btnOutputPlot: NeumorphicKeyView? = null
+    private var btnOutputBytecode: NeumorphicKeyView? = null
     private var btnExportModuleState: NeumorphicKeyView? = null
     private var btnClearModuleLog: NeumorphicKeyView? = null
 
@@ -128,7 +142,10 @@ class MathWorkspaceFragment : Fragment() {
     private var activeModuleFileName: String? = "physics_sim.math"
     private var moduleUnsavedBuffer: String = ""
     private val moduleLogs = mutableMapOf<String, String>()
+    private val moduleConsoleLogs = mutableMapOf<String, String>()
     private val moduleVarsCache = mutableMapOf<String, String>()
+    private val moduleErrorLines = mutableMapOf<String, Pair<Int, String>>()
+    private val moduleInspectableItems = mutableMapOf<String, List<Triple<String, String, String>>>()
 
     // Cached file metadata (`<path>:<mtime>:<len>` -> Pair(lineCount, byteLength))
     private val fileMetaCache = mutableMapOf<String, Pair<Int, Long>>()
@@ -926,7 +943,7 @@ class MathWorkspaceFragment : Fragment() {
             subRow.addView(btnModuleSubLog)
             addView(subRow)
 
-            // --- Sub-Pane A: Maximized .math Module Editor Pane ---
+            // --- Sub-Pane A: Maximized .math Module Editor Pane (with Gutter, Syntax Highlighting & Symbol Chips) ---
             moduleEditorPane = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
@@ -943,24 +960,77 @@ class MathWorkspaceFragment : Fragment() {
                 }
                 addView(tvActiveModuleName)
 
-                etModuleEditor = EditText(ctx).apply {
+                etModuleEditor = MathCodeEditText(ctx).apply {
+                    isDarkThemeMode = dark
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         0,
                         1f
-                    ).apply { bottomMargin = dp(5f) }
-                    gravity = Gravity.TOP or Gravity.START
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-                    typeface = Typeface.MONOSPACE
+                    ).apply { bottomMargin = dp(4f) }
                     setTextColor(primaryText)
                     setHintTextColor(secondaryText)
-                    setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
-                    inputType = InputType.TYPE_CLASS_TEXT or
-                        InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                        InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
                     hint = "# Top-to-bottom executable .math module ([mod], <[dep], pub/priv, := / mut vs = / const, functions, and expressions)..."
                 }
                 addView(etModuleEditor)
+
+                // Quick-Insert .math Symbol, Operator & Snippet Chips Bar
+                val symScroll = HorizontalScrollView(ctx).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(31f)
+                    ).apply { bottomMargin = dp(4f) }
+                }
+                val sRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(2f), 0, dp(2f), 0)
+                }
+                symbolChipsRow = sRow
+                symbolChipViews.clear()
+                val snippets = listOf(
+                    Triple(":=", " := ", 0),
+                    Triple("=>", " => ", 0),
+                    Triple("->", " -> ", 0),
+                    Triple("::", "::", 0),
+                    Triple("..<", "..<", 0),
+                    Triple("...", "...", 0),
+                    Triple("??", " ?? {\n    \n}", 2),
+                    Triple("|>", " |> ", 0),
+                    Triple("\$""", "\$"{}"", 2),
+                    Triple("\$struct", "\$struct Point(x: real, y: real)", 0),
+                    Triple("\$enum", "\$enum State { Idle, Active(v: real) }", 0),
+                    Triple("switch", "switch (x) {\n    case 0: 0\n    else: 1\n}", 0),
+                    Triple("try/catch", "try {\n    \n} catch (e) {\n    e\n}", 18),
+                    Triple("println", "println(\"\")", 2),
+                    Triple("read_json", "read_json(\"config.json\")", 0),
+                    Triple("csv_maps", "csv_to_maps(read_file(\"sensor_data.csv\"))", 0),
+                    Triple("π", "π", 0),
+                    Triple("√(", "√()", 1)
+                )
+                for ((label, insText, backOff) in snippets) {
+                    val chipW = (label.length * 7.5f + 22f).coerceAtLeast(42f)
+                    val sChip = NeumorphicKeyView(ctx).apply {
+                        text = label
+                        textSize = 10.5f
+                        cornerRadiusDp = 9.5f
+                        shadowPadDp = 2.0f
+                        isAccentKey = false
+                        isDarkThemeMode = dark
+                        layoutParams = LinearLayout.LayoutParams(dp(chipW), dp(27f)).apply {
+                            marginEnd = dp(4f)
+                        }
+                        setOnClickListener {
+                            springPulse(this, 0.06f)
+                            etModuleEditor?.insertSnippet(insText, backOff)
+                        }
+                    }
+                    symbolChipViews.add(sChip)
+                    sRow.addView(sChip)
+                }
+                symScroll.addView(sRow)
+                addView(symScroll)
 
                 val execRow = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -972,13 +1042,13 @@ class MathWorkspaceFragment : Fragment() {
                 }
 
                 btnCompileModule = NeumorphicKeyView(ctx).apply {
-                    text = "▶ Run / Link Module"
-                    textSize = 12.2f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
+                    text = "▶ Run / Link"
+                    textSize = 11.5f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 3.0f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.45f).apply { marginEnd = dp(5f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.35f).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         runCurrentModuleFile(switchToLogAfterRun = false)
@@ -987,22 +1057,49 @@ class MathWorkspaceFragment : Fragment() {
                     holdListener = { held ->
                         if (held) activity.showButtonPopup(
                             this,
-                            "▶ Run / Link Module — executes the active .math module top-to-bottom on its own " +
-                                "(resolving any <[dep] sibling project modules automatically). Public functions, " +
-                                "operators, types, and variables become callable across other modules and the calculator, " +
-                                "while priv bindings stay encapsulated inside this module."
+                            "▶ Run / Link — executes the active .math module top-to-bottom on its own " +
+                                "(resolving any <[dep] sibling project modules and sandboxed File/JSON/CSV paths). " +
+                                "Highlights the exact offending line in the editor if an error occurs."
                         ) else activity.dismissButtonPopup()
                     }
                 }
 
-                btnResetActiveModule = NeumorphicKeyView(ctx).apply {
-                    text = "↺ Reset"
-                    textSize = 11.8f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
+                btnPlotModule = NeumorphicKeyView(ctx).apply {
+                    text = "📈 Plot"
+                    textSize = 11f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
+                    isAccentKey = true
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(dp(64f), dp(38f)).apply { marginEnd = dp(4f) }
+                    setOnClickListener {
+                        springPulse(this, 0.07f)
+                        showFrostedPlotterModal()
+                    }
+                }
+
+                btnBytecodeModule = NeumorphicKeyView(ctx).apply {
+                    text = "⚙ BC"
+                    textSize = 11f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(dp(76f), dp(38f)).apply { marginEnd = dp(5f) }
+                    layoutParams = LinearLayout.LayoutParams(dp(56f), dp(38f)).apply { marginEnd = dp(4f) }
+                    setOnClickListener {
+                        springPulse(this, 0.07f)
+                        showFrostedBytecodeDisasmModal()
+                    }
+                }
+
+                btnResetActiveModule = NeumorphicKeyView(ctx).apply {
+                    text = "↺"
+                    textSize = 12f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
+                    isAccentKey = false
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(dp(42f), dp(38f)).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         resetActiveModuleState()
@@ -1010,13 +1107,13 @@ class MathWorkspaceFragment : Fragment() {
                 }
 
                 btnModuleViewLog = NeumorphicKeyView(ctx).apply {
-                    text = "📋 Output"
-                    textSize = 11.8f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
+                    text = "📋 Out"
+                    textSize = 11.2f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(dp(86f), dp(38f))
+                    layoutParams = LinearLayout.LayoutParams(dp(66f), dp(38f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         saveCurrentModuleEditorState(showToast = false)
@@ -1026,6 +1123,8 @@ class MathWorkspaceFragment : Fragment() {
                 }
 
                 execRow.addView(btnCompileModule)
+                execRow.addView(btnPlotModule)
+                execRow.addView(btnBytecodeModule)
                 execRow.addView(btnResetActiveModule)
                 execRow.addView(btnModuleViewLog)
                 addView(execRow)
@@ -1040,13 +1139,19 @@ class MathWorkspaceFragment : Fragment() {
                     isClickable = true
                     isFocusable = true
                     setOnClickListener {
-                        saveCurrentModuleEditorState(showToast = false)
-                        isModuleEditorSubTab = false
-                        updateModuleSubTabVisibility(animate = true)
+                        val modFile = activeModuleFileName
+                        val errInfo = modFile?.let { moduleErrorLines[it] }
+                        if (errInfo != null) {
+                            etModuleEditor?.highlightErrorLine(errInfo.first, errInfo.second)
+                        } else {
+                            saveCurrentModuleEditorState(showToast = false)
+                            isModuleEditorSubTab = false
+                            updateModuleSubTabVisibility(animate = true)
+                        }
                     }
                 }
                 tvModuleQuickStatus = TextView(ctx).apply {
-                    text = "Tap '▶ Run / Link Module' to execute top-to-bottom, or open ☰ File Manager to manage project files."
+                    text = "Tap '▶ Run / Link' to execute, '📈 Plot' for 2D charts, or '⚙ BC' to inspect VM bytecode."
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(secondaryText)
@@ -1057,7 +1162,7 @@ class MathWorkspaceFragment : Fragment() {
             }
             addView(moduleEditorPane)
 
-            // --- Sub-Pane B: Module Variables & Top-to-Bottom Execution Log Pane ---
+            // --- Sub-Pane B: Structured Output, Console Stream, Table Inspector & Variables ---
             moduleLogPane = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 visibility = View.GONE
@@ -1067,6 +1172,22 @@ class MathWorkspaceFragment : Fragment() {
                     1f
                 )
 
+                val outOuterScroll = ScrollView(ctx).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        0,
+                        1f
+                    ).apply { bottomMargin = dp(6f) }
+                }
+                val outStack = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                }
+
+                // 1. Bound Module Variables & Constants Card
                 val vCard = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(
@@ -1084,8 +1205,8 @@ class MathWorkspaceFragment : Fragment() {
                     setTextColor(accentText)
                 }
                 tvVarsContent = TextView(ctx).apply {
-                    text = "No variables bound yet. Tap '▶ Run / Link Module' in the Editor tab."
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+                    text = "No variables bound yet. Tap '▶ Run / Link' in the Editor tab."
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(primaryText)
                     setPadding(0, dp(4f), 0, 0)
@@ -1093,35 +1214,138 @@ class MathWorkspaceFragment : Fragment() {
                 }
                 vCard.addView(tvVarsHeader)
                 vCard.addView(tvVarsContent)
-                addView(vCard)
+                outStack.addView(vCard)
 
+                // 2. Interactive $map / JSON / 2D $mat / vec<map> Table & Tree Inspector Card
+                val inspCard = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = dp(6f) }
+                    setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+                }
+                inspectorCard = inspCard
+
+                tvInspectorHeader = TextView(ctx).apply {
+                    text = "🔍 Structured Data Inspector ($map • JSON • CSV • $mat • $vec)"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(accentText)
+                }
+                inspCard.addView(tvInspectorHeader)
+
+                val inspChipsScroll = HorizontalScrollView(ctx).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dp(4f); bottomMargin = dp(4f) }
+                }
+                inspectorChipsRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                inspChipsScroll.addView(inspectorChipsRow)
+                inspCard.addView(inspChipsScroll)
+
+                inspectorTableContainer = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                val tvInspPlaceholder = TextView(ctx).apply {
+                    text = "Evaluate a $map, JSON object/array, csv_to_maps(...), $mat, or $vec to inspect it as a formatted table."
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(secondaryText)
+                }
+                inspectorTableContainer?.addView(tvInspPlaceholder)
+                inspCard.addView(inspectorTableContainer)
+                outStack.addView(inspCard)
+
+                // 3. Dedicated Console Stream (print / println) Card
+                val cCard = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = dp(6f) }
+                    setPadding(dp(12f), dp(8f), dp(12f), dp(8f))
+                }
+                consoleCard = cCard
+
+                val cHdrRow = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                tvConsoleHeader = TextView(ctx).apply {
+                    text = "🖥 Console Stream (print / println)"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(accentText)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                btnClearConsole = NeumorphicKeyView(ctx).apply {
+                    text = "Clear"
+                    textSize = 10f
+                    cornerRadiusDp = 9f
+                    shadowPadDp = 2.0f
+                    isAccentKey = false
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(dp(56f), dp(26f))
+                    setOnClickListener {
+                        springPulse(this, 0.06f)
+                        val key = activeModuleFileName ?: "default"
+                        moduleConsoleLogs[key] = "(Console cleared)"
+                        tvConsoleOutput?.text = "(Console cleared)"
+                    }
+                }
+                cHdrRow.addView(tvConsoleHeader)
+                cHdrRow.addView(btnClearConsole)
+                cCard.addView(cHdrRow)
+
+                tvConsoleOutput = TextView(ctx).apply {
+                    text = "(No print / println output yet)"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(primaryText)
+                    setPadding(0, dp(4f), 0, 0)
+                    setTextIsSelectable(true)
+                }
+                cCard.addView(tvConsoleOutput)
+                outStack.addView(cCard)
+
+                // 4. Statement Return Values & Link Log Card
                 val mLogCard = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
-                        0,
-                        1f
-                    ).apply { bottomMargin = dp(6f) }
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
                     setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
                 }
                 moduleLogCard = mLogCard
 
-                val mLogScroll = ScrollView(ctx).apply {
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.MATCH_PARENT
-                    )
-                }
                 tvModuleLogOutput = TextView(ctx).apply {
-                    text = "=== Module Execution & Link Log ===\nTap '▶ Run / Link Module' in the Editor tab to execute the active .math module top-to-bottom."
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                    text = "=== Module Execution & Link Log ===\nTap '▶ Run / Link' in the Editor tab to execute the active .math module top-to-bottom."
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(primaryText)
                     setTextIsSelectable(true)
                 }
-                mLogScroll.addView(tvModuleLogOutput)
-                mLogCard.addView(mLogScroll)
-                addView(mLogCard)
+                mLogCard.addView(tvModuleLogOutput)
+                outStack.addView(mLogCard)
+
+                outOuterScroll.addView(outStack)
+                addView(outOuterScroll)
 
                 val mLogActions = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -1132,40 +1356,66 @@ class MathWorkspaceFragment : Fragment() {
                     )
                 }
                 btnModuleBackToEditor = NeumorphicKeyView(ctx).apply {
-                    text = "📝 Editor"
-                    textSize = 12f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
+                    text = "📝 Edit"
+                    textSize = 11.2f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.05f).apply { marginEnd = dp(5f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 0.95f).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         isModuleEditorSubTab = true
                         updateModuleSubTabVisibility(animate = true)
                     }
                 }
-                btnExportModuleState = NeumorphicKeyView(ctx).apply {
-                    text = "📤 Export State"
-                    textSize = 11.8f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
+                btnOutputPlot = NeumorphicKeyView(ctx).apply {
+                    text = "📈 Plot"
+                    textSize = 11.2f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
                     isAccentKey = true
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.1f).apply { marginEnd = dp(5f) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 0.95f).apply { marginEnd = dp(4f) }
+                    setOnClickListener {
+                        springPulse(this, 0.07f)
+                        showFrostedPlotterModal()
+                    }
+                }
+                btnOutputBytecode = NeumorphicKeyView(ctx).apply {
+                    text = "⚙ BC"
+                    textSize = 11.2f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
+                    isAccentKey = false
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 0.85f).apply { marginEnd = dp(4f) }
+                    setOnClickListener {
+                        springPulse(this, 0.07f)
+                        showFrostedBytecodeDisasmModal()
+                    }
+                }
+                btnExportModuleState = NeumorphicKeyView(ctx).apply {
+                    text = "📤 Export"
+                    textSize = 11.2f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
+                    isAccentKey = true
+                    isDarkThemeMode = dark
+                    layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.0f).apply { marginEnd = dp(4f) }
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         exportActiveModuleRuntimeState()
                     }
                 }
                 btnClearModuleLog = NeumorphicKeyView(ctx).apply {
-                    text = "Clear Log"
-                    textSize = 11.8f
-                    cornerRadiusDp = 14f
-                    shadowPadDp = 3.2f
+                    text = "Clear"
+                    textSize = 11.2f
+                    cornerRadiusDp = 13f
+                    shadowPadDp = 2.8f
                     isAccentKey = false
                     isDarkThemeMode = dark
-                    layoutParams = LinearLayout.LayoutParams(dp(90f), dp(38f))
+                    layoutParams = LinearLayout.LayoutParams(dp(64f), dp(38f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
                         val key = activeModuleFileName ?: "default"
@@ -1176,6 +1426,8 @@ class MathWorkspaceFragment : Fragment() {
                     }
                 }
                 mLogActions.addView(btnModuleBackToEditor)
+                mLogActions.addView(btnOutputPlot)
+                mLogActions.addView(btnOutputBytecode)
                 mLogActions.addView(btnExportModuleState)
                 mLogActions.addView(btnClearModuleLog)
                 addView(mLogActions)
@@ -1246,8 +1498,26 @@ class MathWorkspaceFragment : Fragment() {
                 }
         }
 
-        val seedMarker = File(modDir, ".seeded_unified_modules_v3")
+        val seedMarker = File(modDir, ".seeded_unified_modules_v4")
         if (!seedMarker.exists()) {
+            File(modDir, "config.json").writeText(
+                "{\n  \"project\": \"MEP Telemetry\",\n  \"sample_hz\": 50,\n  \"active\": true\n}\n"
+            )
+            File(modDir, "sensor_data.csv").writeText(
+                "sensor, temp_c, status\nCore_A, 42.5, nominal\nCore_B, 48.0, warm\nCore_C, 39.2, nominal\n"
+            )
+            File(modDir, "data_io_json.math").writeText(
+                "# Sandboxed File I/O, RFC 8259 JSON, CSV & Console Stream (.math)\n\n" +
+                "[data_io_json]\n" +
+                "<[string]\n" +
+                "<[vec]\n\n" +
+                "pub cfg := read_json(\"config.json\")\n" +
+                "pub records := csv_to_maps(read_file(\"sensor_data.csv\"))\n\n" +
+                "println(\$"Loaded project: {cfg[\"project\"]} @ {cfg[\"sample_hz\"]} Hz")\n" +
+                "println(\$"CSV rows loaded: {records.len()} (first={records[0][\"sensor\"]})")\n\n" +
+                "pub avg_temp := (records[0][\"temp_c\"] + records[1][\"temp_c\"] + records[2][\"temp_c\"]) / 3\n" +
+                "records\n"
+            )
             File(modDir, "custom_ops.math").writeText(
                 "# Unified Executable Module: custom_ops.math\n" +
                 "# Defines public & private constants, functions, and top-level expressions.\n\n" +
@@ -1402,8 +1672,16 @@ class MathWorkspaceFragment : Fragment() {
                 "No variables bound yet in [$modId]. Tap '▶ Run / Link Module' in the Editor tab."
             }
             val savedLog = moduleLogs[modFileName]
-                ?: "=== Module [$modId] Execution & Link Log ($modFileName) ===\nReady. Tap '▶ Run / Link Module' in the Editor tab to execute top-to-bottom."
+                ?: "=== Module [$modId] Execution & Link Log ($modFileName) ===\nReady. Tap '▶ Run / Link' in the Editor tab to execute top-to-bottom."
             tvModuleLogOutput?.text = savedLog
+            tvConsoleOutput?.text = moduleConsoleLogs[modFileName] ?: "(No print / println output yet)"
+            val errPair = moduleErrorLines[modFileName]
+            if (errPair != null) {
+                etModuleEditor?.highlightErrorLine(errPair.first, errPair.second)
+            } else {
+                etModuleEditor?.clearErrorHighlight()
+            }
+            refreshStructuredInspector(modFileName)
 
             MathEngineManager.inspectModuleVariables(modId) { summary ->
                 activity?.runOnUiThread {
@@ -1640,28 +1918,59 @@ class MathWorkspaceFragment : Fragment() {
         ) { modId, results, varsSummary ->
             activity.runOnUiThread {
                 val sb = StringBuilder()
+                val consoleSb = StringBuilder()
+                val inspectables = mutableListOf<Triple<String, String, String>>()
                 sb.append("=== Executed $targetFile (Module [$modId]) Top-to-Bottom ===\n")
                 var lastSummaryLine = "✅ Linked [$modId] (0 statements)"
                 var hadError = false
+                var firstErrorLine: Int? = null
+                var firstErrorMsg: String? = null
 
                 if (results.isEmpty()) {
                     sb.append("(No executable statements or declarations found)\n")
                 } else {
                     results.forEachIndexed { idx, (stmt, outcome) ->
+                        if (outcome.stdout.isNotEmpty()) {
+                            consoleSb.append(outcome.stdout)
+                            if (!outcome.stdout.endsWith("\n")) consoleSb.append("\n")
+                        }
                         val oneLineStmt = stmt.replace(Regex("\\s+"), " ").trim()
+                        val lineBadge = "L${outcome.sourceLine}"
                         if (outcome.ok) {
                             if (outcome.type == "void") {
-                                sb.append("[${idx + 1}] $oneLineStmt  ⟹  ✓ declared\n")
+                                sb.append("[${idx + 1} • $lineBadge] $oneLineStmt  ⟹  ✓ declared\n")
                                 lastSummaryLine = "✅ [$modId] $oneLineStmt ⟹ declared"
                             } else {
                                 val u = if (outcome.unit != "none") " [${outcome.unit}]" else ""
-                                sb.append("[${idx + 1}] $oneLineStmt  ⟹  ${outcome.value}$u (${outcome.type})\n")
+                                sb.append("[${idx + 1} • $lineBadge] $oneLineStmt  ⟹  ${outcome.value}$u (${outcome.type})\n")
                                 lastSummaryLine = "✅ [$modId] $oneLineStmt ⟹ ${outcome.value}$u"
+                                if (outcome.type == "map" || outcome.type == "mat" || outcome.type == "vec") {
+                                    val label = oneLineStmt.substringBefore(":=").substringBefore("=").trim().take(22)
+                                    inspectables.add(Triple(label.ifEmpty { "Result #${idx + 1}" }, outcome.type, outcome.value))
+                                }
                             }
                         } else {
                             hadError = true
-                            sb.append("[${idx + 1}] $oneLineStmt  ⟹  ⚠ ${outcome.error}\n")
-                            lastSummaryLine = "⚠ [$modId] Error: ${outcome.error}"
+                            firstErrorLine = outcome.sourceLine
+                            firstErrorMsg = outcome.error ?: "Evaluation error"
+                            sb.append("[${idx + 1} • $lineBadge] $oneLineStmt  ⟹  ⚠ ${outcome.error}\n")
+                            lastSummaryLine = "⚠ [$modId • Line ${outcome.sourceLine}] ${outcome.error}"
+                        }
+                    }
+                }
+
+                // Also extract any bound $map, $mat, or $vec variables from varsSummary for the Table Inspector
+                for (vLine in varsSummary.lineSequence()) {
+                    val eqIdx = vLine.indexOf(" = ")
+                    val colonIdx = vLine.indexOf(" : ")
+                    if (colonIdx > 0 && eqIdx > colonIdx) {
+                        val lhsTokens = vLine.substring(0, colonIdx).trim().split(Regex("\\s+"))
+                        val vName = lhsTokens.lastOrNull().orEmpty()
+                        val vType = vLine.substring(colonIdx + 3, eqIdx).substringBefore(" [").trim()
+                        val vVal = vLine.substring(eqIdx + 3).trim()
+                        if ((vType == "map" || vType == "mat" || vType == "vec") &&
+                            inspectables.none { it.first == vName }) {
+                            inspectables.add(Triple(vName, vType, vVal))
                         }
                     }
                 }
@@ -1672,17 +1981,37 @@ class MathWorkspaceFragment : Fragment() {
                 }
 
                 val fullLog = sb.toString().trimEnd()
+                val consoleText = consoleSb.toString().trimEnd().ifEmpty { "(No print / println output emitted)" }
                 moduleLogs[targetFile] = fullLog
+                moduleConsoleLogs[targetFile] = consoleText
                 moduleVarsCache[modId] = varsSummary
+                moduleInspectableItems[targetFile] = inspectables
+
+                if (hadError && firstErrorLine != null) {
+                    moduleErrorLines[targetFile] = firstErrorLine!! to (firstErrorMsg ?: "Error")
+                    etModuleEditor?.highlightErrorLine(firstErrorLine, firstErrorMsg)
+                } else {
+                    moduleErrorLines.remove(targetFile)
+                    etModuleEditor?.clearErrorHighlight()
+                }
 
                 tvVarsHeader?.text = "Module [$modId] Variables & Constants (pub/priv • mut/const)"
                 tvVarsContent?.text = varsSummary.ifBlank {
                     "No variables bound in [$modId]."
                 }
+                tvConsoleOutput?.text = consoleText
                 tvModuleLogOutput?.text = fullLog
-                tvModuleQuickStatus?.text = "$lastSummaryLine  (Tap for 📋 Output & Vars)"
+                refreshStructuredInspector(targetFile)
+
+                tvModuleQuickStatus?.text = if (hadError && firstErrorLine != null) {
+                    "$lastSummaryLine  (Line $firstErrorLine highlighted in Editor)"
+                } else {
+                    "$lastSummaryLine  (Tap for 📋 Output & Vars)"
+                }
                 moduleQuickStatusCard?.let { springPulse(it, 0.045f) }
                 varsCard?.let { springPulse(it, 0.045f) }
+                consoleCard?.let { springPulse(it, 0.045f) }
+                inspectorCard?.let { springPulse(it, 0.045f) }
                 moduleLogCard?.let { springPulse(it, 0.045f) }
 
                 if (switchToLogAfterRun) {
@@ -1690,7 +2019,7 @@ class MathWorkspaceFragment : Fragment() {
                     updateModuleSubTabVisibility(animate = true)
                 }
                 activity.showButtonToast(
-                    if (!hadError) "Executed [$modId] ($targetFile)" else "Error in [$modId] — see Output"
+                    if (!hadError) "Executed [$modId] ($targetFile)" else "Error on line ${firstErrorLine ?: 1} in [$modId]"
                 )
             }
         }
@@ -1958,23 +2287,32 @@ class MathWorkspaceFragment : Fragment() {
         styleCard(etModuleEditor, editorBg)
         styleCard(moduleQuickStatusCard, cardBg)
         styleCard(varsCard, cardBg)
+        styleCard(inspectorCard, cardBg)
+        styleCard(consoleCard, cardBg)
         styleCard(moduleLogCard, cardBg)
 
+        etModuleEditor?.isDarkThemeMode = dark
         etModuleEditor?.setTextColor(primaryText)
         etModuleEditor?.setHintTextColor(secondaryText)
         tvModuleQuickStatus?.setTextColor(secondaryText)
         tvVarsHeader?.setTextColor(accentText)
         tvVarsContent?.setTextColor(primaryText)
+        tvInspectorHeader?.setTextColor(accentText)
+        tvConsoleHeader?.setTextColor(accentText)
+        tvConsoleOutput?.setTextColor(primaryText)
         tvModuleLogOutput?.setTextColor(primaryText)
 
+        symbolChipViews.forEach { it.isDarkThemeMode = dark }
         listOf(
             btnHamburgerMenu, btnBackCalc,
             btnDrawerCloseIcon, btnDrawerRunAll, btnDrawerResetMod, btnDrawerExportState,
             btnDrawerCreateNewFile, btnDrawerImportFile,
             btnModuleSubEditor, btnModuleSubLog,
-            btnCompileModule, btnResetActiveModule, btnModuleViewLog,
-            btnModuleBackToEditor, btnExportModuleState, btnClearModuleLog
+            btnCompileModule, btnPlotModule, btnBytecodeModule, btnResetActiveModule, btnModuleViewLog,
+            btnClearConsole,
+            btnModuleBackToEditor, btnOutputPlot, btnOutputBytecode, btnExportModuleState, btnClearModuleLog
         ).forEach { it?.isDarkThemeMode = dark }
+        activeModuleFileName?.let { refreshStructuredInspector(it) }
 
         refreshModuleChips()
         refreshFileManagerDrawer()
@@ -2846,5 +3184,867 @@ class MathWorkspaceFragment : Fragment() {
         springAnimators.forEach { it.second.cancel() }
         springAnimators.clear()
         super.onDestroyView()
+    }
+
+    // =========================================================================
+    //  Interactive $map / JSON / CSV / 2D $mat / $vec Table & Tree Inspector
+    // =========================================================================
+
+    private var selectedInspectorIdx: Int = 0
+
+    private fun refreshStructuredInspector(modFileName: String) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val dark = activity.isDarkMode
+        val chipsContainer = inspectorChipsRow ?: return
+        val tableContainer = inspectorTableContainer ?: return
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+        val secondaryText = Color.parseColor(if (dark) "#8E8E8E" else "#666666")
+
+        chipsContainer.removeAllViews()
+        tableContainer.removeAllViews()
+
+        val items = moduleInspectableItems[modFileName].orEmpty()
+        if (items.isEmpty()) {
+            val tvEmpty = TextView(ctx).apply {
+                text = "Run a module with a \$map, JSON object, csv_to_maps(...), \$mat, or \$vec to inspect it as a formatted table."
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+                typeface = Typeface.MONOSPACE
+                setTextColor(secondaryText)
+            }
+            tableContainer.addView(tvEmpty)
+            return
+        }
+
+        if (selectedInspectorIdx >= items.size) selectedInspectorIdx = 0
+
+        items.forEachIndexed { idx, (label, vType, _) ->
+            val isSel = (idx == selectedInspectorIdx)
+            val chipLabel = "$label ($vType)"
+            val chipW = (chipLabel.length * 7.2f + 24f).coerceAtLeast(78f)
+            val chip = NeumorphicKeyView(ctx).apply {
+                text = chipLabel
+                textSize = 10.2f
+                cornerRadiusDp = 9.5f
+                shadowPadDp = 2.0f
+                isAccentKey = isSel
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(dp(chipW), dp(27f)).apply {
+                    marginEnd = dp(4f)
+                }
+                setOnClickListener {
+                    selectedInspectorIdx = idx
+                    refreshStructuredInspector(modFileName)
+                }
+            }
+            chipsContainer.addView(chip)
+        }
+
+        val (_, selType, selVal) = items[selectedInspectorIdx]
+        tableContainer.addView(buildStructuredTableView(ctx, dark, selType, selVal))
+    }
+
+    private fun parseMapEntriesFromFormatted(raw: String): List<Pair<String, String>> {
+        val trimmed = raw.trim()
+        val inner = when {
+            trimmed.startsWith("{") && trimmed.endsWith("}") -> trimmed.substring(1, trimmed.length - 1).trim()
+            trimmed.startsWith("map(") && trimmed.endsWith(")") -> trimmed.substring(4, trimmed.length - 1).trim()
+            trimmed.startsWith("dict(") && trimmed.endsWith(")") -> trimmed.substring(5, trimmed.length - 1).trim()
+            else -> return emptyList()
+        }
+        if (inner.isEmpty()) return emptyList()
+        val pairs = mutableListOf<Pair<String, String>>()
+        val tokens = splitTopLevelCommas(inner)
+        for (tok in tokens) {
+            val colonIdx = findTopLevelColon(tok)
+            if (colonIdx > 0) {
+                val k = tok.substring(0, colonIdx).trim().removeSurrounding("\"")
+                val v = tok.substring(colonIdx + 1).trim()
+                pairs.add(k to v)
+            }
+        }
+        return pairs
+    }
+
+    private fun splitTopLevelCommas(s: String): List<String> {
+        val out = mutableListOf<String>()
+        val cur = StringBuilder()
+        var depth = 0
+        var inQuotes = false
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && inQuotes && i + 1 < s.length) {
+                cur.append(c).append(s[i + 1])
+                i += 2
+                continue
+            }
+            if (c == '"') {
+                inQuotes = !inQuotes
+                cur.append(c)
+            } else if (!inQuotes) {
+                when (c) {
+                    '{', '[', '(' -> { depth++; cur.append(c) }
+                    '}', ']', ')' -> { if (depth > 0) depth--; cur.append(c) }
+                    ',' -> if (depth == 0) {
+                        out.add(cur.toString().trim())
+                        cur.setLength(0)
+                    } else {
+                        cur.append(c)
+                    }
+                    else -> cur.append(c)
+                }
+            } else {
+                cur.append(c)
+            }
+            i++
+        }
+        if (cur.isNotEmpty()) out.add(cur.toString().trim())
+        return out
+    }
+
+    private fun findTopLevelColon(s: String): Int {
+        var depth = 0
+        var inQuotes = false
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && inQuotes && i + 1 < s.length) {
+                i += 2
+                continue
+            }
+            if (c == '"') inQuotes = !inQuotes
+            else if (!inQuotes) {
+                when (c) {
+                    '{', '[', '(' -> depth++
+                    '}', ']', ')' -> if (depth > 0) depth--
+                    ':' -> if (depth == 0) return i
+                }
+            }
+            i++
+        }
+        return -1
+    }
+
+    private fun buildStructuredTableView(
+        ctx: Context,
+        dark: Boolean,
+        vType: String,
+        rawValue: String
+    ): View {
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+        val hdrBg = Color.parseColor(if (dark) "#1D3638" else "#FCEAE6")
+        val rowEvenBg = Color.parseColor(if (dark) "#1F1F1F" else "#FFFFFF")
+        val rowOddBg = Color.parseColor(if (dark) "#262626" else "#F4F5F7")
+        val borderCol = Color.parseColor(if (dark) "#3A3A3A" else "#D5D5D5")
+        val primaryText = Color.parseColor(if (dark) "#E6E6E6" else "#2A2A2A")
+        val accentText = Color.parseColor(if (dark) "#26C6DA" else "#D85A4A")
+
+        fun makeTable(headers: List<String>, rows: List<List<String>>): View {
+            val hScroll = HorizontalScrollView(ctx).apply {
+                isHorizontalScrollBarEnabled = true
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            val tableCol = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 10f * density
+                    setStroke(1, borderCol)
+                }
+            }
+
+            val colCount = headers.size
+            val colChars = IntArray(colCount) { c -> headers[c].length.coerceAtLeast(6) }
+            for (r in rows) {
+                for (c in 0 until minOf(colCount, r.size)) {
+                    colChars[c] = maxOf(colChars[c], r[c].length.coerceAtMost(28))
+                }
+            }
+
+            fun makeRowView(cells: List<String>, isHeader: Boolean, rowIdx: Int): LinearLayout {
+                return LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setBackgroundColor(
+                        when {
+                            isHeader -> hdrBg
+                            rowIdx % 2 == 0 -> rowEvenBg
+                            else -> rowOddBg
+                        }
+                    )
+                    for (c in 0 until colCount) {
+                        val cellText = cells.getOrNull(c).orEmpty()
+                        val cellW = dp((colChars[c] * 7.8f + 20f).coerceAtLeast(64f))
+                        val tv = TextView(ctx).apply {
+                            text = cellText
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isHeader) 11.2f else 11f)
+                            typeface = if (isHeader) Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) else Typeface.MONOSPACE
+                            setTextColor(if (isHeader) accentText else primaryText)
+                            setPadding(dp(8f), dp(5f), dp(8f), dp(5f))
+                            layoutParams = LinearLayout.LayoutParams(cellW, LinearLayout.LayoutParams.WRAP_CONTENT)
+                        }
+                        addView(tv)
+                    }
+                }
+            }
+
+            tableCol.addView(makeRowView(headers, isHeader = true, rowIdx = -1))
+            rows.take(50).forEachIndexed { idx, r ->
+                tableCol.addView(makeRowView(r, isHeader = false, rowIdx = idx))
+            }
+            hScroll.addView(tableCol)
+            return hScroll
+        }
+
+        if (vType == "map") {
+            val entries = parseMapEntriesFromFormatted(rawValue)
+            if (entries.isNotEmpty()) {
+                return makeTable(
+                    listOf("Key", "Value"),
+                    entries.map { (k, v) -> listOf(k, v) }
+                )
+            }
+        }
+
+        val trimmed = rawValue.trim()
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            val inner = trimmed.substring(1, trimmed.length - 1).trim()
+            if (inner.contains(";")) {
+                val rawRows = inner.split(";").map { r ->
+                    r.trim().removePrefix("[").removeSuffix("]").split(",").map { it.trim() }
+                }
+                val cols = rawRows.maxOfOrNull { it.size } ?: 1
+                val headers = listOf("Row") + (0 until cols).map { "Col $it" }
+                val rows = rawRows.mapIndexed { rIdx, rCells -> listOf("[$rIdx]") + rCells }
+                return makeTable(headers, rows)
+            }
+            val topElems = splitTopLevelCommas(inner)
+            if (topElems.isNotEmpty() && topElems.first().trim().startsWith("{")) {
+                val parsedMaps = topElems.map { parseMapEntriesFromFormatted(it) }.filter { it.isNotEmpty() }
+                if (parsedMaps.isNotEmpty()) {
+                    val allKeys = LinkedHashSet<String>()
+                    parsedMaps.forEach { m -> m.forEach { (k, _) -> allKeys.add(k) } }
+                    val keyList = allKeys.toList()
+                    val headers = listOf("#") + keyList
+                    val rows = parsedMaps.mapIndexed { idx, m ->
+                        val lookup = m.toMap()
+                        listOf(idx.toString()) + keyList.map { k -> lookup[k] ?: "" }
+                    }
+                    return makeTable(headers, rows)
+                }
+            }
+            if (topElems.isNotEmpty() && topElems.first().trim().startsWith("[")) {
+                val rawRows = topElems.map { r ->
+                    val ri = r.trim().removePrefix("[").removeSuffix("]")
+                    splitTopLevelCommas(ri)
+                }
+                val cols = rawRows.maxOfOrNull { it.size } ?: 1
+                val headers = listOf("Row") + (0 until cols).map { "Col $it" }
+                val rows = rawRows.mapIndexed { rIdx, rCells -> listOf("[$rIdx]") + rCells }
+                return makeTable(headers, rows)
+            }
+            if (topElems.isNotEmpty()) {
+                val headers = listOf("Index", "Value")
+                val rows = topElems.mapIndexed { idx, v -> listOf("[$idx]", v) }
+                return makeTable(headers, rows)
+            }
+        }
+
+        return TextView(ctx).apply {
+            text = rawValue
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(primaryText)
+        }
+    }
+
+    // =========================================================================
+    //  Interactive 2D Function & Vector Plotter Modal (`MathPlotView`)
+    // =========================================================================
+
+    private fun extractModuleFunctionAndVectorCandidates(code: String): List<String> {
+        val out = LinkedHashSet<String>()
+        val fnDeclRegex = Regex("(?m)^\\s*(?:(?:pub|priv)\\s+)*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\([^()]*\\)\\s*(?:->[^=]+)?=")
+        val varDeclRegex = Regex("(?m)^\\s*(?:(?:pub|priv|const|mut)\\s+)*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?::[^=]+)?(?::=|=)(?![=>])")
+        for (m in fnDeclRegex.findAll(code)) {
+            val name = m.groupValues[1]
+            if (name !in setOf("if", "while", "switch", "for", "catch")) out.add(name)
+        }
+        for (m in varDeclRegex.findAll(code)) {
+            val name = m.groupValues[1]
+            out.add(name)
+        }
+        out.add("sin(x) * cos(2*x)")
+        return out.take(10).toList()
+    }
+
+    private fun showFrostedPlotterModal(initialExpr: String? = null) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val outerFrame = workspaceRootFrame ?: return
+
+        activeModalOverlay?.let { existing ->
+            (existing.parent as? ViewGroup)?.removeView(existing)
+            activeModalOverlay = null
+        }
+        activeModalBlurBitmap?.recycle()
+        activeModalBlurBitmap = null
+
+        val dark = activity.isDarkMode
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+
+        val cardBg = Color.parseColor(if (dark) "#2A2D32" else "#F5F7FA")
+        val inputBg = Color.parseColor(if (dark) "#1C1E22" else "#FFFFFF")
+        val strokeColor = Color.parseColor(if (dark) "#444850" else "#D0D7DE")
+        val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#24292F")
+        val secondaryText = Color.parseColor(if (dark) "#9BA4B0" else "#57606A")
+        val accentColor = Color.parseColor(if (dark) "#26C6DA" else "#E58A7B")
+        val scrimColor = Color.parseColor(if (dark) "#96101216" else "#88E6E6E6")
+
+        val code = etModuleEditor?.text?.toString().orEmpty()
+        val modFile = activeModuleFileName
+        val modId = MathEngineManager.deriveModuleName(modFile, code)
+        val candidates = extractModuleFunctionAndVectorCandidates(code)
+        val defaultTarget = initialExpr ?: candidates.firstOrNull() ?: "sin(x)"
+
+        val frostBmp = Frost.frozenBackdrop(outerFrame, downscale = 6, radius = 8)
+        activeModalBlurBitmap = frostBmp
+        Frost.tryLiveBlur(rootLayout, 18f * density)
+
+        val overlay = FrameLayout(ctx).apply {
+            elevation = dp(28f).toFloat()
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        }
+        if (frostBmp != null) {
+            overlay.addView(ImageView(ctx).apply {
+                setImageBitmap(frostBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.55f else 0.94f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            })
+        }
+        overlay.addView(View(ctx).apply {
+            setBackgroundColor(scrimColor)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        })
+
+        val availWidth = if (outerFrame.width > 0) outerFrame.width else resources.displayMetrics.widthPixels
+        val cardWidth = minOf(availWidth - dp(20f), dp(410f)).coerceAtLeast(dp(280f))
+
+        val dialogCard = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                cardWidth,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+            elevation = dp(32f).toFloat()
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 20f * density
+                setColor(cardBg)
+                setStroke(dp(1.2f).coerceAtLeast(1), strokeColor)
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { }
+        }
+
+        val hdrRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(6f) }
+        }
+        val titleCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleCol.addView(TextView(ctx).apply {
+            text = "📈 Interactive 2D Plotter"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(primaryText)
+        })
+        titleCol.addView(TextView(ctx).apply {
+            text = "Module [$modId] • Pinch to zoom, drag to pan, tap curve for roots/extrema"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setTextColor(accentColor)
+        })
+        hdrRow.addView(titleCol)
+        hdrRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "✕"
+            textSize = 13f
+            cornerRadiusDp = 14f
+            shadowPadDp = 2.5f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(34f), dp(34f))
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        })
+        dialogCard.addView(hdrRow)
+
+        val controlsRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(6f) }
+        }
+
+        fun styleEditBox(et: EditText) {
+            et.setSingleLine(true)
+            et.typeface = Typeface.MONOSPACE
+            et.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f)
+            et.setTextColor(primaryText)
+            et.setHintTextColor(secondaryText)
+            et.setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+            et.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 10f * density
+                setColor(inputBg)
+                setStroke(1, strokeColor)
+            }
+        }
+
+        val etExpr = EditText(ctx).apply {
+            setText(defaultTarget)
+            hint = "f(x) or vec"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.5f).apply {
+                marginEnd = dp(4f)
+            }
+            styleEditBox(this)
+        }
+        val etXMin = EditText(ctx).apply {
+            setText("-5")
+            hint = "xMin"
+            layoutParams = LinearLayout.LayoutParams(dp(52f), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(4f)
+            }
+            styleEditBox(this)
+        }
+        val etXMax = EditText(ctx).apply {
+            setText("5")
+            hint = "xMax"
+            layoutParams = LinearLayout.LayoutParams(dp(52f), LinearLayout.LayoutParams.WRAP_CONTENT)
+            styleEditBox(this)
+        }
+        controlsRow.addView(etExpr)
+        controlsRow.addView(etXMin)
+        controlsRow.addView(etXMax)
+        dialogCard.addView(controlsRow)
+
+        val candScroll = HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(30f)
+            ).apply { bottomMargin = dp(6f) }
+        }
+        val candRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        candScroll.addView(candRow)
+        dialogCard.addView(candScroll)
+
+        val plotView = MathPlotView(ctx).apply {
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(230f)
+            ).apply { bottomMargin = dp(6f) }
+        }
+        dialogCard.addView(plotView)
+
+        val tvReadout = TextView(ctx).apply {
+            text = "Tap or drag on the curve to inspect (x, y), roots, and local extrema."
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(secondaryText)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(8f) }
+        }
+        plotView.onInspectPointChanged = { ix, iy, tag ->
+            val badge = tag?.let { "[$it] " } ?: ""
+            tvReadout.text = String.format("📍 %sx = %.5g,  y = %.5g", badge, ix, iy)
+        }
+        dialogCard.addView(tvReadout)
+
+        fun triggerPlot() {
+            val target = etExpr.text?.toString().orEmpty().trim()
+            val xMin = etXMin.text?.toString()?.toDoubleOrNull() ?: -5.0
+            val xMax = etXMax.text?.toString()?.toDoubleOrNull() ?: 5.0
+            tvReadout.text = "⏳ Sampling '$target' in [$modId]..."
+            MathEngineManager.samplePlotPoints(modId, target, xMin, xMax, 180) { ok, label, pts, err ->
+                activity.runOnUiThread {
+                    if (ok && pts.isNotEmpty()) {
+                        plotView.setSeriesData(label, pts)
+                        tvReadout.text = "✅ Plotted $label (${pts.size} pts). Tap curve to inspect."
+                    } else {
+                        plotView.setSeriesData(label, emptyList())
+                        tvReadout.text = "⚠ ${err ?: "Could not plot '$target' (run module first if it is a module symbol)"}"
+                    }
+                }
+            }
+        }
+
+        candidates.forEach { cand ->
+            val w = (cand.length * 7.2f + 22f).coerceAtLeast(62f)
+            candRow.addView(NeumorphicKeyView(ctx).apply {
+                text = cand
+                textSize = 10.2f
+                cornerRadiusDp = 9f
+                shadowPadDp = 2f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(dp(w), dp(26f)).apply { marginEnd = dp(4f) }
+                setOnClickListener {
+                    etExpr.setText(cand)
+                    triggerPlot()
+                }
+            })
+        }
+
+        val btnRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        btnRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "📈 Plot Curve"
+            textSize = 12f
+            cornerRadiusDp = 13f
+            shadowPadDp = 2.8f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.2f).apply { marginEnd = dp(5f) }
+            setOnClickListener {
+                springPulse(this, 0.06f)
+                triggerPlot()
+            }
+        })
+        btnRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "Reset Zoom"
+            textSize = 11.5f
+            cornerRadiusDp = 13f
+            shadowPadDp = 2.8f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.0f).apply { marginEnd = dp(5f) }
+            setOnClickListener {
+                springPulse(this, 0.06f)
+                plotView.resetViewport()
+            }
+        })
+        btnRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "Close"
+            textSize = 11.5f
+            cornerRadiusDp = 13f
+            shadowPadDp = 2.8f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(74f), dp(38f))
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        })
+        dialogCard.addView(btnRow)
+
+        overlay.addView(dialogCard)
+        outerFrame.addView(overlay)
+        activeModalOverlay = overlay
+        isModalDialogOpen = true
+        triggerPlot()
+    }
+
+    // =========================================================================
+    //  Stack Bytecode VM Disassembler Modal (`bc_disasm`)
+    // =========================================================================
+
+    private fun showFrostedBytecodeDisasmModal(initialFn: String? = null) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val outerFrame = workspaceRootFrame ?: return
+
+        activeModalOverlay?.let { existing ->
+            (existing.parent as? ViewGroup)?.removeView(existing)
+            activeModalOverlay = null
+        }
+        activeModalBlurBitmap?.recycle()
+        activeModalBlurBitmap = null
+
+        val dark = activity.isDarkMode
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+
+        val cardBg = Color.parseColor(if (dark) "#2A2D32" else "#F5F7FA")
+        val inputBg = Color.parseColor(if (dark) "#181A1F" else "#FFFFFF")
+        val strokeColor = Color.parseColor(if (dark) "#444850" else "#D0D7DE")
+        val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#24292F")
+        val secondaryText = Color.parseColor(if (dark) "#9BA4B0" else "#57606A")
+        val accentColor = Color.parseColor(if (dark) "#26C6DA" else "#E58A7B")
+        val scrimColor = Color.parseColor(if (dark) "#96101216" else "#88E6E6E6")
+
+        val code = etModuleEditor?.text?.toString().orEmpty()
+        val modFile = activeModuleFileName
+        val modId = MathEngineManager.deriveModuleName(modFile, code)
+
+        val fnRegex = Regex("(?m)^\\s*(?:(?:pub|priv)\\s+)*([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)?)\\s*\\([^()]*\\)\\s*(?:->[^=]+)?=")
+        val fnCandidates = LinkedHashSet<String>()
+        for (m in fnRegex.findAll(code)) {
+            val fnName = m.groupValues[1].substringAfter("::")
+            if (fnName !in setOf("if", "while", "switch", "for", "catch")) {
+                fnCandidates.add(fnName)
+            }
+        }
+        fnCandidates.add("x => x^2 + 2*x + 1")
+        val defaultTarget = initialFn ?: fnCandidates.first()
+
+        val frostBmp = Frost.frozenBackdrop(outerFrame, downscale = 6, radius = 8)
+        activeModalBlurBitmap = frostBmp
+        Frost.tryLiveBlur(rootLayout, 18f * density)
+
+        val overlay = FrameLayout(ctx).apply {
+            elevation = dp(28f).toFloat()
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        }
+        if (frostBmp != null) {
+            overlay.addView(ImageView(ctx).apply {
+                setImageBitmap(frostBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.55f else 0.94f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            })
+        }
+        overlay.addView(View(ctx).apply {
+            setBackgroundColor(scrimColor)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        })
+
+        val availWidth = if (outerFrame.width > 0) outerFrame.width else resources.displayMetrics.widthPixels
+        val cardWidth = minOf(availWidth - dp(20f), dp(400f)).coerceAtLeast(dp(276f))
+
+        val dialogCard = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                cardWidth,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            setPadding(dp(16f), dp(14f), dp(16f), dp(14f))
+            elevation = dp(32f).toFloat()
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 20f * density
+                setColor(cardBg)
+                setStroke(dp(1.2f).coerceAtLeast(1), strokeColor)
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { }
+        }
+
+        val hdrRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(6f) }
+        }
+        val titleCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleCol.addView(TextView(ctx).apply {
+            text = "⚙ Stack Bytecode VM Disassembler"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(primaryText)
+        })
+        titleCol.addView(TextView(ctx).apply {
+            text = "Module [$modId] • bc_disasm(fn) instruction dump"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setTextColor(accentColor)
+        })
+        hdrRow.addView(titleCol)
+        hdrRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "✕"
+            textSize = 13f
+            cornerRadiusDp = 14f
+            shadowPadDp = 2.5f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(34f), dp(34f))
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        })
+        dialogCard.addView(hdrRow)
+
+        val etTarget = EditText(ctx).apply {
+            setText(defaultTarget)
+            hint = "Function name or lambda (e.g. height_at)"
+            setSingleLine(true)
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setTextColor(primaryText)
+            setHintTextColor(secondaryText)
+            setPadding(dp(10f), dp(7f), dp(10f), dp(7f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 10f * density
+                setColor(inputBg)
+                setStroke(1, strokeColor)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(6f) }
+        }
+        dialogCard.addView(etTarget)
+
+        val candScroll = HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(30f)
+            ).apply { bottomMargin = dp(6f) }
+        }
+        val candRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        candScroll.addView(candRow)
+        dialogCard.addView(candScroll)
+
+        val disasmScroll = ScrollView(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(210f)
+            ).apply { bottomMargin = dp(8f) }
+            setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(inputBg)
+                setStroke(1, strokeColor)
+            }
+        }
+        val tvDisasm = TextView(ctx).apply {
+            text = "Select a function above or tap 'Disassemble'..."
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(primaryText)
+            setTextIsSelectable(true)
+        }
+        disasmScroll.addView(tvDisasm)
+        dialogCard.addView(disasmScroll)
+
+        fun runDisasm() {
+            val target = etTarget.text?.toString().orEmpty().trim()
+            tvDisasm.text = "Disassembling '$target' in [$modId]..."
+            MathEngineManager.disassembleInModule(modId, target) { ok, outText ->
+                activity.runOnUiThread {
+                    tvDisasm.text = if (ok) {
+                        outText
+                    } else {
+                        "⚠ $outText\n\nTip: Tap '▶ Run / Link' first so '$target' is linked in [$modId], or enter an inline lambda such as: (n) => { s := 0; (i in 1...n) { s += i }; s }"
+                    }
+                }
+            }
+        }
+
+        fnCandidates.forEach { fnName ->
+            val w = (fnName.length * 7.2f + 22f).coerceAtLeast(64f)
+            candRow.addView(NeumorphicKeyView(ctx).apply {
+                text = fnName
+                textSize = 10.2f
+                cornerRadiusDp = 9f
+                shadowPadDp = 2f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(dp(w), dp(26f)).apply { marginEnd = dp(4f) }
+                setOnClickListener {
+                    etTarget.setText(fnName)
+                    runDisasm()
+                }
+            })
+        }
+
+        val btnRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        btnRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "⚙ Disassemble"
+            textSize = 12f
+            cornerRadiusDp = 13f
+            shadowPadDp = 2.8f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.3f).apply { marginEnd = dp(6f) }
+            setOnClickListener {
+                springPulse(this, 0.06f)
+                runDisasm()
+            }
+        })
+        btnRow.addView(NeumorphicKeyView(ctx).apply {
+            text = "Close"
+            textSize = 12f
+            cornerRadiusDp = 13f
+            shadowPadDp = 2.8f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(84f), dp(38f))
+            setOnClickListener { dismissWorkspaceModalDialog() }
+        })
+        dialogCard.addView(btnRow)
+
+        overlay.addView(dialogCard)
+        outerFrame.addView(overlay)
+        activeModalOverlay = overlay
+        isModalDialogOpen = true
+        runDisasm()
     }
 }

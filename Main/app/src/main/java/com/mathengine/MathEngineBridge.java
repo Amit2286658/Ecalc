@@ -145,6 +145,18 @@ public final class MathEngineBridge implements AutoCloseable {
         return nativeScratchPoolUsed(requireOpenHandle());
     }
 
+    public synchronized void setImportDir(String dirPath) {
+        nativeSetImportDir(requireOpenHandle(), dirPath);
+    }
+
+    public synchronized String getOutput() {
+        return nativeGetOutput(requireOpenHandle());
+    }
+
+    public synchronized void clearOutput() {
+        nativeClearOutput(requireOpenHandle());
+    }
+
     public synchronized String lastError() {
         return nativeLastError(requireOpenHandle());
     }
@@ -176,6 +188,9 @@ public final class MathEngineBridge implements AutoCloseable {
     public static native String  nativeSymSolve(long handle, String varName, String eq);
     public static native int     nativeCompactScratch(long handle);
     public static native int     nativeScratchPoolUsed(long handle);
+    public static native void    nativeSetImportDir(long handle, String dirPath);
+    public static native String  nativeGetOutput(long handle);
+    public static native void    nativeClearOutput(long handle);
     public static native boolean nativeRegisterExtern(long handle, String name, ExternCallback callback);
 
     /**

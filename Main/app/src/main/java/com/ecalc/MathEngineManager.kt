@@ -29,7 +29,9 @@ object MathEngineManager {
         val value: String,
         val type: String,
         val unit: String,
-        val error: String?
+        val error: String?,
+        val stdout: String = "",
+        val sourceLine: Int = 1
     )
 
     private const val TAG = "MathEngineManager"
@@ -52,9 +54,16 @@ object MathEngineManager {
     }
 
     /** Registers all built-in host externs ([CurrencyConverter]) and any custom app externs on [handle]. */
+    fun getWorkspaceSandboxDir(ctx: Context): java.io.File =
+        java.io.File(ctx.filesDir, "math_modules").also { if (!it.exists()) it.mkdirs() }
+
     @Synchronized
     private fun registerHostExternsOnHandle(handle: Long) {
         if (handle == 0L) return
+        appContext?.let { ctx ->
+            val sandboxDir = getWorkspaceSandboxDir(ctx).absolutePath
+            runCatching { MathEngineBridge.nativeSetImportDir(handle, sandboxDir) }
+        }
         CurrencyConverter.registerWithEngine(handle)
         for ((extName, cb) in customExternCallbacks) {
             runCatching { MathEngineBridge.nativeRegisterExtern(handle, extName, cb) }
@@ -343,7 +352,7 @@ object MathEngineManager {
         var braceDepth = 0
         var brackDepth = 0
         val contEndRegex = Regex("(:=|\\+=|-=|\\*=|/=|%=|\\^=|==|!=|<=|>=|&&|\\|\\||\\|>|=|\\+|-|\\*|/|\\^|\\?|:)$")
-        val contStartRegex = Regex("^(\\|>|\\?|:|else\\b|or\\b)")
+        val contStartRegex = Regex("^(\\|>|\\?|:|else\\b|or\\b|catch\\b)")
 
         fun updateDepths(segment: String) {
             var inQuotes = false
@@ -405,7 +414,7 @@ object MathEngineManager {
         )
         val reservedWords = setOf(
             "pub", "priv", "const", "mut", "if", "else", "while", "for", "in",
-            "return", "break", "continue", "or"
+            "return", "break", "continue", "or", "try", "catch", "throw"
         )
         var dParen = 0
         var dBrace = 0
@@ -727,20 +736,22 @@ object MathEngineManager {
                 return@execute
             }
             val engineExpr = toEngineSyntax(displayExpr, isDegreeMode, lastAnswer)
+            runCatching { MathEngineBridge.nativeClearOutput(engineHandle) }
             val wire = try {
                 MathEngineBridge.nativeEval(engineHandle, engineExpr)
             } catch (t: Throwable) { null }
+            val stdout = runCatching { MathEngineBridge.nativeGetOutput(engineHandle).orEmpty() }.getOrDefault("")
 
             if (wire == null) {
-                onDone(EvalOutcome(false, "0.0", "", "none", "Engine call failed"))
+                onDone(EvalOutcome(false, "0.0", "", "none", "Engine call failed", stdout = stdout))
                 return@execute
             }
 
             val res = MathEngineBridge.EvalResult.parseWire(wire)
             if (res.ok) {
-                onDone(EvalOutcome(true, res.value, res.type, res.unit, null))
+                onDone(EvalOutcome(true, res.value, res.type, res.unit, null, stdout = stdout))
             } else {
-                onDone(EvalOutcome(false, "0.0", "", "none", res.error))
+                onDone(EvalOutcome(false, "0.0", "", "none", res.error, stdout = stdout))
             }
         }
     }
@@ -854,13 +865,13 @@ object MathEngineManager {
                     runCatching { MathEngineBridge.nativeModuleReset(engineHandle, primaryMod) }
                 }
 
-                val statements = splitModuleStatements(mathSource)
+                val statementsWithLines = splitModuleStatementsWithLines(mathSource)
                 val results = mutableListOf<Pair<String, EvalOutcome>>()
                 var curMod = primaryMod
                 val modHeaderRegex = Regex("^\\[([a-zA-Z_][a-zA-Z0-9_]*)]$")
                 var allOk = true
 
-                for (stmt in statements) {
+                for ((stmtLine, stmt) in statementsWithLines) {
                     val hdrMatch = modHeaderRegex.matchEntire(stmt.trim())
                     if (hdrMatch != null) {
                         curMod = hdrMatch.groupValues[1]
@@ -871,18 +882,20 @@ object MathEngineManager {
                         continue
                     }
 
+                    runCatching { MathEngineBridge.nativeClearOutput(engineHandle) }
                     val wire = try {
                         MathEngineBridge.nativeModuleEval(engineHandle, curMod, stmt)
                     } catch (t: Throwable) {
                         "ERR|${t.message ?: "Native exception"}"
                     }
+                    val stdout = runCatching { MathEngineBridge.nativeGetOutput(engineHandle).orEmpty() }.getOrDefault("")
 
                     val parsed = MathEngineBridge.EvalResult.parseWire(wire)
                     val outcome = if (parsed.ok) {
-                        EvalOutcome(true, parsed.value, parsed.type, parsed.unit, null)
+                        EvalOutcome(true, parsed.value, parsed.type, parsed.unit, null, stdout = stdout, sourceLine = stmtLine)
                     } else {
                         allOk = false
-                        EvalOutcome(false, "0.0", "void", "none", parsed.error)
+                        EvalOutcome(false, "0.0", "void", "none", parsed.error, stdout = stdout, sourceLine = stmtLine)
                     }
                     results.add(stmt to outcome)
                     if (!parsed.ok) break
@@ -939,6 +952,295 @@ object MathEngineManager {
                 }.getOrDefault("")
             }
             onDone(src)
+        }
+    }
+
+    /**
+     * Splits raw `.math` source into balanced top-level statements while preserving each
+     * statement's 1-based starting line number in the editor for inline error highlighting.
+     */
+    internal fun splitModuleStatementsWithLines(rawSource: String): List<Pair<Int, String>> {
+        val cleaned = rawSource.removePrefix("\uFEFF").replace("\r\n", "\n").replace("\r", "\n")
+        val rawLines = cleaned.lines()
+        val codeLinesWithNum = mutableListOf<Pair<Int, String>>()
+        val syntaxBindingRegex = Regex("^(?:(?:pub|priv)\\s+)*\"[^\"]+\"\\s*=>\\s*@")
+        val typeDeclRegex = Regex("^(?:(?:pub|priv)\\s+)*\\$[a-zA-Z_]")
+
+        for ((idx, rawLine) in rawLines.withIndex()) {
+            var codePart = stripCommentOutsideQuotes(rawLine)
+            val trimmed = codePart.trim()
+            if (trimmed.isEmpty()) continue
+            if (trimmed.startsWith("@dim") ||
+                trimmed.startsWith("@unit_dim") ||
+                typeDeclRegex.containsMatchIn(trimmed) ||
+                syntaxBindingRegex.containsMatchIn(trimmed)
+            ) {
+                while (codePart.endsWith(";")) {
+                    codePart = codePart.dropLast(1).trimEnd()
+                }
+            }
+            if (codePart.isNotBlank()) {
+                codeLinesWithNum.add((idx + 1) to codePart)
+            }
+        }
+
+        val merged = mutableListOf<Pair<Int, String>>()
+        var parenDepth = 0
+        var braceDepth = 0
+        var brackDepth = 0
+        val contEndRegex = Regex("(:=|\\+=|-=|\\*=|/=|%=|\\^=|==|!=|<=|>=|&&|\\|\\||\\|>|=|\\+|-|\\*|/|\\^|\\?|:)$")
+        val contStartRegex = Regex("^(\\||\\?|:|else\\b|or\\b|catch\\b)")
+
+        fun updateDepths(segment: String) {
+            var inQuotes = false
+            var i = 0
+            while (i < segment.length) {
+                val c = segment[i]
+                if (c == '\\' && inQuotes && i + 1 < segment.length) {
+                    i += 2
+                    continue
+                }
+                if (c == '"') {
+                    inQuotes = !inQuotes
+                } else if (!inQuotes) {
+                    when (c) {
+                        '(' -> parenDepth++
+                        ')' -> if (parenDepth > 0) parenDepth--
+                        '{' -> braceDepth++
+                        '}' -> if (braceDepth > 0) braceDepth--
+                        '[' -> brackDepth++
+                        ']' -> if (brackDepth > 0) brackDepth--
+                    }
+                }
+                i++
+            }
+        }
+
+        for ((lineNum, line) in codeLinesWithNum) {
+            val stripped = line.trim()
+            if (merged.isNotEmpty() && parenDepth == 0 && braceDepth == 0 && brackDepth == 0) {
+                val (prevLineNum, prevText) = merged.last()
+                val prev = prevText.trimEnd()
+                val prevStripped = prev.trim()
+                val isPrevHeaderOrDep =
+                    (prevStripped.startsWith("[") && prevStripped.endsWith("]")) ||
+                    (prevStripped.startsWith("<[") && prevStripped.endsWith("]"))
+                val isCurHeaderOrDep =
+                    (stripped.startsWith("[") && stripped.endsWith("]")) ||
+                    (stripped.startsWith("<[") && stripped.endsWith("]"))
+
+                if (!isPrevHeaderOrDep && !isCurHeaderOrDep) {
+                    val prevContinues = contEndRegex.containsMatchIn(prevStripped) &&
+                        !prevStripped.endsWith(";") &&
+                        !typeDeclRegex.containsMatchIn(prevStripped) &&
+                        !prevStripped.startsWith("@dim") &&
+                        !prevStripped.startsWith("@unit_dim")
+                    val curContinues = contStartRegex.containsMatchIn(stripped)
+                    if (prevContinues || curContinues) {
+                        merged[merged.lastIndex] = prevLineNum to "$prev $stripped"
+                        updateDepths(stripped)
+                        continue
+                    }
+                }
+            }
+            merged.add(lineNum to line)
+            updateDepths(stripped)
+        }
+
+        val statements = mutableListOf<Pair<Int, String>>()
+        val currentStmt = StringBuilder()
+        var currentStartLine = 1
+        var bDepth = 0
+        var pDepth = 0
+        var kDepth = 0
+
+        for ((lineNum, rawLine) in merged) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            if (currentStmt.isEmpty()) {
+                currentStartLine = lineNum
+            } else {
+                currentStmt.append("\n")
+            }
+            currentStmt.append(line)
+
+            var inQuotes = false
+            var i = 0
+            while (i < line.length) {
+                val ch = line[i]
+                if (ch == '\\' && i + 1 < line.length && inQuotes) {
+                    i += 2
+                    continue
+                }
+                if (ch == '"') {
+                    inQuotes = !inQuotes
+                } else if (!inQuotes) {
+                    when (ch) {
+                        '{' -> bDepth++
+                        '}' -> if (bDepth > 0) bDepth--
+                        '(' -> pDepth++
+                        ')' -> if (pDepth > 0) pDepth--
+                        '[' -> kDepth++
+                        ']' -> if (kDepth > 0) kDepth--
+                    }
+                }
+                i++
+            }
+            if (bDepth == 0 && pDepth == 0 && kDepth == 0) {
+                val norm = normalizeExtensionSource(currentStmt.toString())
+                var built = norm.trim()
+                while (built.endsWith(";")) {
+                    built = built.dropLast(1).trimEnd()
+                }
+                if (built.isNotEmpty()) {
+                    statements.add(currentStartLine to built)
+                }
+                currentStmt.setLength(0)
+            }
+        }
+        if (currentStmt.isNotEmpty()) {
+            val norm = normalizeExtensionSource(currentStmt.toString())
+            var built = norm.trim()
+            while (built.endsWith(";")) {
+                built = built.dropLast(1).trimEnd()
+            }
+            if (built.isNotEmpty()) {
+                statements.add(currentStartLine to built)
+            }
+        }
+        return statements
+    }
+
+    /** Disassembles a function or expression inside [modName] using `bc_disasm(...)`. */
+    fun disassembleInModule(
+        modName: String,
+        targetExpr: String,
+        onDone: (ok: Boolean, disasmText: String) -> Unit
+    ) {
+        worker.execute {
+            if (!ensureEngine() || targetExpr.isBlank()) {
+                onDone(false, "Engine not ready or empty target")
+                return@execute
+            }
+            val effMod = modName.ifBlank { "default" }
+            synchronized(this) {
+                registerHostExternsOnHandle(engineHandle)
+                val wire = runCatching {
+                    MathEngineBridge.nativeModuleEval(engineHandle, effMod, "bc_disasm(${targetExpr.trim()})")
+                }.getOrDefault("ERR|Native call failed")
+                val parsed = MathEngineBridge.EvalResult.parseWire(wire)
+                if (parsed.ok) {
+                    val cleaned = parsed.value.removeSurrounding("\"")
+                        .replace("\\n", "\n")
+                        .replace("\\t", "\t")
+                    onDone(true, cleaned)
+                } else {
+                    onDone(false, parsed.error ?: "Could not disassemble '$targetExpr'")
+                }
+            }
+        }
+    }
+
+    /**
+     * Evaluates a 1D vector, `vec<vec2>` path, 1-arg function `f`, or expression in `x`/`t`
+     * inside [modName] to produce `(x, y)` coordinates for the interactive 2D Plotter.
+     */
+    fun samplePlotPoints(
+        modName: String,
+        exprOrFn: String,
+        xMin: Double,
+        xMax: Double,
+        samples: Int = 160,
+        onDone: (ok: Boolean, label: String, points: List<Pair<Double, Double>>, error: String?) -> Unit
+    ) {
+        worker.execute {
+            if (!ensureEngine() || exprOrFn.isBlank()) {
+                onDone(false, exprOrFn, emptyList(), "Empty plot expression")
+                return@execute
+            }
+            val effMod = modName.ifBlank { "default" }
+            val trimmed = exprOrFn.trim()
+            synchronized(this) {
+                registerHostExternsOnHandle(engineHandle)
+                val directWire = runCatching {
+                    MathEngineBridge.nativeModuleEval(engineHandle, effMod, trimmed)
+                }.getOrNull()
+                val directRes = directWire?.let { MathEngineBridge.EvalResult.parseWire(it) }
+
+                if (directRes != null && directRes.ok && (directRes.type == "vec" || directRes.type == "mat")) {
+                    val rawVal = directRes.value
+                    val vec2Regex = Regex("vec2\\(\\s*([-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\\s*,\\s*([-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\\s*\\)")
+                    val v2Matches = vec2Regex.findAll(rawVal).toList()
+                    if (v2Matches.isNotEmpty()) {
+                        val pts = v2Matches.mapNotNull { m ->
+                            val px = m.groupValues[1].toDoubleOrNull()
+                            val py = m.groupValues[2].toDoubleOrNull()
+                            if (px != null && py != null && px.isFinite() && py.isFinite()) px to py else null
+                        }
+                        if (pts.isNotEmpty()) {
+                            onDone(true, "$trimmed (vec2 path)", pts, null)
+                            return@execute
+                        }
+                    }
+                    val numRegex = Regex("[-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?")
+                    val nums = numRegex.findAll(rawVal).mapNotNull { it.value.toDoubleOrNull() }.filter { it.isFinite() }.toList()
+                    if (nums.isNotEmpty()) {
+                        val pts = nums.mapIndexed { idx, y -> idx.toDouble() to y }
+                        onDone(true, "$trimmed (${nums.size} elements)", pts, null)
+                        return@execute
+                    }
+                }
+
+                val lo = if (xMin < xMax) xMin else xMax - 1.0
+                val hi = if (xMax > xMin) xMax else xMin + 10.0
+                val n = samples.coerceIn(16, 400)
+                val step = (hi - lo) / (n - 1).toDouble()
+                val pts = ArrayList<Pair<Double, Double>>(n)
+
+                val isCallableIdentifier = (directRes != null && directRes.ok && directRes.type == "fn") ||
+                    Regex("^[a-zA-Z_][a-zA-Z0-9_]*$").matches(trimmed)
+
+                var useCallSyntax = false
+                if (isCallableIdentifier) {
+                    val probeWire = runCatching {
+                        MathEngineBridge.nativeModuleEval(engineHandle, effMod, "$trimmed($lo)")
+                    }.getOrNull()
+                    val probeRes = probeWire?.let { MathEngineBridge.EvalResult.parseWire(it) }
+                    if (probeRes != null && probeRes.ok) {
+                        useCallSyntax = true
+                    }
+                }
+
+                var lastErr: String? = null
+                for (i in 0 until n) {
+                    val x = lo + i * step
+                    val evalExpr = if (useCallSyntax) {
+                        "$trimmed($x)"
+                    } else {
+                        "{ x := $x ; t := $x ; $trimmed }"
+                    }
+                    val w = runCatching {
+                        MathEngineBridge.nativeModuleEval(engineHandle, effMod, evalExpr)
+                    }.getOrNull()
+                    val r = w?.let { MathEngineBridge.EvalResult.parseWire(it) }
+                    if (r != null && r.ok) {
+                        val numToken = r.value.trim().split(Regex("\\s+")).firstOrNull()
+                        val y = numToken?.toDoubleOrNull()
+                        if (y != null && y.isFinite()) {
+                            pts.add(x to y)
+                        }
+                    } else if (r != null && !r.ok && lastErr == null) {
+                        lastErr = r.error
+                    }
+                }
+
+                if (pts.isNotEmpty()) {
+                    val title = if (useCallSyntax) "$trimmed(x)" else trimmed
+                    onDone(true, title, pts, null)
+                } else {
+                    onDone(false, trimmed, emptyList(), lastErr ?: "Expression did not produce finite numeric values over [$lo, $hi]")
+                }
+            }
         }
     }
 }
