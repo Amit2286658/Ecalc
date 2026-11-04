@@ -998,7 +998,7 @@ class MathWorkspaceFragment : Fragment() {
                     Triple("...", "...", 0),
                     Triple("??", " ?? {\n    \n}", 2),
                     Triple("|>", " |> ", 0),
-                    Triple("\$""", "\$"{}"", 2),
+                    Triple("\$\"\"", "\$\"{}\"", 2),
                     Triple("\$struct", "\$struct Point(x: real, y: real)", 0),
                     Triple("\$enum", "\$enum State { Idle, Active(v: real) }", 0),
                     Triple("switch", "switch (x) {\n    case 0: 0\n    else: 1\n}", 0),
@@ -1513,8 +1513,8 @@ class MathWorkspaceFragment : Fragment() {
                 "<[vec]\n\n" +
                 "pub cfg := read_json(\"config.json\")\n" +
                 "pub records := csv_to_maps(read_file(\"sensor_data.csv\"))\n\n" +
-                "println(\$"Loaded project: {cfg[\"project\"]} @ {cfg[\"sample_hz\"]} Hz")\n" +
-                "println(\$"CSV rows loaded: {records.len()} (first={records[0][\"sensor\"]})")\n\n" +
+                "println(\$\"Loaded project: {cfg[\"project\"]} @ {cfg[\"sample_hz\"]} Hz\")\n" +
+                "println(\$\"CSV rows loaded: {records.len()} (first={records[0][\"sensor\"]})\")\n\n" +
                 "pub avg_temp := (records[0][\"temp_c\"] + records[1][\"temp_c\"] + records[2][\"temp_c\"]) / 3\n" +
                 "records\n"
             )
