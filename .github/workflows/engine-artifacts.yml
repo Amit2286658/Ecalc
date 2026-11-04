@@ -2,8 +2,12 @@ name: engine-artifacts
 
 # Rebuilds the native artifacts from the SAME source snapshot so the shipped
 # pair can never drift again:
-#   - stdlib.mathc  : host `mathc` compiler over Library/*.math (sources from
-#                     Math-Engine-MEP, engine from the vendored copy below)
+#   - stdlib.mathc  : NOT rebuilt here. The committed 252,076-byte asset in
+#                     Main/app/src/main/assets/precompiled/ is the artifact;
+#                     CI only validates it (check_mathc.py) and seats it into
+#                     the build tree for the self-test suite. (Rebuilding it
+#                     from the engine repo's Library/*.math used to ship a
+#                     stale image on every run.)
 #   - libmathengine.so : arm64-v8a NDK build (API 24) — blank-boot engine (no
 #                        embedded stdlib; hosts load stdlib.mathc)
 #
@@ -41,20 +45,23 @@ jobs:
           cp -r Main/app/src/main/cpp/mathengine/tools           buildtree/tools
           cp -r mep/Main/Library                                 buildtree/Library
           cp -r mep/Main/Test                                    buildtree/Test
+          # Seat the COMMITTED stdlib asset into the build tree (no rebuild):
+          # the host myapp self-test suite loads it via MEP_TEST_STDLIBC_PATH.
+          mkdir -p buildtree/precompiled
+          cp Main/app/src/main/assets/precompiled/stdlib.mathc   buildtree/precompiled/stdlib.mathc
+          sha256sum buildtree/precompiled/stdlib.mathc
           ls buildtree/Library | head -20
           # Vendored engine must be at least as new as the .math sources need;
           # print both HEADs for the record.
           echo "vendored engine: $(git log -1 --format='%h %s' -- Main/app/src/main/cpp/mathengine)"
           echo "engine repo HEAD: $(git -C mep log -1 --format='%h %s')"
 
-      # ---- Host build: mathc compiler -> stdlib.mathc ----
-      - name: Build stdlib.mathc (host)
+      # ---- Host build: self-test suite only (stdlib.mathc is NOT rebuilt) ----
+      - name: Configure host build (self-tests; stdlib not regenerated)
         working-directory: buildtree
         run: |
           set -eu
           cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release -DMATH_ENGINE_BUILD_SHARED=OFF
-          cmake --build build-host --target mathc -j2
-          cmake --build build-host --target stdlib -j2
           ls -l precompiled/stdlib.mathc
 
       - name: Run engine self-tests (host, informational)
@@ -66,12 +73,21 @@ jobs:
             echo "WARN: could not build myapp (test sources; see log above)"
           fi
 
-      # ---- Consistency check of the generated .mathc ----
+      # ---- Consistency check of the COMMITTED .mathc asset ----
       # Checks: magic/version, payload formula (sizes from _Static_asserts),
       # file length, caps, FNV-1a checksum, and intrinsic-table hash.
-      - name: Consistency check stdlib.mathc
-        working-directory: buildtree
-        run: python3 "$GITHUB_WORKSPACE/.github/workflows/check_mathc.py" precompiled/stdlib.mathc
+      - name: Consistency check stdlib.mathc (committed asset)
+        run: |
+          set -eu
+          python3 "$GITHUB_WORKSPACE/.github/workflows/check_mathc.py" \
+            Main/app/src/main/assets/precompiled/stdlib.mathc
+          # Vendored snapshot must stay in parity with the shipped asset.
+          if cmp -s Main/app/src/main/assets/precompiled/stdlib.mathc \
+                   Main/app/src/main/cpp/mathengine/precompiled/stdlib.mathc; then
+            echo "OK: committed asset == vendored precompiled snapshot"
+          else
+            echo "ERROR: vendored snapshot drifted from committed asset"; exit 1
+          fi
 
       # ---- NDK build: libmathengine.so (arm64-v8a, blank-boot engine) ----
       # Uses the vendored build script: the .so carries NO stdlib image and
@@ -117,17 +133,16 @@ jobs:
         run: |
           set -eu
           mkdir -p dist/arm64-v8a
-          cp buildtree/precompiled/stdlib.mathc         dist/stdlib.mathc
+          # stdlib.mathc ships the COMMITTED asset (byte-for-byte) — CI no
+          # longer regenerates it, so dist can never regress to a stale image.
+          cp Main/app/src/main/assets/precompiled/stdlib.mathc         dist/stdlib.mathc
           cp buildtree/dist/arm64-v8a/libmathengine.so  dist/arm64-v8a/libmathengine.so
           sha256sum dist/stdlib.mathc dist/arm64-v8a/libmathengine.so > dist/engine.sha256
           cat dist/engine.sha256
-          # Info: does the freshly built stdlib match the asset committed in the repo?
-          if cmp -s dist/stdlib.mathc Main/app/src/main/assets/precompiled/stdlib.mathc; then
-            echo "stdlib.mathc is byte-identical to the committed asset"
-          else
-            echo "NOTE: freshly built stdlib.mathc differs from committed asset (sizes follow)"
-            ls -l dist/stdlib.mathc Main/app/src/main/assets/precompiled/stdlib.mathc
-          fi
+          # Sanity: what is committed is exactly what ships.
+          cmp -s dist/stdlib.mathc Main/app/src/main/assets/precompiled/stdlib.mathc \
+            && echo "stdlib.mathc dist == committed asset" \
+            || { echo "ERROR: dist copy mismatch"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
