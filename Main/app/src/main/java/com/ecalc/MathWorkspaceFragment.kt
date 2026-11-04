@@ -1228,7 +1228,7 @@ class MathWorkspaceFragment : Fragment() {
                 inspectorCard = inspCard
 
                 tvInspectorHeader = TextView(ctx).apply {
-                    text = "🔍 Structured Data Inspector ($map • JSON • CSV • $mat • $vec)"
+                    text = "🔍 Structured Data Inspector (\$map • JSON • CSV • \$mat • \$vec)"
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                     setTypeface(typeface, Typeface.BOLD)
                     setTextColor(accentText)
@@ -1258,7 +1258,7 @@ class MathWorkspaceFragment : Fragment() {
                     )
                 }
                 val tvInspPlaceholder = TextView(ctx).apply {
-                    text = "Evaluate a $map, JSON object/array, csv_to_maps(...), $mat, or $vec to inspect it as a formatted table."
+                    text = "Evaluate a \$map, JSON object/array, csv_to_maps(...), \$mat, or \$vec to inspect it as a formatted table."
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
                     typeface = Typeface.MONOSPACE
                     setTextColor(secondaryText)
