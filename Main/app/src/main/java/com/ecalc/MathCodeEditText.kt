@@ -145,8 +145,8 @@ class MathCodeEditText(context: Context) : EditText(context) {
             SuggestionItem("<[vec", "<[vec]", "<[vec]", 0, "mod", "Vectors, maps, ranges & HOFs"),
             SuggestionItem("<[mat", "<[mat]", "<[mat]", 0, "mod", "Matrices, LU/QR/SVD/Eigen"),
             SuggestionItem("<[string", "<[string]", "<[string]", 0, "mod", "Strings, formatting & regex"),
-            SuggestionItem("<[complex_ext", "<[complex_ext]", "<[complex_ext]", 0, "mod", "Complex numbers ($complex)"),
-            SuggestionItem("<[geom_ext", "<[geom_ext]", "<[geom_ext]", 0, "mod", "Geometry ($vec2, $vec3, $circle)"),
+            SuggestionItem("<[complex_ext", "<[complex_ext]", "<[complex_ext]", 0, "mod", "Complex numbers (\$complex)"),
+            SuggestionItem("<[geom_ext", "<[geom_ext]", "<[geom_ext]", 0, "mod", "Geometry (\$vec2, \$vec3, \$circle)"),
             SuggestionItem("<[physics", "<[physics]", "<[physics]", 0, "mod", "Classical & modern physics"),
             SuggestionItem("<[chemistry", "<[chemistry]", "<[chemistry]", 0, "mod", "Gas laws, pH & stoichiometry"),
             SuggestionItem("<[biology", "<[biology]", "<[biology]", 0, "mod", "Genetics, kinetics & ecology"),
@@ -168,21 +168,21 @@ class MathCodeEditText(context: Context) : EditText(context) {
             SuggestionItem("import", "import \"module.math\"", "import \"\"", 1, "kw", "Import module or file"),
 
             // Types & Data Structures
-            SuggestionItem("$struct", "$struct Name(x: real, y: real)", "$struct Point(x: real, y: real)", 0, "type", "Struct type declaration"),
-            SuggestionItem("$enum", "$enum Name { Idle, Active(v: real) }", "$enum State { Idle, Active(v: real) }", 0, "type", "Enum / tagged union"),
+            SuggestionItem("\$struct", "\$struct Name(x: real, y: real)", "\$struct Point(x: real, y: real)", 0, "type", "Struct type declaration"),
+            SuggestionItem("\$enum", "\$enum Name { Idle, Active(v: real) }", "\$enum State { Idle, Active(v: real) }", 0, "type", "Enum / tagged union"),
             SuggestionItem("real", "real", "real", 0, "type", "64-bit float type"),
             SuggestionItem("str", "str", "str", 0, "type", "UTF-8 string type"),
             SuggestionItem("vec", "vec(a, b, ...)", "vec()", 1, "type", "Dynamic vector"),
             SuggestionItem("vec2", "vec2(x, y)", "vec2(, )", 3, "type", "2D vector struct"),
             SuggestionItem("vec3", "vec3(x, y, z)", "vec3(, , )", 5, "type", "3D vector struct"),
             SuggestionItem("complex", "complex(re, im)", "complex(, )", 3, "type", "Complex number"),
-            SuggestionItem("dict", "dict(\"k\", v)", "dict(\"\", )", 3, "type", "Key-value $map dictionary"),
-            SuggestionItem("map", "map(\"k\", v)", "map(\"\", )", 3, "type", "Key-value $map dictionary"),
+            SuggestionItem("dict", "dict(\"k\", v)", "dict(\"\", )", 3, "type", "Key-value \$map dictionary"),
+            SuggestionItem("map", "map(\"k\", v)", "map(\"\", )", 3, "type", "Key-value \$map dictionary"),
 
             // Console, File I/O, JSON, CSV & Bytecode VM
             SuggestionItem("println", "println(val)", "println(\"\")", 2, "fn", "Print line to console"),
             SuggestionItem("print", "print(val)", "print(\"\")", 2, "fn", "Print to console"),
-            SuggestionItem("read_json", "read_json(\"file.json\")", "read_json(\"config.json\")", 2, "fn", "Parse JSON file into $map/$vec"),
+            SuggestionItem("read_json", "read_json(\"file.json\")", "read_json(\"config.json\")", 2, "fn", "Parse JSON file into \$map/\$vec"),
             SuggestionItem("to_json", "to_json(val)", "to_json()", 1, "fn", "Serialize value to JSON"),
             SuggestionItem("read_file", "read_file(\"file\")", "read_file(\"\")", 2, "fn", "Read sandboxed project file"),
             SuggestionItem("write_file", "write_file(\"file\", text)", "write_file(\"\", )", 2, "fn", "Write sandboxed project file"),
@@ -399,6 +399,10 @@ class MathCodeEditText(context: Context) : EditText(context) {
             }
         }
     }
+
+    /** Whether this editor's suggestion popup is currently showing (public wrapper;
+     * the framework's `isSuggestionsPopupShowing` isn't public API). */
+    fun isSuggestionsPopupShowing(): Boolean = suggestionPopup?.isShowing == true
 
     override fun onDetachedFromWindow() {
         dismissSuggestionsPopup()
