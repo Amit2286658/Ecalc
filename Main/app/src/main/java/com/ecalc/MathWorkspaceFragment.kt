@@ -67,6 +67,7 @@ class MathWorkspaceFragment : Fragment() {
     private var btnHamburgerMenu: NeumorphicKeyView? = null
     private var btnBackCalc: NeumorphicKeyView? = null
     private var tvWorkspaceTitle: TextView? = null
+    private var btnActiveProjectPill: NeumorphicKeyView? = null
 
     // --- Left-Side Sliding File Manager Drawer & Frosted Modal Dialogs ---
     var isFileManagerDrawerOpen: Boolean = false
@@ -81,6 +82,12 @@ class MathWorkspaceFragment : Fragment() {
     private var tvDrawerTitle: TextView? = null
     private var tvDrawerSubtitle: TextView? = null
     private var btnDrawerCloseIcon: NeumorphicKeyView? = null
+
+    // Drawer Projects Section (project0 = Basic Calculator; project1 = default Studio project; per-project engine.so & patched stdlib.mathc)
+    private var tvDrawerProjectsSectionLabel: TextView? = null
+    private var btnDrawerCreateProject: NeumorphicKeyView? = null
+    private var btnDrawerResetProjectEngine: NeumorphicKeyView? = null
+    private var drawerProjectListContainer: LinearLayout? = null
 
     // Drawer Module Controls Bar
     private var drawerModuleControlsBlock: LinearLayout? = null
@@ -136,7 +143,10 @@ class MathWorkspaceFragment : Fragment() {
     private var btnExportModuleState: NeumorphicKeyView? = null
     private var btnClearModuleLog: NeumorphicKeyView? = null
 
-    // --- Workspace State ---
+    // --- Workspace State (Scoped per Project, defaulting to project1 for Studio; project0 is Basic Calculator) ---
+    private var activeProjectName: String = MathEngineManager.DEFAULT_PROJECT_NAME
+    private val projectOpenModulesMap = mutableMapOf<String, MutableList<String>>()
+    private val projectActiveFileMap = mutableMapOf<String, String?>()
     private var isModuleEditorSubTab: Boolean = true
     private val openModuleFiles = mutableListOf<String>()
     private var activeModuleFileName: String? = "physics_sim.math"
@@ -273,13 +283,42 @@ class MathWorkspaceFragment : Fragment() {
         headerRow.addView(btnBackCalc)
 
         tvWorkspaceTitle = TextView(ctx).apply {
-            text = ".math Module Studio"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f)
+            text = ".math Studio"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.parseColor(if (dark) "#E0E0E0" else "#333333"))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         headerRow.addView(tvWorkspaceTitle)
+
+        btnActiveProjectPill = NeumorphicKeyView(ctx).apply {
+            text = "📦 $activeProjectName"
+            textSize = 11.2f
+            cornerRadiusDp = 13f
+            shadowPadDp = 2.6f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(106f), dp(36f))
+            setOnClickListener {
+                springPulse(this, 0.06f)
+                toggleFileManagerDrawer(open = true, animate = true)
+            }
+            setOnLongClickListener { true }
+            holdListener = { held ->
+                if (held) {
+                    val status = MathEngineManager.getProjectBinaryStatus(ctx, activeProjectName)
+                    activity.showButtonPopup(
+                        this,
+                        "Active Project: [$activeProjectName]\n" +
+                            "Isolated Folder: math_projects/$activeProjectName/\n" +
+                            "• engine.so: ${if (status.hasEngineSo) "${status.engineSoBytes / 1024} KB" else "provisioned"}\n" +
+                            "• stdlib.mathc: ${status.stdlibMathcBytes / 1024} KB (${status.linkedModulesCount} module(s) linked)\n" +
+                            "Tap to switch or create projects in ☰ Project & File Manager."
+                    )
+                } else activity.dismissButtonPopup()
+            }
+        }
+        headerRow.addView(btnActiveProjectPill)
         root.addView(headerRow)
 
         // 2. Build Unified Executable Modules Section (Maximized Editor & Output/Vars panes)
@@ -346,6 +385,10 @@ class MathWorkspaceFragment : Fragment() {
 
     /** Handles system Back button when a frosted modal dialog or the File Manager drawer is open. */
     fun handleBackPressed(): Boolean {
+        if (etModuleEditor?.isSuggestionsPopupShowing() == true) {
+            etModuleEditor?.dismissSuggestionsPopup()
+            return true
+        }
         if (activeModalOverlay != null) {
             dismissWorkspaceModalDialog()
             return true
@@ -415,14 +458,14 @@ class MathWorkspaceFragment : Fragment() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             tvDrawerTitle = TextView(ctx).apply {
-                text = "📁 Module File Manager"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                text = "📦 Project & Module Manager"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(primaryText)
             }
             tvDrawerSubtitle = TextView(ctx).apply {
-                text = "Executable .math Modules & Projects"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                text = "Project [$activeProjectName] • Own engine.so & stdlib.mathc"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
                 setTextColor(secondaryText)
             }
             titleCol.addView(tvDrawerTitle)
@@ -444,6 +487,65 @@ class MathWorkspaceFragment : Fragment() {
             }
             headerRow.addView(btnDrawerCloseIcon)
             addView(headerRow)
+
+            // 1B. Projects Section Header: Label + [+ Project] + [↺ Engine]
+            val projectsHeaderRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(4f) }
+            }
+            tvDrawerProjectsSectionLabel = TextView(ctx).apply {
+                text = "STUDIO PROJECTS (PROJECT0 = CALC • GLOBAL PATCHES IN STDLIB)"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(secondaryText)
+                setPadding(dp(2f), 0, dp(4f), 0)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            btnDrawerCreateProject = NeumorphicKeyView(ctx).apply {
+                text = "+ Project"
+                textSize = 10.5f
+                cornerRadiusDp = 10f
+                shadowPadDp = 2.3f
+                isAccentKey = true
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(dp(78f), dp(30f)).apply {
+                    marginEnd = dp(4f)
+                }
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    promptNewProjectDialog()
+                }
+            }
+            btnDrawerResetProjectEngine = NeumorphicKeyView(ctx).apply {
+                text = "↺ Engine"
+                textSize = 10.5f
+                cornerRadiusDp = 10f
+                shadowPadDp = 2.3f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(dp(74f), dp(30f))
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    resetActiveProjectIsolatedEngine()
+                }
+            }
+            projectsHeaderRow.addView(tvDrawerProjectsSectionLabel)
+            projectsHeaderRow.addView(btnDrawerCreateProject)
+            projectsHeaderRow.addView(btnDrawerResetProjectEngine)
+            addView(projectsHeaderRow)
+
+            drawerProjectListContainer = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(8f) }
+            }
+            addView(drawerProjectListContainer)
 
             // 2. Module Controls Block: [▶ Run All] | [↺ Reset Mod] | [📤 Export State]
             drawerModuleControlsBlock = LinearLayout(ctx).apply {
@@ -573,6 +675,9 @@ class MathWorkspaceFragment : Fragment() {
         val density = resources.displayMetrics.density
         val drawerWidth = 316f * density
 
+        if (open) {
+            etModuleEditor?.dismissSuggestionsPopup()
+        }
         drawerAnimator?.cancel()
         isFileManagerDrawerOpen = open
         scrim.isClickable = open
@@ -706,11 +811,121 @@ class MathWorkspaceFragment : Fragment() {
             }
         }
 
+        val allProjects = MathEngineManager.listProjects(ctx)
+        val projStatus = MathEngineManager.getProjectBinaryStatus(ctx, activeProjectName)
         val allModFiles = listModuleFiles(ctx)
         openModuleFiles.retainAll { name -> allModFiles.any { it.name == name } }
-        tvDrawerTitle?.text = "📁 Module File Manager"
-        tvDrawerSubtitle?.text = "Executable .math Modules • ${openModuleFiles.size} open / ${allModFiles.size} stored"
-        tvDrawerFilesSectionLabel?.text = "PROJECT .MATH MODULES"
+
+        val pillW = (activeProjectName.length * 7.5f + 44f).coerceIn(96f, 150f)
+        btnActiveProjectPill?.text = "📦 $activeProjectName"
+        btnActiveProjectPill?.layoutParams = LinearLayout.LayoutParams(dp(pillW), dp(36f))
+
+        tvDrawerTitle?.text = "📦 Project & Module Manager"
+        val stdlibKb = (projStatus.stdlibMathcBytes / 1024L).coerceAtLeast(1L)
+        val soBadge = if (projStatus.hasEngineSo) "engine.so ✓" else "engine.so (jni)"
+        tvDrawerSubtitle?.text = "[$activeProjectName] • $soBadge • stdlib+patches (${stdlibKb}KB) • Calc=[project0]"
+        tvDrawerFilesSectionLabel?.text = "MODULES IN [$activeProjectName] (${openModuleFiles.size}/${allModFiles.size})"
+
+        drawerProjectListContainer?.let { projContainer ->
+            projContainer.removeAllViews()
+            allProjects.forEach { projName ->
+                val isCurProj = (projName == activeProjectName)
+                val pStat = MathEngineManager.getProjectBinaryStatus(ctx, projName)
+                val pModsCount = listModuleFiles(ctx, projName).size
+                val pStdKb = (pStat.stdlibMathcBytes / 1024L).coerceAtLeast(1L)
+
+                val projCard = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = dp(5f) }
+                    setPadding(dp(9f), dp(6f), dp(9f), dp(6f))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 11f * density
+                        setColor(if (isCurProj) activeRowBg else rowBg)
+                        setStroke(((if (isCurProj) 1.5f else 1f) * density).toInt(), if (isCurProj) activeStroke else strokeColor)
+                    }
+                }
+
+                val pTop = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                val tvPName = TextView(ctx).apply {
+                    text = if (projName == MathEngineManager.DEFAULT_PROJECT_NAME) "📦 $projName (default)" else "📦 $projName"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f)
+                    setTypeface(typeface, if (isCurProj) Typeface.BOLD else Typeface.NORMAL)
+                    setTextColor(if (isCurProj) accentText else primaryText)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val tvPBadge = TextView(ctx).apply {
+                    text = if (isCurProj) "🟢 ACTIVE" else "⚪ SWITCH"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(if (isCurProj) accentText else secondaryText)
+                }
+                pTop.addView(tvPName)
+                pTop.addView(tvPBadge)
+                projCard.addView(pTop)
+
+                val tvPMeta = TextView(ctx).apply {
+                    val soStr = if (pStat.hasEngineSo) "engine.so ✓" else "engine.so"
+                    text = "$pModsCount module(s) • $soStr • stdlib.mathc (${pStdKb}KB)"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(secondaryText)
+                    setPadding(0, dp(2f), 0, dp(4f))
+                }
+                projCard.addView(tvPMeta)
+
+                val pActions = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                val btnSwitchProj = makeEntryActionBtn(if (isCurProj) "Active" else "Open", !isCurProj).apply {
+                    setOnClickListener {
+                        if (!isCurProj) {
+                            switchToProject(projName, closeDrawerAfter = false)
+                        } else {
+                            springPulse(this, 0.05f)
+                        }
+                    }
+                }
+                val btnRenameProj = makeEntryActionBtn("Rename/Copy", false).apply {
+                    setOnClickListener {
+                        promptRenameOrCopyProjectDialog(projName)
+                    }
+                }
+                val btnResetProj = makeEntryActionBtn("Reset .mathc", false).apply {
+                    setOnClickListener {
+                        resetSpecificProjectEngine(projName)
+                    }
+                }
+                val btnDelProj = makeEntryActionBtn(if (projName == MathEngineManager.DEFAULT_PROJECT_NAME) "Reset1" else "Del", false).apply {
+                    (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
+                    setOnClickListener {
+                        confirmDeleteOrResetProject(projName)
+                    }
+                }
+                pActions.addView(btnSwitchProj)
+                pActions.addView(btnRenameProj)
+                pActions.addView(btnResetProj)
+                pActions.addView(btnDelProj)
+                projCard.addView(pActions)
+
+                projContainer.addView(projCard)
+            }
+        }
 
         if (allModFiles.isEmpty()) {
             val emptyCard = LinearLayout(ctx).apply {
@@ -969,7 +1184,7 @@ class MathWorkspaceFragment : Fragment() {
                     ).apply { bottomMargin = dp(4f) }
                     setTextColor(primaryText)
                     setHintTextColor(secondaryText)
-                    hint = "# Top-to-bottom executable .math module ([mod], <[dep], pub/priv, := / mut vs = / const, functions, and expressions)..."
+                    hint = "# Hybrid executable .math module ([mod], <[dep], pub main() / @entry(fn) or top-to-bottom statements)..."
                 }
                 addView(etModuleEditor)
 
@@ -990,6 +1205,8 @@ class MathWorkspaceFragment : Fragment() {
                 symbolChipsRow = sRow
                 symbolChipViews.clear()
                 val snippets = listOf(
+                    Triple("pub main", "pub main() = {\n    \n}", 2),
+                    Triple("@entry", "@entry(main)\n", 0),
                     Triple(":=", " := ", 0),
                     Triple("=>", " => ", 0),
                     Triple("->", " -> ", 0),
@@ -1140,7 +1357,7 @@ class MathWorkspaceFragment : Fragment() {
                     isFocusable = true
                     setOnClickListener {
                         val modFile = activeModuleFileName
-                        val errInfo = modFile?.let { moduleErrorLines[it] }
+                        val errInfo = modFile?.let { moduleErrorLines[projectScopedKey(it)] }
                         if (errInfo != null) {
                             etModuleEditor?.highlightErrorLine(errInfo.first, errInfo.second)
                         } else {
@@ -1303,7 +1520,7 @@ class MathWorkspaceFragment : Fragment() {
                     layoutParams = LinearLayout.LayoutParams(dp(56f), dp(26f))
                     setOnClickListener {
                         springPulse(this, 0.06f)
-                        val key = activeModuleFileName ?: "default"
+                        val key = projectScopedKey(activeModuleFileName ?: "default")
                         moduleConsoleLogs[key] = "(Console cleared)"
                         tvConsoleOutput?.text = "(Console cleared)"
                     }
@@ -1418,8 +1635,9 @@ class MathWorkspaceFragment : Fragment() {
                     layoutParams = LinearLayout.LayoutParams(dp(64f), dp(38f))
                     setOnClickListener {
                         springPulse(this, 0.07f)
-                        val key = activeModuleFileName ?: "default"
-                        val cleared = "=== Module Execution & Link Log ($key) ===\n(Log cleared)"
+                        val fileLabel = activeModuleFileName ?: "default"
+                        val key = projectScopedKey(fileLabel)
+                        val cleared = "=== Module Execution & Link Log ($activeProjectName/$fileLabel) ===\n(Log cleared)"
                         moduleLogs[key] = cleared
                         tvModuleLogOutput?.text = cleared
                         moduleLogCard?.let { springPulse(it, 0.04f) }
@@ -1446,13 +1664,19 @@ class MathWorkspaceFragment : Fragment() {
     private fun legacySessionsRootDir(ctx: Context): File =
         File(ctx.filesDir, "math_sessions")
 
-    private fun modulesDir(ctx: Context): File =
-        File(ctx.filesDir, "math_modules").also { if (!it.exists()) it.mkdirs() }
+    private fun legacyModulesDir(ctx: Context): File =
+        File(ctx.filesDir, "math_modules")
 
-    private fun listModuleFiles(ctx: Context): List<File> =
-        modulesDir(ctx).listFiles { f -> f.isFile && f.name.endsWith(".math") }
+    private fun modulesDir(ctx: Context, projectName: String = activeProjectName): File =
+        MathEngineManager.ensureProjectSetup(ctx, projectName)
+
+    private fun listModuleFiles(ctx: Context, projectName: String = activeProjectName): List<File> =
+        modulesDir(ctx, projectName).listFiles { f -> f.isFile && f.name.endsWith(".math") }
             ?.sortedBy { it.name }
             ?: emptyList()
+
+    private fun projectScopedKey(fileName: String, projectName: String = activeProjectName): String =
+        "$projectName::$fileName"
 
     private fun collectAllProjectModuleSources(ctx: Context, activeFileOverride: String?, activeCodeOverride: String?): Map<String, String> {
         val map = LinkedHashMap<String, String>()
@@ -1471,14 +1695,44 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     private fun ensureSampleAndMigratedModuleFiles(ctx: Context) {
+        activeProjectName = MathEngineManager.DEFAULT_PROJECT_NAME
+        MathEngineManager.activeProjectName = activeProjectName
+
         val legDir = legacyMathDir(ctx)
-        val modDir = modulesDir(ctx)
+        val legModDir = legacyModulesDir(ctx)
+        val modDir = modulesDir(ctx, MathEngineManager.DEFAULT_PROJECT_NAME)
         val sessRoot = legacySessionsRootDir(ctx)
 
         File(legDir, "trig_ext.math").takeIf { it.exists() }?.delete()
+        File(legModDir, "trig_ext.math").takeIf { it.exists() }?.delete()
         File(modDir, "trig_ext.math").takeIf { it.exists() }?.delete()
 
-        // Migrate any legacy files from math_programs/ or math_sessions/ into unified math_modules/
+        // Ensure project0 is reserved cleanly for Basic Calculator; migrate any legacy studio .math files from project0 into project1
+        val calcProj0Dir = File(File(ctx.filesDir, "math_projects"), MathEngineManager.CALC_PROJECT_NAME)
+        if (calcProj0Dir.exists() && calcProj0Dir.isDirectory) {
+            calcProj0Dir.listFiles { f ->
+                f.isFile && (f.name.endsWith(".math") || f.name.endsWith(".json") || f.name.endsWith(".csv"))
+            }?.forEach { file ->
+                val dest = File(modDir, file.name)
+                if (!dest.exists()) {
+                    runCatching { file.copyTo(dest, overwrite = false) }
+                }
+                file.delete()
+            }
+        }
+
+        // Migrate any legacy files from math_modules/, math_programs/, or math_sessions/ into default studio project1
+        if (legModDir.exists() && legModDir.isDirectory) {
+            legModDir.listFiles { f ->
+                f.isFile && (f.name.endsWith(".math") || f.name.endsWith(".json") || f.name.endsWith(".csv"))
+            }?.forEach { file ->
+                val dest = File(modDir, file.name)
+                if (!dest.exists()) {
+                    runCatching { file.copyTo(dest, overwrite = false) }
+                }
+                file.delete()
+            }
+        }
         legDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.forEach { file ->
             val dest = File(modDir, file.name)
             if (!dest.exists()) {
@@ -1498,7 +1752,7 @@ class MathWorkspaceFragment : Fragment() {
                 }
         }
 
-        val seedMarker = File(modDir, ".seeded_unified_modules_v4")
+        val seedMarker = File(modDir, ".seeded_unified_modules_v5")
         if (!seedMarker.exists()) {
             File(modDir, "config.json").writeText(
                 "{\n  \"project\": \"MEP Telemetry\",\n  \"sample_hz\": 50,\n  \"active\": true\n}\n"
@@ -1519,8 +1773,8 @@ class MathWorkspaceFragment : Fragment() {
                 "records\n"
             )
             File(modDir, "custom_ops.math").writeText(
-                "# Unified Executable Module: custom_ops.math\n" +
-                "# Defines public & private constants, functions, and top-level expressions.\n\n" +
+                "# Unified Library & Executable Module: custom_ops.math\n" +
+                "# Imported via <[custom_ops] in declaration-only mode (top-level expressions skipped on import).\n\n" +
                 "[custom_ops]\n" +
                 "<[arith]\n" +
                 "<[trig]\n\n" +
@@ -1530,12 +1784,12 @@ class MathWorkspaceFragment : Fragment() {
                 "pub hypot3(a: real, b: real, c: real) = √(a^2 + b^2 + c^2)\n" +
                 "pub kinetic_e(m: real, v: real) = 0.5 * m * v^2\n" +
                 "pub deg_sin(x: real) = sin(deg_to_r(x))\n\n" +
-                "# Top-level module expression (evaluated when module runs):\n" +
+                "# Top-level self-test expression (runs only when custom_ops.math is executed directly):\n" +
                 "hypot3(3, 4, 12)\n"
             )
             File(modDir, "physics_sim.math").writeText(
-                "# Multi-File Project Module: physics_sim.math\n" +
-                "# Imports <[custom_ops] and runs top-to-bottom without needing a session.\n\n" +
+                "# Multi-File Project Module with Program Entry Point: physics_sim.math\n" +
+                "# Imports <[custom_ops] (declaration-only) and runs pub main() automatically.\n\n" +
                 "[physics_sim]\n" +
                 "<[custom_ops]\n" +
                 "<[units]\n\n" +
@@ -1546,8 +1800,12 @@ class MathWorkspaceFragment : Fragment() {
                 "pub max_h := (v0 * deg_sin(angle))^2 / (2 * g)\n" +
                 "pub flight_t := (2 * v0 * deg_sin(angle)) / g\n\n" +
                 "# Reusable module function:\n" +
-                "pub height_at(t) = v0 * deg_sin(angle) * t - 0.5 * g * t^2\n" +
-                "height_at(1.8)\n"
+                "pub height_at(t: real) = v0 * deg_sin(angle) * t - 0.5 * g * t^2\n\n" +
+                "# Structured program entry point (automatically invoked when running this module):\n" +
+                "pub main() = {\n" +
+                "    println(\$\"Projectile range={range_m} m, max_h={max_h} m\")\n" +
+                "    height_at(1.8)\n" +
+                "}\n"
             )
             File(modDir, "vectors_stats.math").writeText(
                 "# Vectors, Scoping, Immutability & Symbolic Math (.math)\n\n" +
@@ -1665,17 +1923,23 @@ class MathWorkspaceFragment : Fragment() {
             val modId = MathEngineManager.deriveModuleName(modFileName, code)
             val deps = MathEngineManager.extractModuleDependencies(code)
             val depsSuffix = if (deps.isNotEmpty()) "  •  <[${deps.joinToString(", ")}]" else ""
-            tvActiveModuleName?.text = "File: $modFileName  •  Module: [$modId]$depsSuffix"
+            tvActiveModuleName?.text = "Project: [$activeProjectName]  •  File: $modFileName  •  Module: [$modId]$depsSuffix"
+            etModuleEditor?.updateProjectAutocompleteContext(
+                collectAllProjectModuleSources(ctx, modFileName, code)
+            )
             etModuleEditor?.setText(code)
-            tvVarsHeader?.text = "Module [$modId] Variables & Constants (pub/priv • mut/const)"
-            tvVarsContent?.text = moduleVarsCache[modId].orEmpty().ifBlank {
-                "No variables bound yet in [$modId]. Tap '▶ Run / Link Module' in the Editor tab."
+            etModuleEditor?.dismissSuggestionsPopup()
+            val scopedFileKey = projectScopedKey(modFileName)
+            val scopedModKey = projectScopedKey(modId)
+            tvVarsHeader?.text = "Project [$activeProjectName] • Module [$modId] Variables & Constants"
+            tvVarsContent?.text = moduleVarsCache[scopedModKey].orEmpty().ifBlank {
+                "No variables bound yet in [$modId] ($activeProjectName). Tap '▶ Run / Link' in the Editor tab."
             }
-            val savedLog = moduleLogs[modFileName]
-                ?: "=== Module [$modId] Execution & Link Log ($modFileName) ===\nReady. Tap '▶ Run / Link' in the Editor tab to execute top-to-bottom."
+            val savedLog = moduleLogs[scopedFileKey]
+                ?: "=== Project [$activeProjectName] • Module [$modId] ($modFileName) ===\nReady. Tap '▶ Run / Link' in the Editor tab to execute top-to-bottom."
             tvModuleLogOutput?.text = savedLog
-            tvConsoleOutput?.text = moduleConsoleLogs[modFileName] ?: "(No print / println output yet)"
-            val errPair = moduleErrorLines[modFileName]
+            tvConsoleOutput?.text = moduleConsoleLogs[scopedFileKey] ?: "(No print / println output yet)"
+            val errPair = moduleErrorLines[scopedFileKey]
             if (errPair != null) {
                 etModuleEditor?.highlightErrorLine(errPair.first, errPair.second)
             } else {
@@ -1683,9 +1947,10 @@ class MathWorkspaceFragment : Fragment() {
             }
             refreshStructuredInspector(modFileName)
 
-            MathEngineManager.inspectModuleVariables(modId) { summary ->
+            val reqProj = activeProjectName
+            MathEngineManager.inspectModuleVariables(modId, reqProj) { summary ->
                 activity?.runOnUiThread {
-                    moduleVarsCache[modId] = summary
+                    moduleVarsCache[projectScopedKey(modId, reqProj)] = summary
                     val curFile = activeModuleFileName
                     if (curFile == modFileName) {
                         tvVarsContent?.text = summary.ifBlank {
@@ -1721,10 +1986,13 @@ class MathWorkspaceFragment : Fragment() {
             val file = File(modulesDir(ctx), modFile)
             file.writeText(code)
             getCachedFileMeta(file)
+            etModuleEditor?.updateProjectAutocompleteContext(
+                collectAllProjectModuleSources(ctx, modFile, code)
+            )
             val modId = MathEngineManager.deriveModuleName(modFile, code)
             val deps = MathEngineManager.extractModuleDependencies(code)
             val depsSuffix = if (deps.isNotEmpty()) "  •  <[${deps.joinToString(", ")}]" else ""
-            tvActiveModuleName?.text = "File: $modFile  •  Module: [$modId]$depsSuffix"
+            tvActiveModuleName?.text = "Project: [$activeProjectName]  •  File: $modFile  •  Module: [$modId]$depsSuffix"
             if (showToast) {
                 tvModuleQuickStatus?.text = "💾 Saved module '$modFile' ([$modId])."
                 activity.showButtonToast("Saved $modFile")
@@ -1871,9 +2139,12 @@ class MathWorkspaceFragment : Fragment() {
             onConfirm = {
                 val prevIdx = openModuleFiles.indexOf(fileName)
                 file.delete()
-                moduleLogs.remove(fileName)
-                moduleVarsCache.remove(modId)
-                MathEngineManager.resetModule(modId) { }
+                moduleLogs.remove(projectScopedKey(fileName))
+                moduleConsoleLogs.remove(projectScopedKey(fileName))
+                moduleErrorLines.remove(projectScopedKey(fileName))
+                moduleInspectableItems.remove(projectScopedKey(fileName))
+                moduleVarsCache.remove(projectScopedKey(modId))
+                MathEngineManager.resetModule(modId, activeProjectName) { }
                 openModuleFiles.remove(fileName)
                 if (activeModuleFileName == fileName) {
                     activeModuleFileName = openModuleFiles.firstOrNull()
@@ -1914,7 +2185,8 @@ class MathWorkspaceFragment : Fragment() {
             fileName = targetFile,
             mathSource = code,
             projectSourcesByFileName = projectFiles,
-            resetBeforeRun = true
+            resetBeforeRun = true,
+            projectName = activeProjectName
         ) { modId, results, varsSummary ->
             activity.runOnUiThread {
                 val sb = StringBuilder()
@@ -1980,18 +2252,20 @@ class MathWorkspaceFragment : Fragment() {
                     sb.append(varsSummary)
                 }
 
+                val scopedFileKey = projectScopedKey(targetFile)
+                val scopedModKey = projectScopedKey(modId)
                 val fullLog = sb.toString().trimEnd()
                 val consoleText = consoleSb.toString().trimEnd().ifEmpty { "(No print / println output emitted)" }
-                moduleLogs[targetFile] = fullLog
-                moduleConsoleLogs[targetFile] = consoleText
-                moduleVarsCache[modId] = varsSummary
-                moduleInspectableItems[targetFile] = inspectables
+                moduleLogs[scopedFileKey] = fullLog
+                moduleConsoleLogs[scopedFileKey] = consoleText
+                moduleVarsCache[scopedModKey] = varsSummary
+                moduleInspectableItems[scopedFileKey] = inspectables
 
                 if (hadError && firstErrorLine != null) {
-                    moduleErrorLines[targetFile] = firstErrorLine!! to (firstErrorMsg ?: "Error")
+                    moduleErrorLines[scopedFileKey] = firstErrorLine!! to (firstErrorMsg ?: "Error")
                     etModuleEditor?.highlightErrorLine(firstErrorLine, firstErrorMsg)
                 } else {
-                    moduleErrorLines.remove(targetFile)
+                    moduleErrorLines.remove(scopedFileKey)
                     etModuleEditor?.clearErrorHighlight()
                 }
 
@@ -2033,11 +2307,12 @@ class MathWorkspaceFragment : Fragment() {
             ?: runCatching { File(modulesDir(ctx), modFile).readText() }.getOrDefault("")
         val modId = MathEngineManager.deriveModuleName(modFile, code)
 
-        MathEngineManager.resetModule(modId) { ok ->
+        val curProj = activeProjectName
+        MathEngineManager.resetModule(modId, curProj) { ok ->
             activity.runOnUiThread {
-                moduleVarsCache[modId] = ""
-                val cleared = "=== Module [$modId] Execution & Link Log ($modFile) ===\n(Module [$modId] state & variables reset)"
-                moduleLogs[modFile] = cleared
+                moduleVarsCache[projectScopedKey(modId, curProj)] = ""
+                val cleared = "=== Project [$curProj] • Module [$modId] ($modFile) ===\n(Module [$modId] state & variables reset)"
+                moduleLogs[projectScopedKey(modFile, curProj)] = cleared
                 tvVarsContent?.text = "No variables bound in [$modId] (module reset)."
                 tvModuleLogOutput?.text = cleared
                 tvModuleQuickStatus?.text = "↺ Reset module [$modId]. Tap '▶ Run / Link Module' to re-execute $modFile."
@@ -2057,7 +2332,7 @@ class MathWorkspaceFragment : Fragment() {
             ?: ""
         val modId = MathEngineManager.deriveModuleName(modFile, code)
 
-        MathEngineManager.exportModuleSource(modId) { exportedSrc ->
+        MathEngineManager.exportModuleSource(modId, activeProjectName) { exportedSrc ->
             activity.runOnUiThread {
                 val payload = exportedSrc.ifBlank { code }
                 if (payload.isBlank()) {
@@ -2127,7 +2402,201 @@ class MathWorkspaceFragment : Fragment() {
                 loadModuleStateIntoEditor(animate = true, fromDirection = fromDir, distance = dist)
                 updateModuleSubTabVisibility(animate = false)
                 refreshFileManagerDrawer()
-                activity.showButtonToast("Created module $name")
+                activity.showButtonToast("Created module $name in $activeProjectName")
+            }
+        )
+    }
+
+    // =========================================================================
+    //  Multi-Project Lifecycle Operations (Create, Switch, Rename/Copy, Reset, Delete)
+    // =========================================================================
+
+    private fun switchToProject(targetProjectRaw: String, closeDrawerAfter: Boolean) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val targetProject = MathEngineManager.sanitizeProjectName(targetProjectRaw)
+        if (targetProject == activeProjectName) {
+            if (closeDrawerAfter && isFileManagerDrawerOpen) {
+                toggleFileManagerDrawer(open = false, animate = true)
+            }
+            return
+        }
+
+        // Save current editor buffer & open tab list for the outgoing project
+        saveCurrentModuleEditorState(showToast = false)
+        projectOpenModulesMap[activeProjectName] = openModuleFiles.toMutableList()
+        projectActiveFileMap[activeProjectName] = activeModuleFileName
+
+        activeProjectName = targetProject
+        MathEngineManager.setActiveProject(ctx, targetProject)
+
+        val projMods = listModuleFiles(ctx, targetProject).map { it.name }
+        val savedOpen = projectOpenModulesMap[targetProject]?.filter { it in projMods }.orEmpty()
+        openModuleFiles.clear()
+        if (savedOpen.isNotEmpty()) {
+            openModuleFiles.addAll(savedOpen)
+        } else {
+            openModuleFiles.addAll(projMods)
+        }
+        val preferredActive = projectActiveFileMap[targetProject]
+        activeModuleFileName = when {
+            preferredActive != null && preferredActive in openModuleFiles -> preferredActive
+            "physics_sim.math" in openModuleFiles -> "physics_sim.math"
+            else -> openModuleFiles.firstOrNull()
+        }
+
+        isModuleEditorSubTab = true
+        refreshModuleChips()
+        loadModuleStateIntoEditor(animate = true, fromDirection = 1, distance = 2)
+        updateModuleSubTabVisibility(animate = false)
+        refreshFileManagerDrawer()
+
+        val pStat = MathEngineManager.getProjectBinaryStatus(ctx, targetProject)
+        tvModuleQuickStatus?.text = "📦 Switched to project '$targetProject' (isolated engine.so & stdlib.mathc • ${pStat.stdlibMathcBytes / 1024} KB)."
+        activity.showButtonToast("Project: $targetProject")
+        if (closeDrawerAfter && isFileManagerDrawerOpen) {
+            toggleFileManagerDrawer(open = false, animate = true)
+        }
+    }
+
+    private fun promptNewProjectDialog() {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        saveCurrentModuleEditorState(showToast = false)
+        val existingProjects = MathEngineManager.listProjects(ctx)
+        var nextIdx = (existingProjects.size + 1).coerceAtLeast(2)
+        while ("project$nextIdx" in existingProjects) nextIdx++
+        val defaultProjName = "project$nextIdx"
+
+        showFrostedFileNamingModal(
+            badgeIcon = "📦",
+            title = "New .math Project",
+            subtitle = "Isolated Workspace • Own engine.so & stdlib.mathc",
+            description = "Creates a new isolated project folder in math_projects/ accompanied by its own engine.so and stdlib.mathc so compiled modules never interfere across projects.",
+            initialText = "",
+            hintText = defaultProjName,
+            suggestions = listOf(
+                defaultProjName,
+                "physics_project",
+                "finance_lab",
+                "signal_dsp"
+            ),
+            primaryButtonLabel = "✨ Create Project",
+            onPrimary = { rawInput ->
+                val projName = MathEngineManager.sanitizeProjectName(rawInput.ifBlank { defaultProjName })
+                val projDir = MathEngineManager.createProject(ctx, projName)
+                val existingMods = listModuleFiles(ctx, projName)
+                if (existingMods.isEmpty()) {
+                    val starterName = "main.math"
+                    val starterModId = "${projName}_main".replace(Regex("[^a-zA-Z0-9_]"), "_")
+                    File(projDir, starterName).writeText(
+                        "# Project [$projName] — Isolated engine.so & stdlib.mathc (with global patches)\n" +
+                        "[$starterModId]\n" +
+                        "<[arith]\n" +
+                        "<[trig]\n\n" +
+                        "pub const PROJECT_SCALE = 1.0\n" +
+                        "pub x0 := 12.0\n" +
+                        "pub compute(v: real) = (v^2 + 2 * v) * PROJECT_SCALE\n\n" +
+                        "pub main() = {\n" +
+                        "    compute(x0)\n" +
+                        "}\n"
+                    )
+                }
+                switchToProject(projName, closeDrawerAfter = false)
+                activity.showButtonToast("Created project $projName (with engine.so & stdlib.mathc)")
+            }
+        )
+    }
+
+    private fun promptRenameOrCopyProjectDialog(sourceProj: String) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        saveCurrentModuleEditorState(showToast = false)
+        showFrostedFileNamingModal(
+            badgeIcon = "📦",
+            title = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) "Copy Project '$sourceProj'" else "Rename or Copy Project",
+            subtitle = "Project [$sourceProj] • Clones .math files, engine.so & stdlib.mathc",
+            description = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) {
+                "Default project1 is always kept with all Studio demos, tests & examples (while project0 is dedicated to the Basic Calculator). Enter a name below to clone project1 into a new isolated project."
+            } else {
+                "Enter a new name to rename '$sourceProj', or tap 'Save Copy' to clone its modules, engine.so, and stdlib.mathc."
+            },
+            initialText = "${sourceProj}_copy",
+            hintText = "${sourceProj}_v2",
+            suggestions = listOf(
+                "${sourceProj}_v2",
+                "${sourceProj}_copy",
+                "project_lab"
+            ),
+            primaryButtonLabel = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) "Clone Project" else "Rename",
+            onPrimary = { rawInput ->
+                val copyOnly = (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME)
+                val dstProj = MathEngineManager.renameOrCopyProject(ctx, sourceProj, rawInput, copyOnly = copyOnly)
+                switchToProject(dstProj, closeDrawerAfter = false)
+                activity.showButtonToast(if (copyOnly) "Cloned to $dstProj" else "Renamed project to $dstProj")
+            },
+            secondaryButtonLabel = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) null else "Save Copy",
+            onSecondary = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) null else { rawInput ->
+                val dstProj = MathEngineManager.renameOrCopyProject(ctx, sourceProj, rawInput, copyOnly = true)
+                switchToProject(dstProj, closeDrawerAfter = false)
+                activity.showButtonToast("Copied project to $dstProj")
+            }
+        )
+    }
+
+    private fun resetActiveProjectIsolatedEngine() {
+        resetSpecificProjectEngine(activeProjectName)
+    }
+
+    private fun resetSpecificProjectEngine(projectName: String) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        MathEngineManager.resetProjectEngine(ctx, projectName) { ok ->
+            activity.runOnUiThread {
+                moduleVarsCache.clear()
+                refreshFileManagerDrawer()
+                loadModuleStateIntoEditor(animate = false)
+                tvModuleQuickStatus?.text = "↺ Restored clean stdlib.mathc & restarted engine.so for project [$projectName]."
+                activity.showButtonToast(
+                    if (ok) "Reset engine & stdlib.mathc for $projectName"
+                    else "Reset $projectName"
+                )
+            }
+        }
+    }
+
+    private fun confirmDeleteOrResetProject(projectName: String) {
+        val ctx = context ?: return
+        val activity = activity as? MainActivity ?: return
+        val isDefault = (projectName == MathEngineManager.DEFAULT_PROJECT_NAME)
+        showFrostedConfirmModal(
+            badgeIcon = if (isDefault) "↺" else "🗑",
+            title = if (isDefault) "Reset Default '$projectName'?" else "Delete Project '$projectName'?",
+            subtitle = "Project [$projectName] • Isolated engine.so & stdlib.mathc",
+            message = if (isDefault) {
+                "Restore '$projectName' to its default demos/examples and fresh engine.so + stdlib.mathc?"
+            } else {
+                "Permanently delete project '$projectName', its .math modules, and its isolated engine.so & stdlib.mathc?"
+            },
+            confirmLabel = if (isDefault) "Reset project1" else "Delete Project",
+            onConfirm = {
+                val nextProj = MathEngineManager.deleteProject(ctx, projectName)
+                projectOpenModulesMap.remove(projectName)
+                projectActiveFileMap.remove(projectName)
+                if (isDefault) {
+                    openModuleFiles.clear()
+                    ensureSampleAndMigratedModuleFiles(ctx)
+                }
+                activeProjectName = nextProj
+                MathEngineManager.setActiveProject(ctx, nextProj)
+                val avail = listModuleFiles(ctx, nextProj).map { it.name }
+                openModuleFiles.clear()
+                openModuleFiles.addAll(avail)
+                activeModuleFileName = if ("physics_sim.math" in openModuleFiles) "physics_sim.math" else openModuleFiles.firstOrNull()
+                refreshModuleChips()
+                loadModuleStateIntoEditor(animate = true, fromDirection = -1)
+                refreshFileManagerDrawer()
+                activity.showButtonToast(if (isDefault) "Reset project1 to defaults" else "Deleted project $projectName")
             }
         )
     }
@@ -2230,6 +2699,9 @@ class MathWorkspaceFragment : Fragment() {
     // =========================================================================
 
     private fun updateModuleSubTabVisibility(animate: Boolean) {
+        if (!isModuleEditorSubTab) {
+            etModuleEditor?.dismissSuggestionsPopup()
+        }
         btnModuleSubEditor?.isAccentKey = isModuleEditorSubTab
         btnModuleSubLog?.isAccentKey = !isModuleEditorSubTab
         if (isModuleEditorSubTab) {
@@ -2303,9 +2775,11 @@ class MathWorkspaceFragment : Fragment() {
         tvModuleLogOutput?.setTextColor(primaryText)
 
         symbolChipViews.forEach { it.isDarkThemeMode = dark }
+        tvDrawerProjectsSectionLabel?.setTextColor(secondaryText)
         listOf(
-            btnHamburgerMenu, btnBackCalc,
-            btnDrawerCloseIcon, btnDrawerRunAll, btnDrawerResetMod, btnDrawerExportState,
+            btnHamburgerMenu, btnBackCalc, btnActiveProjectPill,
+            btnDrawerCloseIcon, btnDrawerCreateProject, btnDrawerResetProjectEngine,
+            btnDrawerRunAll, btnDrawerResetMod, btnDrawerExportState,
             btnDrawerCreateNewFile, btnDrawerImportFile,
             btnModuleSubEditor, btnModuleSubLog,
             btnCompileModule, btnPlotModule, btnBytecodeModule, btnResetActiveModule, btnModuleViewLog,
@@ -3170,6 +3644,7 @@ class MathWorkspaceFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        etModuleEditor?.dismissSuggestionsPopup()
         saveCurrentModuleEditorState(showToast = false)
         drawerAnimator?.cancel()
         activeModalOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
@@ -3205,7 +3680,7 @@ class MathWorkspaceFragment : Fragment() {
         chipsContainer.removeAllViews()
         tableContainer.removeAllViews()
 
-        val items = moduleInspectableItems[modFileName].orEmpty()
+        val items = moduleInspectableItems[projectScopedKey(modFileName)].orEmpty()
         if (items.isEmpty()) {
             val tvEmpty = TextView(ctx).apply {
                 text = "Run a module with a \$map, JSON object, csv_to_maps(...), \$mat, or \$vec to inspect it as a formatted table."
@@ -3700,7 +4175,7 @@ class MathWorkspaceFragment : Fragment() {
             val xMin = etXMin.text?.toString()?.toDoubleOrNull() ?: -5.0
             val xMax = etXMax.text?.toString()?.toDoubleOrNull() ?: 5.0
             tvReadout.text = "⏳ Sampling '$target' in [$modId]..."
-            MathEngineManager.samplePlotPoints(modId, target, xMin, xMax, 180) { ok, label, pts, err ->
+            MathEngineManager.samplePlotPoints(modId, target, xMin, xMax, 180, activeProjectName) { ok, label, pts, err ->
                 activity.runOnUiThread {
                     if (ok && pts.isNotEmpty()) {
                         plotView.setSeriesData(label, pts)
@@ -3980,7 +4455,7 @@ class MathWorkspaceFragment : Fragment() {
         fun runDisasm() {
             val target = etTarget.text?.toString().orEmpty().trim()
             tvDisasm.text = "Disassembling '$target' in [$modId]..."
-            MathEngineManager.disassembleInModule(modId, target) { ok, outText ->
+            MathEngineManager.disassembleInModule(modId, target, activeProjectName) { ok, outText ->
                 activity.runOnUiThread {
                     tvDisasm.text = if (ok) {
                         outText
