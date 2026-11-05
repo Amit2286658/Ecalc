@@ -448,7 +448,7 @@ class MathCodeEditText(context: Context) : EditText(context) {
             SuggestionItem(
                 "typeof", "typeof(val)", "typeof()", 1, "fn", "Entity type name",
                 listOf("val: any — Any scalar, container, closure, or struct instance"),
-                "str — Runtime type name ("real", "vec", "map", "str", struct name)"
+                "str — Runtime type name (\"real\", \"vec\", \"map\", \"str\", struct name)"
             ),
 
             // Symbolic CAS & Numerical Calculus
@@ -823,7 +823,7 @@ class MathCodeEditText(context: Context) : EditText(context) {
         val seenKeys = HashSet<String>()
         val fnRegex = Regex("(?m)^\\s*(?:(?:pub|priv)\\s+)*(?:\\$?fn\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^()]*)\\)\\s*(?:->\\s*([^=:]+)|:\\s*([a-zA-Z0-9_,\\s]+))?(?::=|=)(?![=>])")
         val varRegex = Regex("(?m)^\\s*(?:(?:pub|priv|const|mut)\\s+)*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?::\\s*([a-zA-Z_][a-zA-Z0-9_<>,\\s]*))?(?::=|=)(?![=>])")
-        val typeRegex = Regex("(?m)^\\s*(?:(?:pub|priv)\\s+)*(?:\\$struct\\s+|\\$enum\\s+|\\$|struct\\s+|enum\\s+)([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:\\(([^()]*)\\))?")
+        val typeRegex = Regex("(?m)^\\s*(?:(?:pub|priv)\\s+)*(?:\\\$struct\\s+|\\\$enum\\s+|(?:\\$)?(?:struct|enum)\\s+)([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:\\(([^()]*)\\))?")
 
         for ((fileName, rawSrc) in projectSourcesByFile) {
             val modName = MathEngineManager.deriveModuleName(fileName, rawSrc)
