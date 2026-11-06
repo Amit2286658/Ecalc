@@ -18,6 +18,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Ecalc" />
 
         <!-- Launcher alias pinned to the dark splash stage. Runtime alias

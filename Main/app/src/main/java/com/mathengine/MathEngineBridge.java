@@ -109,6 +109,18 @@ public final class MathEngineBridge implements AutoCloseable {
         return nativeCompileExt(requireOpenHandle(), mathSource);
     }
 
+    public synchronized byte[] applyPatch(String patchSource) {
+        return nativeApplyPatch(requireOpenHandle(), patchSource);
+    }
+
+    public synchronized boolean hasEntry() {
+        return nativeHasEntry(requireOpenHandle());
+    }
+
+    public synchronized EvalResult runEntry() {
+        return EvalResult.parseWire(nativeRunEntry(requireOpenHandle()));
+    }
+
     public synchronized boolean loadMathc(byte[] mathcBytes) {
         return nativeLoadMathc(requireOpenHandle(), mathcBytes);
     }
@@ -179,6 +191,9 @@ public final class MathEngineBridge implements AutoCloseable {
     public static native String  nativeModuleFormatVars(long handle, String modName);
     public static native String  nativeModuleExportSource(long handle, String modName);
     public static native byte[]  nativeCompileExt(long handle, String mathSource);
+    public static native byte[]  nativeApplyPatch(long handle, String patchSource);
+    public static native boolean nativeHasEntry(long handle);
+    public static native String  nativeRunEntry(long handle);
     public static native boolean nativeLoadMathc(long handle, byte[] mathcBytes);
     public static native boolean nativeSetModule(long handle, String modName, boolean enabled);
     public static native boolean nativeIsModuleActive(long handle, String modName);

@@ -36,16 +36,21 @@ CAPS_DEFAULT = {
 
 CAP_HEADERS = ["Core/Headers/mem_arena.h", "Core/Headers/sym_table.h"]
 ASSERT_HEADER = ["Core/compile/mathc_bin.h"]
-DELEGATE_C = "Core/lib/delegate/delegate.c"
+DELEGATE_C_CANDIDATES = [
+    "Core/lib/delegate/delegate_core.c",
+    "Core/lib/delegate/delegate.c",
+]
 ENUM_HEADER = "Core/Headers/sym_table.h"
 
 
 def read(path):
-    try:
-        with open(path, "r", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return ""
+    for prefix in ["", "Main/math-engine/", "Main/app/src/main/cpp/mathengine/", "app/src/main/cpp/mathengine/"]:
+        try:
+            with open(prefix + path, "r", errors="replace") as f:
+                return f.read()
+        except OSError:
+            pass
+    return ""
 
 
 def fnv1a(data, h=2166136261):
@@ -90,7 +95,7 @@ def intrinsic_hash_of_source():
     end = enum_src.find("INTR_COUNT")
     if start < 0 or end < 0:
         return None
-    body = enum_src[start:end + len("INTR_COUNT")]
+    body = re.sub(r"/\*.*?\*/|//.*?$", "", enum_src[start:end + len("INTR_COUNT")], flags=re.S | re.M)
     ids = re.findall(r"\b(INTR_[A-Z0-9_]+)", body)
     # Mirror `grep -o | uniq`: collapse only CONSECUTIVE duplicates, then drop
     # the final INTR_COUNT itself. First-occurrence dedupe would let comments
@@ -106,7 +111,7 @@ def intrinsic_hash_of_source():
     ordinal = {sym: idx for idx, sym in enumerate(order)}
     intr_count = len(order)
 
-    table_src = read(DELEGATE_C)
+    table_src = next((read(p) for p in DELEGATE_C_CANDIDATES if read(p)), "")
     tstart = table_src.find("k_delegate_intrinsics[]")
     if tstart < 0:
         return None
@@ -117,10 +122,7 @@ def intrinsic_hash_of_source():
     pairs = re.findall(r'\{\s*"([^"]+)"\s*,\s*(INTR_[A-Z0-9_]+)', table_body)
     if not pairs:
         return None
-    if len(pairs) != len(order):
-        print(f"note: intrinsic table parse mismatch (entries {len(pairs)} vs enum ids {len(order)}); "
-              "skipping deep hash check")
-        return None
+
     h = 2166136261
     for name, sym in pairs:
         if sym not in ordinal:
@@ -130,7 +132,8 @@ def intrinsic_hash_of_source():
             h = fnv1a(bytes([ch]), h)
         i = ordinal[sym]
         h = fnv1a(bytes([i & 0xFF, (i >> 8) & 0xFF]), h)
-    h = fnv1a(struct.pack("<I", intr_count), h)
+    h = ((h ^ intr_count) * 16777619) & 0xFFFFFFFF
+    h = h if h != 0 else 1
     return h
 
 

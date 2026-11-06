@@ -61,6 +61,18 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
         MathEngineBridge.nativeCompileExt(requireOpenHandle(), mathSource)
 
     @Synchronized
+    fun applyPatch(patchSource: String): ByteArray? =
+        MathEngineBridge.nativeApplyPatch(requireOpenHandle(), patchSource)
+
+    @Synchronized
+    fun hasEntry(): Boolean =
+        MathEngineBridge.nativeHasEntry(requireOpenHandle())
+
+    @Synchronized
+    fun runEntry(): MathEngineBridge.EvalResult =
+        MathEngineBridge.EvalResult.parseWire(MathEngineBridge.nativeRunEntry(requireOpenHandle()))
+
+    @Synchronized
     fun loadMathc(bytes: ByteArray): Boolean =
         MathEngineBridge.nativeLoadMathc(requireOpenHandle(), bytes)
 

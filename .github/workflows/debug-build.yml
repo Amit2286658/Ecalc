@@ -34,8 +34,8 @@ jobs:
             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
             NDK_DIR="$ANDROID_HOME/ndk/27.0.12077973"
           fi
-          (cd app/src/main/cpp/mathengine && sh tools/build_android_arm64.sh "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin")
-          cp app/src/main/cpp/mathengine/precompiled/arm64-v8a/libmathengine.so app/src/main/jniLibs/arm64-v8a/libmathengine.so
+          (cd "app" && sh ../../math-engine/tools/build_android_arm64.sh "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin")
+          cp math-engine/precompiled/arm64-v8a/libmathengine.so app/src/main/jniLibs/arm64-v8a/libmathengine.so
 
       - name: Build debug APK
         run: |

@@ -11,7 +11,7 @@ name: engine-artifacts
 #   - libmathengine.so : arm64-v8a NDK build (API 24) — blank-boot engine (no
 #                        embedded stdlib; hosts load stdlib.mathc)
 #
-# Engine sources of truth: Main/app/src/main/cpp/mathengine/
+# Engine sources of truth: Main/math-engine/
 # (Core/ + CMakeLists.txt vendored from Math-Engine-MEP; only Library/ is
 # pulled from the engine repo at build time).
 #
@@ -24,7 +24,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Main/app/src/main/cpp/mathengine/**'
+      - 'Main/math-engine/**'
       - 'Main/app/src/main/assets/precompiled/**'
       - '.github/workflows/engine-artifacts.yml'
 
@@ -40,9 +40,9 @@ jobs:
           set -eu
           git clone --depth 1 https://github.com/Amit2286658/Math-Engine-MEP.git mep
           mkdir -p buildtree
-          cp -r Main/app/src/main/cpp/mathengine/Core            buildtree/Core
-          cp    Main/app/src/main/cpp/mathengine/CMakeLists.txt  buildtree/CMakeLists.txt
-          cp -r Main/app/src/main/cpp/mathengine/tools           buildtree/tools
+          cp -r Main/math-engine/Core            buildtree/Core
+          cp    Main/math-engine/CMakeLists.txt  buildtree/CMakeLists.txt
+          cp -r Main/math-engine/tools           buildtree/tools
           cp -r mep/Main/Library                                 buildtree/Library
           cp -r mep/Main/Test                                    buildtree/Test
           # Seat the COMMITTED stdlib asset into the build tree (no rebuild):
@@ -53,7 +53,7 @@ jobs:
           ls buildtree/Library | head -20
           # Vendored engine must be at least as new as the .math sources need;
           # print both HEADs for the record.
-          echo "vendored engine: $(git log -1 --format='%h %s' -- Main/app/src/main/cpp/mathengine)"
+          echo "vendored engine: $(git log -1 --format='%h %s' -- Main/math-engine)"
           echo "engine repo HEAD: $(git -C mep log -1 --format='%h %s')"
 
       # ---- Host build: self-test suite only (stdlib.mathc is NOT rebuilt) ----
@@ -83,7 +83,7 @@ jobs:
             Main/app/src/main/assets/precompiled/stdlib.mathc
           # Vendored snapshot must stay in parity with the shipped asset.
           if cmp -s Main/app/src/main/assets/precompiled/stdlib.mathc \
-                   Main/app/src/main/cpp/mathengine/precompiled/stdlib.mathc; then
+                   Main/math-engine/precompiled/stdlib.mathc; then
             echo "OK: committed asset == vendored precompiled snapshot"
           else
             echo "ERROR: vendored snapshot drifted from committed asset"; exit 1
