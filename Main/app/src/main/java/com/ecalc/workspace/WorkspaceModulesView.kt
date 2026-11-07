@@ -131,7 +131,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             holdListener = { held ->
                 if (held) activity.showButtonPopup(
                     this,
-                    "📋 Output & Vars — inspect bound module variables & constants, formatted tables ($map / JSON / CSV / $mat / $vec), console output, and the statement log."
+                    "📋 Output & Vars — inspect bound module variables & constants, formatted tables (\$map / JSON / CSV / \$mat / \$vec), console output, and the statement log."
                 ) else activity.dismissButtonPopup()
             }
         }
