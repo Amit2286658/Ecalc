@@ -31,18 +31,32 @@ import java.util.zip.ZipFile
  *    - Every project (`project0`, `project1`, `project2`, ...) receives this patched `stdlib.mathc`
  *      baseline so patches are visible everywhere just like `stdlib`.
  */
-object MathEngineManager {
+/** Result of an evaluation, mirroring the engine's wire format. */
+data class EvalOutcome(
+    val ok: Boolean,
+    val value: String,
+    val type: String,
+    val unit: String,
+    val error: String?,
+    val stdout: String = "",
+    val sourceLine: Int = 1
+)
+/** Describes a project-level `main()` or `@entry(fn)` entry point located in any `.math` file of a project. */
+data class ProjectEntryPoint(
+    val fileName: String,
+    val modName: String,
+    val entryFn: String,
+    val isExplicitDirective: Boolean,
+    val sourceLine: Int = 1
+)
+/** Per-project runtime state (native handle + linked module sources). */
+internal class ProjectRuntimeState(
+    val projectName: String,
+    var engineHandle: Long = 0L,
+    val studioModuleSourcesByName: LinkedHashMap<String, String> = linkedMapOf()
+)
 
-    /** Result of an evaluation, mirroring the engine's wire format. */
-    data class EvalOutcome(
-        val ok: Boolean,
-        val value: String,
-        val type: String,
-        val unit: String,
-        val error: String?,
-        val stdout: String = "",
-        val sourceLine: Int = 1
-    )
+object MathEngineManager {
 
     /** Per-project binary & linked-module status for UI inspection in the Project Drawer. */
     data class ProjectBinaryStatus(
@@ -52,21 +66,6 @@ object MathEngineManager {
         val hasStdlibMathc: Boolean,
         val stdlibMathcBytes: Long,
         val linkedModulesCount: Int
-    )
-
-    /** Describes a project-level `main()` or `@entry(fn)` entry point located in any `.math` file of a project. */
-    data class ProjectEntryPoint(
-        val fileName: String,
-        val modName: String,
-        val entryFn: String,
-        val isExplicitDirective: Boolean,
-        val sourceLine: Int = 1
-    )
-
-    internal class ProjectRuntimeState(
-        val projectName: String,
-        var engineHandle: Long = 0L,
-        val studioModuleSourcesByName: LinkedHashMap<String, String> = linkedMapOf()
     )
 
     internal const val TAG = "MathEngineManager"

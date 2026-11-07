@@ -40,18 +40,17 @@ import kotlin.math.max
  *    `.math` keywords, `pub main()` / `@entry`, `<[dep]` modules, `stdlib` + global patch functions,
  *    and user-defined functions/variables/types from the active project without stealing IME focus.
  */
+internal data class SuggestionItem(
+    val matchKey: String,
+    val displayLabel: String,
+    val insertText: String,
+    val cursorBackOffset: Int = 0,
+    val category: String,
+    val detail: String,
+    val paramBullets: List<String> = emptyList(),
+    val returnBullet: String = ""
+)
 class MathCodeEditText(context: Context) : EditText(context) {
-
-    data class SuggestionItem(
-        val matchKey: String,
-        val displayLabel: String,
-        val insertText: String,
-        val cursorBackOffset: Int = 0,
-        val category: String,
-        val detail: String,
-        val paramBullets: List<String> = emptyList(),
-        val returnBullet: String = ""
-    )
 
     internal class SyntaxColorSpan(color: Int) : ForegroundColorSpan(color)
     internal class SyntaxStyleSpan(style: Int) : StyleSpan(style)

@@ -38,6 +38,7 @@ import kotlin.math.hypot
 /**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
  * with Left-Drawer Project & File Manager.
+ */
 
 internal fun MathWorkspaceFragment.refreshModuleChips() {
     val ctx = context ?: return
@@ -475,7 +476,7 @@ internal fun MathWorkspaceFragment.applyExecutionResultsToUi(
     headerBanner: String,
     targetFile: String,
     modId: String,
-    results: List<Pair<String, MathEngineManager.EvalOutcome>>,
+    results: List<Pair<String, EvalOutcome>>,
     varsSummary: String,
     switchToLogAfterRun: Boolean,
     toastPrefix: String

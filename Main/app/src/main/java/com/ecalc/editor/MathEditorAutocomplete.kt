@@ -19,6 +19,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.View.MeasureSpec
 import android.view.ViewGroup
 import android.view.inputmethod.BaseInputConnection
 import android.widget.EditText
@@ -101,7 +102,7 @@ internal fun MathCodeEditText.collectLiveBufferSymbols(src: String, excludeRange
         val retType = m.groupValues.getOrNull(3)?.trim()?.ifEmpty { null }
             ?: m.groupValues.getOrNull(4)?.trim()?.ifEmpty { null }
             ?: "any"
-        if (fn !in KEYWORDS && seen.add(fn)) {
+        if (fn !in MathCodeEditText.KEYWORDS && seen.add(fn)) {
             out.add(
                 SuggestionItem(
                     matchKey = fn,
@@ -120,7 +121,7 @@ internal fun MathCodeEditText.collectLiveBufferSymbols(src: String, excludeRange
         if (m.range.first in excludeRange) continue
         val v = m.groupValues[1]
         val vType = m.groupValues.getOrNull(2)?.trim()?.ifEmpty { null } ?: "real | any"
-        if (v !in KEYWORDS && v !in BUILTIN_TYPES && seen.add(v)) {
+        if (v !in MathCodeEditText.KEYWORDS && v !in MathCodeEditText.BUILTIN_TYPES && seen.add(v)) {
             out.add(
                 SuggestionItem(
                     matchKey = v,
@@ -153,10 +154,10 @@ internal fun MathCodeEditText.updateSuggestionsForCurrentCursor(editable: Editab
     val lowerPrefix = prefix.lowercase()
 
     val liveSymbols = collectLiveBufferSymbols(editable.toString(), range)
-    val combined = ArrayList<SuggestionItem>(liveSymbols.size + projectCustomSuggestions.size + STATIC_SUGGESTIONS.size)
+    val combined = ArrayList<SuggestionItem>(liveSymbols.size + projectCustomSuggestions.size + MathCodeEditText.STATIC_SUGGESTIONS.size)
     val seenDisplay = HashSet<String>()
 
-    for (srcList in listOf(liveSymbols, projectCustomSuggestions, STATIC_SUGGESTIONS)) {
+    for (srcList in listOf(liveSymbols, projectCustomSuggestions, MathCodeEditText.STATIC_SUGGESTIONS)) {
         for (item in srcList) {
             val keyLower = item.matchKey.lowercase()
             val matches = if (lowerPrefix.startsWith("<[") || lowerPrefix.startsWith("@") || lowerPrefix.startsWith("$")) {
