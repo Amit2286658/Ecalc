@@ -53,7 +53,7 @@ android {
     }
     externalNativeBuild {
       cmake {
-        path = file("../../math-engine/CMakeLists.txt")
+        path = file("src/main/cpp/mathengine/CMakeLists.txt")
       }
     }
     defaultConfig {

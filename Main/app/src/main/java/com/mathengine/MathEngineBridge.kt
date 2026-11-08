@@ -49,6 +49,24 @@ class MathEngineKt(stdlibMathcBytes: ByteArray? = null) : Closeable {
         MathEngineBridge.nativeModuleReset(requireOpenHandle(), moduleName)
 
     @Synchronized
+    fun flushUserModules(): Boolean =
+        MathEngineBridge.nativeFlushUserModules(requireOpenHandle())
+
+    @Synchronized
+    fun buildAndRun(sources: Array<String>): MathEngineBridge.EvalResult =
+        MathEngineBridge.EvalResult.parseWire(
+            MathEngineBridge.nativeBuildAndRun(requireOpenHandle(), sources)
+        )
+
+    @Synchronized
+    fun samplePlot(modName: String = "default", expr: String, xMin: Double, xMax: Double, samples: Int = 180): DoubleArray? =
+        MathEngineBridge.nativeSamplePlot(requireOpenHandle(), modName, expr, xMin, xMax, samples)
+
+    @Synchronized
+    fun exportCatalog(): String =
+        MathEngineBridge.nativeExportCatalog(requireOpenHandle()) ?: "" 
+
+    @Synchronized
     fun formatModuleVars(moduleName: String): String? =
         MathEngineBridge.nativeModuleFormatVars(requireOpenHandle(), moduleName)
 

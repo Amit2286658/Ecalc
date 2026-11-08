@@ -1,18 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "patches": [
     {
       "file": "currency.math",
-      "modules": [
-        "currency"
-      ],
-      "deps": [
-        "boot_types",
-        "arith",
-        "string"
-      ],
-      "sha256": "5852a23788b42c93630af481e0cec95c00ffee1a6721c1d57d19ce7b17cdaf03",
-      "size": 4233
+      "sha256": "4bafa2a7c441b277047da82ba60a8ea62614e79f912e434b4ab00af382543cbc",
+      "description": "Currency conversion foundation ([currency]) with into operator and case-insensitive currency codes"
     }
   ]
 }

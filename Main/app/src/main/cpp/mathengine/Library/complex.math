@@ -1,0 +1,111 @@
+# =============================================================================
+# Library/complex.math — Postfix `i` ($iota) Operator & Complex Operations
+# =============================================================================
+
+[complex_ext]
+<[arith]
+<[trig]
+
+# Non-consuming struct type (fields default to :real)
+$complex(re, im) => @complex_type
+
+# Postfix imaginary operator `i` (precedence 95: binds tighter than `^`, `*`, `-`)
+# Preserves any unit tag `T` on `x` (so `(50m)i` has type `iota` and unit `length`!)
+(x:real, T)    i :95 -> iota, T    = @raw(x)
+(x:iota, T)    i :95 -> real, T    = -@raw(x)
+(z:complex, T) i :95 -> complex, T = complex(-z.im, z.re)
+
+# Unary & binary arithmetic on `iota` (generic over unit `T`)
+"-" (a:iota, T)             :80  -> iota, T = @neg(a)
+(a:iota, T) "+"  (b:iota, T):<50 -> iota, T = @add(a, b)
+(a:iota, T) "-"  (b:iota, T):<50 -> iota, T = @sub(a, b)
+(a:iota, T) into (b:iota, T):>55 -> iota, T = @add(a, b)
+(a:iota)    "*"  (b:iota)   :<60            = -(@mul(a, b))
+(a)         "*"  (b:iota)   :<60 -> iota    = @mul(a, b)
+(a:iota)    "*"  (b)        :<60 -> iota    = @mul(a, b)
+(a:iota)    "/"  (b:iota)   :<60            = @div(a, b)
+(a:iota, T) "/"  (b:real)   :<60 -> iota, T = @div(a, b)
+(a:real, T) "/"  (b:iota)   :<60 -> iota, T = -(@div(a, b))
+(a:iota, T) "==" (b:iota, T):<30            = @eq(a, b)
+(a:iota, T) "!=" (b:iota, T):<30            = @ne(a, b)
+(a:iota, T) "~"  (b:iota, T):<30            = (@abs(@raw(a) - @raw(b)) <= 0.001 + 1e-12)
+
+# Constructing `complex` from `real` and `iota` (propagates matching unit `T`)
+(a:real, T)    "+" (b:iota, T)    :<50 -> complex, T = complex(a, @raw(b))
+(a:real, T)    "-" (b:iota, T)    :<50 -> complex, T = complex(a, -@raw(b))
+(a:iota, T)    "+" (b:real, T)    :<50 -> complex, T = complex(b, @raw(a))
+(a:iota, T)    "-" (b:real, T)    :<50 -> complex, T = complex(-b, @raw(a))
+(z:complex, T) "+" (b:iota, T)    :<50 -> complex, T = complex(z.re, z.im + @raw(b))
+(z:complex, T) "-" (b:iota, T)    :<50 -> complex, T = complex(z.re, z.im - @raw(b))
+(a:iota, T)    "+" (z:complex, T) :<50 -> complex, T = complex(z.re, @raw(a) + z.im)
+(a:iota, T)    "-" (z:complex, T) :<50 -> complex, T = complex(-z.re, @raw(a) - z.im)
+(z:complex, T) "+" (b:real, T)    :<50 -> complex, T = complex(z.re + b, z.im)
+(z:complex, T) "-" (b:real, T)    :<50 -> complex, T = complex(z.re - b, z.im)
+(a:real, T)    "+" (z:complex, T) :<50 -> complex, T = complex(a + z.re, z.im)
+(a:real, T)    "-" (z:complex, T) :<50 -> complex, T = complex(a - z.re, -z.im)
+
+# Insert / Composition Operator `into`:
+#   - Cross-entity (`real` + `iota`) constructs `complex` (`5 into 5i` -> `5 + 5i`)
+#   - Component into `complex` adds that component (`2 into (3 + 4i)` -> `5 + 4i`)
+#   - Likewise `complex into complex` sums them (`(1 + 2i) into (3 + 4i)` -> `4 + 6i`)
+(a:real, T)    into (b:iota, T)    :>55 -> complex, T = complex(a, @raw(b))
+(a:iota, T)    into (b:real, T)    :>55 -> complex, T = complex(b, @raw(a))
+(a:real, T)    into (z:complex, T) :>55 -> complex, T = complex(z.re + a, z.im)
+(a:iota, T)    into (z:complex, T) :>55 -> complex, T = complex(z.re, z.im + @raw(a))
+(a:complex, T) into (b:complex, T) :>55 -> complex, T = complex(a.re + b.re, a.im + b.im)
+
+# Overloaded arithmetic on `complex` numbers
+"-" (z:complex, T)                 :80  -> complex, T = complex(-z.re, -z.im)
+(a:complex, T) "+" (b:complex, T) :<50 -> complex, T = complex(a.re + b.re, a.im + b.im)
+(a:complex, T) "-" (b:complex, T) :<50 -> complex, T = complex(a.re - b.re, a.im - b.im)
+(s:real)       "*" (z:complex, T) :<60 -> complex, T = complex(s * z.re, s * z.im)
+(z:complex, T) "*" (s:real)       :<60 -> complex, T = complex(z.re * s, z.im * s)
+(z:complex, T) "/" (s:real)       :<60 -> complex, T = complex(z.re / s, z.im / s)
+(a:complex)    "*" (b:complex)    :<60 -> complex    =
+    complex(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
+(a:complex)    "/" (b:complex)    :<60 -> complex    = {
+    denom := b.re^2 + b.im^2
+    complex((a.re * b.re + a.im * b.im) / denom,
+            (a.im * b.re - a.re * b.im) / denom)
+}
+
+conj(z:complex, T)      -> complex, T = complex(z.re, -z.im)
+cabs(z:complex, T)      -> real, T    = √(z.re^2 + z.im^2)
+carg(z:complex)                       = atan2(z.im, z.re)
+cexp_i(theta)           -> complex    = complex(cos(theta), sin(theta))
+polar(r:real, T, theta) -> complex, T = complex(r * cos(theta), r * sin(theta))
+
+# Mixed scalar/imaginary * and / with complex, plus re/im extractors
+(s:real)       "/" (z:complex)    :<60 -> complex    = complex(s, 0) / z
+(a:iota)       "*" (z:complex, T) :<60 -> complex, T = complex(-@raw(a) * z.im, @raw(a) * z.re)
+(z:complex, T) "*" (b:iota)       :<60 -> complex, T = complex(-z.im * @raw(b), z.re * @raw(b))
+(z:complex, T) "/" (b:iota)       :<60 -> complex, T = complex(z.im / @raw(b), -z.re / @raw(b))
+(a:iota)       "/" (z:complex)    :<60 -> complex    = complex(0, @raw(a)) / z
+re(z:complex, T)        -> real, T    = z.re
+im(z:complex, T)        -> real, T    = z.im
+
+# Complex Powers, Roots & Transcendental Functions
+exp(z:complex)                    -> complex = polar(exp(z.re), z.im)
+ln(z:complex)                     -> complex = complex(ln(cabs(z)), carg(z))
+(z:complex) "^" (p:real)    :>85  -> complex = polar(cabs(z) ^ p, carg(z) * p)
+(z:complex) "^" (w:complex) :>85  -> complex = exp(w * ln(z))
+(a:real)    "^" (w:complex) :>85  -> complex = exp(w * ln(a))
+"√" (z:complex)             :80   -> complex = polar(√cabs(z), carg(z) / 2)
+sqrt(z:complex)                   -> complex = √z
+sin(z:complex)                    -> complex = complex(sin(z.re) * cosh(z.im), cos(z.re) * sinh(z.im))
+cos(z:complex)                    -> complex = complex(cos(z.re) * cosh(z.im), -sin(z.re) * sinh(z.im))
+tan(z:complex)                    -> complex = sin(z) / cos(z)
+sinh(z:complex)                   -> complex = complex(sinh(z.re) * cos(z.im), cosh(z.re) * sin(z.im))
+cosh(z:complex)                   -> complex = complex(cosh(z.re) * cos(z.im), sinh(z.re) * sin(z.im))
+tanh(z:complex)                   -> complex = sinh(z) / cosh(z)
+
+# Equality and Approximate Equality (`~`) for complex numbers
+(a:complex, T) "==" (b:complex, T) :<30 = (a.re == b.re) && (a.im == b.im)
+(a:complex, T) "!=" (b:complex, T) :<30 = (a.re != b.re) || (a.im != b.im)
+(a:complex, T) "~"  (b:complex, T) :<30 = (a.re ~ b.re) && (a.im ~ b.im)
+
+(a:iota)    "^" (p:real)    :>85 -> complex = complex(0, @raw(a)) ^ p
+(a:real)    "^" (b:iota)    :>85 -> complex = a ^ complex(0, @raw(b))
+(a:iota)    "^" (b:iota)    :>85 -> complex = complex(0, @raw(a)) ^ complex(0, @raw(b))
+(z:complex) "^" (b:iota)    :>85 -> complex = z ^ complex(0, @raw(b))
+(a:iota)    "^" (w:complex) :>85 -> complex = complex(0, @raw(a)) ^ w

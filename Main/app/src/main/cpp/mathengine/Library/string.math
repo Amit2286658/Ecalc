@@ -1,0 +1,261 @@
+# =============================================================================
+# Library/string.math — First-Class String (`$str`) Operations & Helpers
+# =============================================================================
+# Dedicated module for string concatenation (`+`, `into`), equality & ordering
+# (`==`, `!=`, `<`, `<=`, `>`, `>=`), substring search (`in`, `contains`),
+# indexing & slicing (`at`, `substr`, `s[i]`, `s[a...b]`), and pure MEP string
+# algorithms (`is_empty`, `str_repeat`, `str_reverse`, `starts_with`,
+# `ends_with`, `chars`, `str_join`).
+
+[string]
+<[boot_types]
+<[boot_control]
+<[arith]
+<[vec]
+
+# 1. Core String Operators (`+`, `into`, `==`, `!=`, `<`, `<=`, `>`, `>=`) & Delegates (`len`, `at`)
+(a:str) "+"  (b:str) :<50 -> str = @add(a, b)
+(a:str) into (b:str) :>55 -> str = @add(a, b)
+(a:str) "==" (b:str) :<30        = @eq(a, b)
+(a:str) "!=" (b:str) :<30        = @ne(a, b)
+(a:str) "<"  (b:str) :<30        = @lt(a, b)
+(a:str) "<=" (b:str) :<30        = @le(a, b)
+(a:str) ">"  (b:str) :<30        = @gt(a, b)
+(a:str) ">=" (b:str) :<30        = @ge(a, b)
+
+len(s:str)                = @vlen(s)
+at(s:str, idx)     -> str = @vget(s, idx)
+at(s:str, rng:vec) -> str = {
+    n   := len(s)
+    out := ""
+    (i in rng) {
+        k := (i < 0) ? (n + i) : i
+        if (k >= 0 && k < n) { out = out + @vget(s, k) }
+    }
+    out
+}
+
+# 2. Pure MEP String Manipulation & Predicate Functions
+is_empty(s:str) = (len(s) == 0)
+
+substr(s:str, start, stop) -> str = {
+    n := len(s)
+    if (n == 0) { return("") }
+    a := start < 0 ? n + start : start
+    b := stop  < 0 ? n + stop  : stop
+    if (a < 0) { a = 0 }
+    if (b >= n) { b = n - 1 }
+    if (a > b) { return("") }
+    s[a...b]
+}
+
+str_repeat(s:str, n) -> str = {
+    out := ""
+    if (n > 0) {
+        (k in 0..<n) { out = out + s }
+    }
+    out
+}
+
+str_reverse(s:str) -> str = {
+    n := len(s)
+    if (n <= 1) { return s }
+    s[(n - 1)...0]
+}
+
+starts_with(s:str, prefix:str) = {
+    np := len(prefix)
+    if (np > len(s)) { return 0 }
+    if (np == 0) { return 1 }
+    s[0..<np] == prefix
+}
+
+ends_with(s:str, suffix:str) = {
+    ns := len(suffix)
+    n  := len(s)
+    if (ns > n) { return 0 }
+    if (ns == 0) { return 1 }
+    s[(n - ns)..<n] == suffix
+}
+
+chars(s:str) -> vec = [c for c in s]
+
+str_join(v:vec, sep:str = "") -> str = {
+    out := ""
+    (i, item in v) {
+        if (i > 0) { out = out + sep }
+        out = out + (item_)
+    }
+    out
+}
+
+# 3. String Formatting (`fmt` / `format`), Base Formatters (`to_hex` / `to_bin`), Case, Trimming, Padding, Search, Replace & Split
+fmt(f:str, a:T)                     -> str = @str_fmt(f, a)
+fmt(f:str, a:T, b:T)                -> str = @str_fmt(f, a, b)
+fmt(f:str, a:T, b:T, c:T)           -> str = @str_fmt(@str_fmt(f, a, b), c)
+fmt(f:str, a:T, b:T, c:T, d:T)      -> str = @str_fmt(@str_fmt(f, a, b), c, d)
+format(f:str, a:T)                  -> str = @str_fmt(f, a)
+format(f:str, a:T, b:T)             -> str = @str_fmt(f, a, b)
+format(f:str, a:T, b:T, c:T)        -> str = @str_fmt(@str_fmt(f, a, b), c)
+format(f:str, a:T, b:T, c:T, d:T)   -> str = @str_fmt(@str_fmt(f, a, b), c, d)
+
+to_hex(n:real, none) -> str = {
+    if (n != floor(n)) { error("Base formatting requires an exact integer") }
+    (n < 0) ? ("-0x" + fmt("{:X}", -n)) : ("0x" + fmt("{:X}", n))
+}
+
+to_bin(n:real, none) -> str = {
+    if (n != floor(n)) { error("Base formatting requires an exact integer") }
+    (n < 0) ? ("-0b" + fmt("{:b}", -n)) : ("0b" + fmt("{:b}", n))
+}
+
+index_of(s:str, sub:str, start = 0) = {
+    n := len(s)
+    m := len(sub)
+    if (start < 0) { start = 0 }
+    if (m == 0) { return (start <= n) ? start : -1 }
+    if (m > n || start + m > n) { return -1 }
+    (k in start...(n - m)) {
+        if (s[k..<(k + m)] == sub) { return k }
+    }
+    -1
+}
+
+contains(s:str, sub:str)        = (index_of(s, sub, 0) >= 0)
+(sub:str) in (s:str) :<42       = contains(s, sub)
+
+upper(s:str) -> str = {
+    lo  := "abcdefghijklmnopqrstuvwxyz"
+    hi  := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    out := ""
+    (ch in s) {
+        idx := index_of(lo, ch, 0)
+        out = out + ((idx >= 0) ? hi[idx] : ch)
+    }
+    out
+}
+to_upper(s:str) -> str = upper(s)
+
+lower(s:str) -> str = {
+    lo  := "abcdefghijklmnopqrstuvwxyz"
+    hi  := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    out := ""
+    (ch in s) {
+        idx := index_of(hi, ch, 0)
+        out = out + ((idx >= 0) ? lo[idx] : ch)
+    }
+    out
+}
+to_lower(s:str) -> str = lower(s)
+
+ltrim(s:str) -> str = @regex_replace(s, "^\s+", "")
+rtrim(s:str) -> str = @regex_replace(s, "\s+$", "")
+trim(s:str)  -> str = rtrim(ltrim(s))
+
+pad_left(s:str, width, ch:str = " ") -> str = {
+    n := len(s)
+    if (n >= width || len(ch) == 0) { return s }
+    str_repeat(ch[0], width - n) + s
+}
+
+pad_right(s:str, width, ch:str = " ") -> str = {
+    n := len(s)
+    if (n >= width || len(ch) == 0) { return s }
+    s + str_repeat(ch[0], width - n)
+}
+
+split(s:str, sep:str = " ") -> vec = {
+    out := vec<str>()
+    n   := len(s)
+    m   := len(sep)
+    if (m == 0) {
+        (ch in s) { ch into out }
+        return out
+    }
+    cur := 0
+    1 ?? {
+        idx := index_of(s, sep, cur)
+        if (idx < 0) {
+            part := (cur < n) ? s[cur..<n] : ""
+            part into out
+            break
+        }
+        part := (idx > cur) ? s[cur..<idx] : ""
+        part into out
+        cur = idx + m
+    }
+    out
+}
+
+replace(s:str, old_s:str, new_s:str) -> str = {
+    if (len(old_s) == 0) { return s }
+    str_join(split(s, old_s), new_s)
+}
+
+replace_first(s:str, old_s:str, new_s:str) -> str = {
+    idx := index_of(s, old_s, 0)
+    if (idx < 0) { return s }
+    ol  := len(old_s)
+    pre := (idx > 0) ? s[0..<idx] : ""
+    suf := (idx + ol < len(s)) ? s[(idx + ol)..<len(s)] : ""
+    pre + new_s + suf
+}
+
+str_count(s:str, sub:str) = {
+    if (len(sub) == 0) { return 0 }
+    parts := split(s, sub)
+    parts.len() - 1
+}
+
+lines(s:str)                        -> vec = split(s, "
+")
+words(s:str)                        -> vec = @regex_find_all(s, "\S+")
+
+# 4. Regular Expression Matching, Search, Extraction, Replacement & Splitting
+regex_match(s:str, pat:str)                  = @regex_match(s, pat)
+regex_find(s:str, pat:str)            -> str = @regex_find(s, pat)
+regex_find_all(s:str, pat:str)        -> vec = @regex_find_all(s, pat)
+regex_replace(s:str, pat:str, rep:str)-> str = @regex_replace(s, pat, rep)
+regex_split(s:str, pat:str)           -> vec = @regex_split(s, pat)
+
+# 5. Sandboxed File I/O, RFC 8259 JSON Parsing/Serialization & CSV Utilities
+read_file(path:str)                 -> str = @file_read(path)
+write_file(path:str, content:T)            = @file_write(path, content)
+append_file(path:str, content:T)           = @file_append(path, content)
+file_exists(path:str)                      = @file_exists(path)
+read_lines(path:str)                -> vec = lines(@file_read(path))
+write_lines(path:str, v:vec)               = @file_write(path, str_join(v, "\n") + "\n")
+
+json_parse(s:str)                   -> T   = @json_parse(s)
+json_stringify(v:T)                 -> str = @json_stringify(v, 0)
+to_json(v:T)                        -> str = @json_stringify(v, 0)
+json_pretty(v:T, indent = 2)        -> str = @json_stringify(v, indent)
+read_json(path:str)                 -> T   = @json_parse(@file_read(path))
+write_json(path:str, v:T, indent = 2)      = @file_write(path, @json_stringify(v, indent))
+
+csv_parse_row(line:str, sep:str = ",") -> vec = [trim(cell) for cell in split(line, sep)]
+
+csv_parse(text:str, sep:str = ",") -> vec =
+    [csv_parse_row(ln, sep) for ln in lines(trim(text)) if len(trim(ln)) > 0]
+
+csv_to_maps(text:str, sep:str = ",") -> vec = {
+    rows := csv_parse(text, sep)
+    n    := rows.len()
+    if (n <= 1) { return vec() }
+    hdr   := rows[0]
+    ncols := hdr.len()
+    out   := vec()
+    (r in 1..<n) {
+        row := rows[r]
+        m   := map()
+        lim := min(ncols, row.len())
+        (c in 0..<lim) {
+            map_set(m, hdr[c], row[c])
+        }
+        m into out
+    }
+    out
+}
+
+csv_stringify(rows:vec, sep:str = ",") -> str =
+    str_join([str_join(r, sep) for r in rows], "\n")

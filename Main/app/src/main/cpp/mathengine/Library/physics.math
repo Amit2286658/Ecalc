@@ -1,0 +1,158 @@
+# =============================================================================
+# Library/physics.math — High School & University Physics Numerical Suite
+# =============================================================================
+
+[physics]
+<[arith]
+<[trig]
+<[geom_ext]
+<[units]
+
+# 1. Fundamental CODATA Physical Constants (SI Units)
+g0         = 9.80665                        # Standard gravity (m/s^2)
+c0         = 299792458                      # Speed of light in vacuum (m/s)
+G_grav     = 6.67430 * (10 ^ -11)           # Gravitational constant (m^3 kg^-1 s^-2)
+h_planck   = 6.62607015 * (10 ^ -34)        # Planck constant (J s)
+k_B        = 1.380649 * (10 ^ -23)          # Boltzmann constant (J/K)
+ke_coulomb = 8.9875517923 * (10 ^ 9)        # Coulomb constant 1/(4*pi*eps0) (N m^2/C^2)
+eps0       = 8.8541878128 * (10 ^ -12)      # Vacuum permittivity (F/m)
+mu0        = 1.25663706212 * (10 ^ -6)      # Vacuum permeability (H/m)
+q_e        = 1.602176634 * (10 ^ -19)       # Elementary charge (C)
+m_e        = 9.1093837015 * (10 ^ -31)      # Electron mass (kg)
+m_p        = 1.67262192369 * (10 ^ -27)     # Proton mass (kg)
+sigma_sb   = 5.670374419 * (10 ^ -8)        # Stefan-Boltzmann constant (W m^-2 K^-4)
+b_wien     = 2.897771955 * (10 ^ -3)        # Wien displacement constant (m K)
+rydberg_R  = 10973731.56816                 # Rydberg constant (m^-1)
+
+# 2. High School Kinematics (SUVAT Equations & Projectile Motion)
+suvat_v(u, a, t)       = u + a * t
+suvat_s(u, a, t)       = u * t + 0.5 * a * (t ^ 2)
+suvat_v2(u, a, s)      = √((u ^ 2) + 2a * s)
+suvat_s_avg(u, v, t)   = 0.5 * (u + v) * t
+suvat_nth_sec(u, a, n) = u + 0.5 * a * (2n - 1)
+
+ke(mass, vel)               = 0.5 * mass * (vel ^ 2)
+pe(mass, height)            = mass * g0 * height
+mech_energy(mass, vel, height) = ke(mass, vel) + pe(mass, height)
+
+proj_range(vel, angle_deg) = (vel ^ 2) * sin(2 * deg2rad(angle_deg)) / g0
+proj_max_h(vel, angle_deg) = ((vel * sin(deg2rad(angle_deg))) ^ 2) / (2 * g0)
+proj_time(vel, angle_deg)  = 2 * vel * sin(deg2rad(angle_deg)) / g0
+
+# 3. Laws of Motion, Friction, Momentum, Impulse & 1D Collisions
+momentum(mass, vel)                     = mass * vel
+impulse(force_f, dt)                    = force_f * dt
+recoil_vel(m_gun, m_bullet, v_bullet)   = -(m_bullet * v_bullet) / m_gun
+friction_force(mu, normal_n)            = mu * normal_n
+incline_normal(mass, theta_deg)         = mass * g0 * cos(deg2rad(theta_deg))
+incline_slide_acc(theta_deg, mu_k)      = g0 * (sin(deg2rad(theta_deg)) - mu_k * cos(deg2rad(theta_deg)))
+banking_angle_deg(vel, r)               = rad2deg(atan((vel ^ 2) / (r * g0)))
+
+elastic_v1(m1, u1, m2, u2)  = ((m1 - m2) * u1 + 2 * m2 * u2) / (m1 + m2)
+elastic_v2(m1, u1, m2, u2)  = ((m2 - m1) * u2 + 2 * m1 * u1) / (m1 + m2)
+inelastic_v(m1, u1, m2, u2) = (m1 * u1 + m2 * u2) / (m1 + m2)
+
+# 4. Circular Motion, Rotational Mechanics & Simple Harmonic Motion (SHM)
+centripetal_acc(vel, r)              = (vel ^ 2) / r
+centripetal_force(mass, vel, r)      = mass * (vel ^ 2) / r
+torque_val(r, force_f, theta_deg)    = r * force_f * sin(deg2rad(theta_deg))
+ang_momentum(inertia_i, omega)       = inertia_i * omega
+rot_ke(inertia_i, omega)             = 0.5 * inertia_i * (omega ^ 2)
+
+hooke_force(k_spring, disp)          = -k_spring * disp
+elastic_pe(k_spring, disp)           = 0.5 * k_spring * (disp ^ 2)
+pendulum_period(length_m)            = 2π * √(length_m / g0)
+shm_omega(k_spring, mass)            = √(k_spring / mass)
+shm_period_spring(mass, k_spring)    = 2π * √(mass / k_spring)
+shm_vel(omega, amp_a, disp_x)        = omega * √((amp_a ^ 2) - (disp_x ^ 2))
+shm_acc(omega, disp_x)               = -(omega ^ 2) * disp_x
+
+# 5. Gravitation & Orbital Astrophysics
+grav_force(m1, m2, r)                = G_grav * m1 * m2 / (r ^ 2)
+grav_pe(m1, m2, r)                   = -G_grav * m1 * m2 / r
+orbital_vel(mass_body, r)            = √(G_grav * mass_body / r)
+escape_vel(mass_body, r)             = √(2 * G_grav * mass_body / r)
+schwarzschild_r(mass_body)           = 2 * G_grav * mass_body / (c0 ^ 2)
+kepler_period(semi_major_a, mass_body) =
+    2π * √((semi_major_a ^ 3) / (G_grav * mass_body))
+
+# 6. Fluid Mechanics, Elasticity & Surface Tension
+hydro_pressure(rho, depth_h)         = rho * g0 * depth_h
+buoyant_force(rho_fluid, vol_sub)    = rho_fluid * g0 * vol_sub
+continuity_v2(a1, v1, a2)            = (a1 * v1) / a2
+stokes_drag(eta, r, vel)             = 6π * eta * r * vel
+terminal_vel(r, rho_sphere, rho_fluid, eta) =
+    (2 * (r ^ 2) * (rho_sphere - rho_fluid) * g0) / (9 * eta)
+stress_val(force_f, area)            = force_f / area
+strain_val(dl, l0)                   = dl / l0
+youngs_modulus(force_f, l0, area, dl) = (force_f * l0) / (area * dl)
+
+# 7. Thermodynamics, Calorimetry & Heat Transfer
+sensible_heat(mass, c_spec, dt)      = mass * c_spec * dt
+latent_heat(mass, l_spec)            = mass * l_spec
+thermal_expansion_l(l0, alpha, dt)   = l0 * (1 + alpha * dt)
+thermal_cond_rate(k_cond, area, dt, thickness) =
+    (k_cond * area * dt) / thickness
+wien_peak_lambda(temp_k)             = b_wien / temp_k
+stefan_boltzmann_p(area, emissivity, temp_k) =
+    area * emissivity * sigma_sb * (temp_k ^ 4)
+carnot_eff(t_cold_k, t_hot_k)        = 1 - (t_cold_k / t_hot_k)
+
+# 8. Electromagnetism, DC/AC Circuits & Transformers
+coulomb_force(q1, q2, r)             = ke_coulomb * q1 * q2 / (r ^ 2)
+ohm_v(current_i, res_r)              = current_i * res_r
+ohm_i(volt_v, res_r)                 = volt_v / res_r
+ohm_r(volt_v, current_i)             = volt_v / current_i
+elec_power(volt_v, current_i)        = volt_v * current_i
+cap_energy(cap_c, volt_v)            = 0.5 * cap_c * (volt_v ^ 2)
+ind_energy(ind_l, current_i)         = 0.5 * ind_l * (current_i ^ 2)
+res_series(r1, r2)                   = r1 + r2
+res_parallel(r1, r2)                 = (r1 * r2) / (r1 + r2)
+cap_series(c1, c2)                   = (c1 * c2) / (c1 + c2)
+cap_parallel(c1, c2)                 = c1 + c2
+parallel_plate_cap(area, sep_d)      = eps0 * area / sep_d
+rc_tau(res_r, cap_c)                 = res_r * cap_c
+wheatstone_r4(r1, r2, r3)            = (r2 * r3) / r1
+drift_velocity(current_i, n_density, area, q_charge) =
+    current_i / (n_density * area * q_charge)
+
+lorentz_mag_force(q, vel, b_field, theta_deg) =
+    q * vel * b_field * sin(deg2rad(theta_deg))
+cyclotron_radius(mass, vel, q, b_field) =
+    (mass * vel) / (q * b_field)
+solenoid_b(n_turns_per_m, current_i)    = mu0 * n_turns_per_m * current_i
+inductive_reactance(freq_hz, ind_l)     = 2π * freq_hz * ind_l
+capacitive_reactance(freq_hz, cap_c)    = 1 / (2π * freq_hz * cap_c)
+rlc_impedance(res_r, xl, xc)            = √((res_r ^ 2) + ((xl - xc) ^ 2))
+rlc_resonant_freq(ind_l, cap_c)         = 1 / (2π * √(ind_l * cap_c))
+transformer_v2(v1, n1, n2)              = v1 * (n2 / n1)
+
+# 9. Waves, Acoustics, Geometrical/Wave Optics, Quantum & Special Relativity
+doppler_freq(f0, v_sound, v_obs, v_src) =
+    f0 * ((v_sound + v_obs) / (v_sound - v_src))
+beat_freq(f1, f2)             = @abs(f1 - f2)
+sound_db(intensity_i)         = 10 * log10(intensity_i / (10 ^ -12))
+
+snell_angle2(n1, theta1_deg, n2) =
+    rad2deg(asin(n1 * sin(deg2rad(theta1_deg)) / n2))
+lens_focal(do_dist, di_dist)     = (do_dist * di_dist) / (do_dist + di_dist)
+mirror_image_v(f_len, u_obj)     = (f_len * u_obj) / (u_obj - f_len)
+magnification_lens(v_img, u_obj) = v_img / u_obj
+lens_power_dioptre(f_meters)     = 1 / f_meters
+young_fringe_width(wavelength_m, screen_d, slit_sep_d) =
+    (wavelength_m * screen_d) / slit_sep_d
+malus_law(i0, theta_deg)         = i0 * (cos(deg2rad(theta_deg)) ^ 2)
+brewster_angle(n1, n2)           = rad2deg(atan(n2 / n1))
+
+photon_energy(freq_hz)           = h_planck * freq_hz
+photon_wavelength(wavelength_m)  = h_planck * c0 / wavelength_m
+photoelectric_ke_max(freq_hz, work_fn_j) = h_planck * freq_hz - work_fn_j
+de_broglie(mass, vel)            = h_planck / (mass * vel)
+bohr_radius_n(n_orbit)           = 5.29177210903 * (10 ^ -11) * (n_orbit ^ 2)
+bohr_energy_ev(n_orbit, z_atomic = 1) = -13.6 * ((z_atomic ^ 2) / (n_orbit ^ 2))
+rydberg_wavelength(n1, n2)       = 1 / (rydberg_R * ((1 / (n1 ^ 2)) - (1 / (n2 ^ 2))))
+
+lorentz_gamma(vel)               = 1 / √(1 - (vel / c0) ^ 2)
+rel_energy(mass, vel)            = lorentz_gamma(vel) * mass * (c0 ^ 2)
+time_dilation(t_proper, vel)     = t_proper * lorentz_gamma(vel)
+length_contraction(l_proper, vel)= l_proper / lorentz_gamma(vel)

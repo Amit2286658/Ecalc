@@ -6,12 +6,12 @@
 
 ## Core Features
 
-1. **Dual-Workspace Architecture with Multi-Project Isolation**:
-   - **Basic & Scientific Calculator (`project0`)**: Runs in its own isolated `filesDir/math_projects/project0/` environment with 5 spring-animated tabs (*History*, *Basic Keypad*, *Extended Keypad*, *Trigonometry* with `deg`/`rad` mode toggle, and *Functions/Constants*), single-slot memory (`M+`, `M-`, `MR`), and long-press frosted-glass tooltips.
-   - **Freeform `.math` Studio (`project1`, `project2`, ...)**: Full multi-file `.math` IDE with per-project isolated native `Engine*` instances (`filesDir/math_projects/<projectName>/`), open-file tab strip, live variable & constant inspector, interactive 2D matrix/map table viewer, and console stream output (`print` / `println`).
-2. **Unified Standalone & Multi-File Project Execution**:
-   - **▶ Run / Link (Single File)**: Executes the active `.math` file top-to-bottom while automatically resolving any `<[dep]` sibling modules in the active project.
-   - **▶ Run Project (Multi-File Project)**: Scans all `.math` files in the active project for `@entry(fn)` or `pub main()`, links all sibling `<[dep]` modules in declaration-only mode, and executes the project entry point.
+1. **Single Recyclable `Engine*` Instance (`O(1)` User-Module Flush)**:
+   - Maintains **one** shared native `Engine*` instance across the entire app, booted once with `stdlib.mathc` + global patches (`filesDir/math_patches/compiled_state.mathc`) and snapshotted at the Base-Layer watermark (`eng_snapshot_base`).
+   - Eliminates per-project `Engine*` heap allocations (~1 MB each) and per-project `engine.so` / `stdlib.mathc` disk copies (~550 KB each); project directories (`filesDir/math_projects/<projectName>/`) store only `.math` source files and data files (`.json`, `.csv`).
+2. **Two Unified Execution Paths Matching the C11 Engine**:
+   - **Path 1 — Standalone Mode (`nativeEval` & single-unit `nativeBuildAndRun`)**: Used by the Basic & Scientific Calculator (`MainActivity` keypad) and standalone single-file `.math` scripts (`unit_count == 1`). If project modules were previously linked, `nativeFlushUserModules` rewinds the engine to `stdlib + patches` in O(1) time (`< 5 µs`).
+   - **Path 2 — Projects Mode (`nativeFlushUserModules` + multi-unit `nativeBuildAndRun`)**: Used by Multi-File `.math` Studio Projects (`project1`, `project2`, ...). Flushes previous user modules in O(1) time, sets the project's sandboxed `import_dir`, topologically links all project units via Kahn's `<[dep]` sort in C (`eng_build_and_run`), and executes the project's `@entry(fn)` or `pub main()` entry point.
 3. **Interactive 2D Function, Vector & Parametric Plotter (`📈 Plot`)**:
    - Plots 1-argument functions `f(x)`, algebraic expressions in `x`/`t`, 1D vectors (`vec`), and 2D parametric `vec<vec2>` curves (`vec2(x=..., y=...)`) with pan, pinch-to-zoom, automatic root/extremum markers, and touch trace crosshair.
 4. **Symbolic CAS & Expression Inspector (`⚙ CAS`)**:
@@ -109,3 +109,20 @@ cd Main
 # Or build with prebuilt libmathengine.so after running tools/build_android_arm64.sh
 ./gradlew assembleDebug -PusePrebuiltMepSo
 ```
+
+
+## Recent Engine Upgrades (Base-Layer Watermarks, SBO+Heap AST/Overloads, Batch Plotter & Live Catalog)
+
+1. **Single Recyclable `Engine*` via Base-Layer Watermarks (`eng_snapshot_base` & `eng_flush_user_modules`)**
+   - After loading `precompiled/stdlib.mathc` and applying global OTA `.math` patches (`eng_apply_patches`), the engine records base-layer watermarks across `SymTable` and `MemArena`.
+   - `eng_flush_user_modules(eng)` (`nativeFlushUserModules` over JNI) rewinds all user project modules, types, ephemeral 7D SI units, variables, AST nodes, and overloads back to the `stdlib + patches` baseline in $O(1)$ time (`< 5 µs`) without reloading `stdlib.mathc` or reallocating `Engine*`.
+2. **Unbounded SBO + Dynamic Heap Growth for `ast` & `overloads`**
+   - `MemArena` keeps `MEM_SBO_AST_NODES = 24,576` AST nodes inline (zero heap allocations for `stdlib.mathc` + normal scripts) and transparently spills to `heap_ast` up to `MEM_MAX_AST_NODES = 65,534` (`0xFFFE`) for large multi-file projects.
+   - `SymTable` keeps `SYM_SBO_OVERLOADS = 2,048` operator/function overloads inline and transparently spills to `heap_overloads` up to `SYM_MAX_OVERLOADS = 65,534`, reclaiming heap buffers automatically on `eng_flush_user_modules` and `eng_destroy`.
+3. **Native C11 Batch Curve Sampler (`eng_sample_plot` / `nativeSamplePlot`)**
+   - Parses a plotted expression, 1-arg function, `vec<real>`, or `vec<vec2>` trajectory once into a temporary AST and evaluates all `N` sample points across `[x_min, x_max]` in a single C loop, returning a flat `double[]` (`[x0, y0, x1, y1, ...]`) over a single JNI call.
+4. **Live `SymTable` Catalog Export (`eng_export_catalog` / `nativeExportCatalog`)**
+   - Exports all active functions, operators, units, types/structs, constants, and modules directly from the live C `SymTable` (`kind|name|sig|retType|retUnit|modName`) so host IDEs and editors automatically autocomplete newly loaded OTA `.math` patches and linked project modules.
+
+5. **Multi-Curve 2D Plotting (`MathPlotView` & `sampleMultiPlotSeries`)**
+   - Separate multiple functions or expressions with `;` or `,` (e.g. `sin(x); cos(x)` or `x^2 - 2; 2*x + 1`) in the Interactive 2D Plotter to overlay up to 6 curves simultaneously with distinct colors, a color-coded legend bar, root/extremum/intersection markers, and multi-curve crosshair readouts.

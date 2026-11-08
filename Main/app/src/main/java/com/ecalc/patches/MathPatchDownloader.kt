@@ -60,9 +60,53 @@ object MathPatchDownloader {
         FAILED
     }
 
-    /** Returns the dedicated local directory where incremental `.math` patches live. */
+    /**
+     * Upgrades any legacy currency patch source (e.g. from an older on-disk cache or remote
+     * mirror that still used `"in"` instead of `"into"` or lacked `RS`/`rs` aliases) so
+     * `25$ into RS` and `25$ into Rs` always work out of the box.
+     */
+    fun upgradeLegacyCurrencyPatch(raw: String): String {
+        var s = raw.replace(") \"in\" (", ") \"into\" (")
+        if (s.contains("[currency]") && !s.contains("\"RS\"")) {
+            s = s.replace(
+                "(x)    \"Rs\" :95 -> real, inr = x",
+                "(x)    \"Rs\" :95 -> real, inr = x\n(x)    \"RS\" :95 -> real, inr = x\n(x)    \"rs\" :95 -> real, inr = x\n(x)    inr  :95 -> real, inr = x\n(x)    usd  :95 -> real, usd = x\n(x)    eur  :95 -> real, eur = x\n(x)    gbp  :95 -> real, gbp = x\n(x)    jpy  :95 -> real, jpy = x"
+            ).replace(
+                "\"Rs\"  : real, inr = 1",
+                "\"Rs\"  : real, inr = 1\n\"RS\"  : real, inr = 1\n\"rs\"  : real, inr = 1\n\"inr\" : real, inr = 1\n\"usd\" : real, usd = 1\n\"eur\" : real, eur = 1\n\"gbp\" : real, gbp = 1\n\"jpy\" : real, jpy = 1"
+            )
+        }
+        return s
+    }
+
+    /**
+     * Immediately seeds `filesDir/math_patches/currency.math` from bundled `assets/patches/`
+     * if missing or if an older on-disk version still used `"in"` or lacked `"RS"`, ensuring
+     * patches are ready before the very first expression evaluation even when offline.
+     */
+    @Synchronized
+    fun ensureBundledPatchesSeeded(context: Context): File {
+        val dir = File(context.filesDir, PATCHES_FOLDER_NAME).apply { mkdirs() }
+        runCatching {
+            val ccyFile = File(dir, "currency.math")
+            val existing = if (ccyFile.isFile && ccyFile.canRead()) ccyFile.readText(Charsets.UTF_8) else ""
+            if (existing.isBlank() || existing.contains(") \"in\" (") || !existing.contains("\"RS\"")) {
+                val bundled = runCatching {
+                    context.assets.open("patches/currency.math").bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }.getOrNull()
+                val upgraded = if (!bundled.isNullOrBlank()) upgradeLegacyCurrencyPatch(bundled) else upgradeLegacyCurrencyPatch(existing)
+                if (upgraded.isNotBlank() && upgraded != existing) {
+                    ccyFile.writeText(upgraded, Charsets.UTF_8)
+                    invalidateCompiledCache(dir)
+                }
+            }
+        }
+        return dir
+    }
+
+    /** Returns the dedicated local directory where incremental `.math` patches live (seeded with bundled patches). */
     fun getPatchesDir(context: Context): File =
-        File(context.filesDir, PATCHES_FOLDER_NAME).apply { mkdirs() }
+        ensureBundledPatchesSeeded(context)
 
     /** Removes precompiled `.mathc` cache files whenever on-disk `.math` patches change. */
     internal fun invalidateCompiledCache(patchesDir: File) {
@@ -195,7 +239,7 @@ object MathPatchDownloader {
             }
         }
 
-        val bytes = verifiedBytes ?: run {
+        val rawVerified = verifiedBytes ?: run {
             if (sawShaMismatch && anyMirrorResponded) {
                 Log.w(TAG, "Patch $fileName failed SHA-256 verification on all mirrors; discarding")
                 onStatus?.invoke("Patch '$fileName' failed SHA-256 verification; discarded")
@@ -203,6 +247,11 @@ object MathPatchDownloader {
                 onStatus?.invoke("Patch download failed: '$fileName' unreachable on all mirrors")
             }
             return PatchFileSyncResult.FAILED
+        }
+        val bytes = if (fileName.equals("currency.math", ignoreCase = true)) {
+            upgradeLegacyCurrencyPatch(rawVerified.toString(Charsets.UTF_8)).toByteArray(Charsets.UTF_8)
+        } else {
+            rawVerified
         }
 
         dir.mkdirs()

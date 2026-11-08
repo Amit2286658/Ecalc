@@ -1,0 +1,104 @@
+# =============================================================================
+# Library/chemistry.math — High School & Physical Chemistry Numerical Suite
+# =============================================================================
+
+[chemistry]
+<[arith]
+<[trig]
+<[units]
+
+# 1. Fundamental Chemical & Thermodynamic Constants
+N_A       = 6.02214076 * (10 ^ 23)        # Avogadro constant (mol^-1)
+R_gas     = 8.314462618                   # Universal gas constant (J mol^-1 K^-1)
+R_atm     = 0.082057366                   # Gas constant in (L atm mol^-1 K^-1)
+F_faraday = 96485.33212                   # Faraday constant (C/mol)
+T_stp     = 273.15                        # Standard temperature (K)
+P_stp     = 101325                        # Standard pressure (Pa = 1 atm)
+kw_water  = 10 ^ -14                      # Autoionization constant of water at 25 C
+
+# 2. Stoichiometry, Empirical Composition, Solutions & Concentration Units
+moles(mass_g, molar_mass)              = mass_g / molar_mass
+mass_from_moles(n_mol, molar_mass)     = n_mol * molar_mass
+particles_from_moles(n_mol)            = n_mol * N_A
+percent_composition(mass_elem, molar_mass) = (mass_elem / molar_mass) * 100
+percent_yield(actual_y, theor_y)       = (actual_y / theor_y) * 100
+atom_economy(mw_desired, mw_reactants) = (mw_desired / mw_reactants) * 100
+
+molarity(n_mol, vol_liters)            = n_mol / vol_liters
+normality_from_molarity(molarity_m, n_factor) = molarity_m * n_factor
+dilution_v1(c1, c2, v2)                = (c2 * v2) / c1
+molality(n_solute, kg_solvent)         = n_solute / kg_solvent
+mole_fraction(n_component, n_total)    = n_component / n_total
+ppm_conc(mass_solute_g, mass_soln_g)   = (mass_solute_g / mass_soln_g) * (10 ^ 6)
+
+# 3. Colligative Properties of Solutions (Raoult, Boiling/Freezing Shift, Van t Hoff)
+raoult_p_soln(x_solvent, p0_solvent)        = x_solvent * p0_solvent
+bp_elevation(i_vant, kb, molality_m)        = i_vant * kb * molality_m
+fp_depression(i_vant, kf, molality_m)       = i_vant * kf * molality_m
+osmotic_pressure(molarity_m, temp_k)        = molarity_m * R_atm * temp_k
+vant_hoff_osmotic(i_vant, molarity_m, temp_k) = i_vant * molarity_m * R_atm * temp_k
+
+# 4. Gas Laws (Boyle, Charles, Combined, Ideal, Dalton, Van der Waals & Graham)
+boyle_p2(p1, v1, v2)                        = (p1 * v1) / v2
+charles_v2(v1, t1_k, t2_k)                  = (v1 * t2_k) / t1_k
+combined_gas_v2(p1, v1, t1_k, p2, t2_k)     = (p1 * v1 * t2_k) / (p2 * t1_k)
+dalton_partial_p(mole_frac, p_total)        = mole_frac * p_total
+
+ideal_gas_p(n_mol, temp_k, vol_m3)          = (n_mol * R_gas * temp_k) / vol_m3
+ideal_gas_v(n_mol, temp_k, press_pa)        = (n_mol * R_gas * temp_k) / press_pa
+ideal_gas_n(press_pa, vol_m3, temp_k)       = (press_pa * vol_m3) / (R_gas * temp_k)
+ideal_gas_t(press_pa, vol_m3, n_mol)        = (press_pa * vol_m3) / (n_mol * R_gas)
+van_der_waals_p(n_mol, temp_k, vol_l, a_vdw, b_vdw) =
+    ((n_mol * R_atm * temp_k) / (vol_l - n_mol * b_vdw)) - a_vdw * ((n_mol / vol_l) ^ 2)
+
+rms_mol_speed(temp_k, molar_mass_kg)        = √(3 * R_gas * temp_k / molar_mass_kg)
+graham_rate_ratio(molar_mass1, molar_mass2) = √(molar_mass2 / molar_mass1)
+
+# 5. Acid-Base Chemistry, Weak Acids, Buffers & Solubility Product (Ksp)
+ph_from_h(h_conc)    = -log10(h_conc)
+h_from_ph(ph_val)    = 10 ^ (-ph_val)
+poh_from_oh(oh_conc) = -log10(oh_conc)
+oh_from_poh(poh_val) = 10 ^ (-poh_val)
+poh_from_ph(ph_val)  = 14 - ph_val
+ph_from_poh(poh_val) = 14 - poh_val
+ph_from_oh(oh_conc)  = 14 - (-log10(oh_conc))
+
+pka_from_ka(ka)                  = -log10(ka)
+ka_from_pka(pka)                 = 10 ^ (-pka)
+weak_acid_h(ka, conc_c)          = √(ka * conc_c)
+weak_acid_ph(ka, conc_c)         = -log10(√(ka * conc_c))
+henderson_hasselbalch(pka, conj_base, weak_acid) =
+    pka + log10(conj_base / weak_acid)
+solubility_ksp_ab(ksp)           = √ksp
+solubility_ksp_ab2(ksp)          = (ksp / 4) ^ (1 / 3)
+
+# 6. Chemical Kinetics, Nuclear Decay, Thermochemistry, Electrochemistry & Solid State
+arrhenius_k(pre_exp_a, ea_j_mol, temp_k) =
+    pre_exp_a * exp(-ea_j_mol / (R_gas * temp_k))
+arrhenius_k2(k1, ea_j_mol, t1_k, t2_k) =
+    k1 * exp((ea_j_mol / R_gas) * ((1 / t1_k) - (1 / t2_k)))
+
+rate_const_1st(t_sec, c0, ct)        = (1 / t_sec) * ln(c0 / ct)
+half_life_1st(rate_k)                = ln(2) / rate_k
+zero_order_half_life(c0, rate_k)     = c0 / (2 * rate_k)
+second_order_half_life(c0, rate_k)   = 1 / (rate_k * c0)
+decay_rem(n0, time_t, half_life)     = n0 * (0.5 ^ (time_t / half_life))
+radiocarbon_age(fraction_rem)        = -5730 * (ln(fraction_rem) / ln(2))
+
+enthalpy_rxn(sum_h_prod, sum_h_react)     = sum_h_prod - sum_h_react
+kp_from_kc(kc, temp_k, delta_n_gas)       = kc * ((R_atm * temp_k) ^ delta_n_gas)
+gibbs_free_energy(dh_j, temp_k, ds_j_k)   = dh_j - temp_k * ds_j_k
+gibbs_from_keq(temp_k, keq)               = -R_gas * temp_k * ln(keq)
+
+cell_emf(e_cathode, e_anode)              = e_cathode - e_anode
+gibbs_electro(n_elec, e_cell_v)           = -n_elec * F_faraday * e_cell_v
+faraday_mass(current_i, time_s, molar_mass, n_elec) =
+    (current_i * time_s * molar_mass) / (n_elec * F_faraday)
+molar_conductivity(kappa_s_cm, molarity_m)= (kappa_s_cm * 1000) / molarity_m
+nernst_cell(e0_volts, n_elec, reaction_q) =
+    e0_volts - (R_gas * 298.15 / (n_elec * F_faraday)) * ln(reaction_q)
+
+crystal_density(z_atoms, molar_mass, a_edge_cm) =
+    (z_atoms * molar_mass) / ((a_edge_cm ^ 3) * N_A)
+bragg_d_spacing(n_order, wavelength, theta_deg) =
+    (n_order * wavelength) / (2 * sin(deg2rad(theta_deg)))

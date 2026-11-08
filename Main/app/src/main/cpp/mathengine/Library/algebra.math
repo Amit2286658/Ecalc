@@ -1,0 +1,182 @@
+# =============================================================================
+# Library/algebra.math — Matrices, Linear Systems, Quadratics & Polynomials
+# =============================================================================
+
+[algebra]
+<[arith]
+<[trig]
+<[complex_ext]
+<[geom_ext]
+<[vec]
+<[mat]
+
+# 1. 2x2 Matrix Struct (`$mat2`: row-major [a, b; c, d])
+$mat2(a, b, c, d)
+
+(m1:mat2) "+"  (m2:mat2) :<50 -> mat2 =
+    mat2(m1.a + m2.a, m1.b + m2.b, m1.c + m2.c, m1.d + m2.d)
+
+(m1:mat2) "-"  (m2:mat2) :<50 -> mat2 =
+    mat2(m1.a - m2.a, m1.b - m2.b, m1.c - m2.c, m1.d - m2.d)
+
+(m1:mat2) into (m2:mat2) :>55 -> mat2 =
+    mat2(m1.a + m2.a, m1.b + m2.b, m1.c + m2.c, m1.d + m2.d)
+
+(m1:mat2) "*"  (m2:mat2) :<60 -> mat2 =
+    mat2(m1.a * m2.a + m1.b * m2.c, m1.a * m2.b + m1.b * m2.d,
+         m1.c * m2.a + m1.d * m2.c, m1.c * m2.b + m1.d * m2.d)
+
+(m:mat2) "*" (v:vec2) :<60 -> vec2 =
+    vec2(m.a * v.x + m.b * v.y, m.c * v.x + m.d * v.y)
+
+"-" (m:mat2)             :80  -> mat2 =
+    mat2(-m.a, -m.b, -m.c, -m.d)
+
+(s)      "*" (m:mat2) :<60 -> mat2 =
+    mat2(s * m.a, s * m.b, s * m.c, s * m.d)
+
+(m:mat2) "*" (s)      :<60 -> mat2 =
+    mat2(m.a * s, m.b * s, m.c * s, m.d * s)
+
+(m:mat2) "/" (s)      :<60 -> mat2 =
+    mat2(m.a / s, m.b / s, m.c / s, m.d / s)
+
+(m1:mat2) "==" (m2:mat2) :<30 =
+    (m1.a == m2.a) && (m1.b == m2.b) && (m1.c == m2.c) && (m1.d == m2.d)
+
+(m1:mat2) "!=" (m2:mat2) :<30 =
+    (m1.a != m2.a) || (m1.b != m2.b) || (m1.c != m2.c) || (m1.d != m2.d)
+
+(m1:mat2) "~"  (m2:mat2) :<30 =
+    (m1.a ~ m2.a) && (m1.b ~ m2.b) && (m1.c ~ m2.c) && (m1.d ~ m2.d)
+
+det(m:mat2)              = m.a * m.d - m.b * m.c
+trace(m:mat2)            = m.a + m.d
+transpose(m:mat2) -> mat2 = mat2(m.a, m.c, m.b, m.d)
+
+inv_mat2(m:mat2) -> mat2 = {
+    d := det(m)
+    mat2(m.d / d, -m.b / d, -m.c / d, m.a / d)
+}
+
+# 2. 2x2 Linear Equation System Solver (Cramer's Rule)
+#    Solves: a1*x + b1*y = c1,  a2*x + b2*y = c2  -> returns vec2(x, y)
+solve_2x2(a1, b1, c1, a2, b2, c2) -> vec2 = {
+    d  := a1 * b2 - b1 * a2
+    dx := c1 * b2 - b1 * c2
+    dy := a1 * c2 - c1 * a2
+    vec2(dx / d, dy / d)
+}
+
+# 3. Quadratic Equation Solvers (`a*x^2 + b*x + c = 0`)
+quad_disc(a, b, c) = b^2 - 4a * c
+
+# Real roots `vec2(r1, r2)` when discriminant >= 0
+quad_roots(a, b, c) -> vec2 = {
+    sd := √(b^2 - 4a * c)
+    vec2((-b + sd) / (2a), (-b - sd) / (2a))
+}
+
+# Principal root in `$complex` (handles both real and complex roots when disc < 0!)
+quad_croot(a, b, c) -> complex = {
+    d := b^2 - 4a * c
+    if (d >= 0) {
+        complex((-b + √d) / (2a), 0)
+    } else {
+        complex(-b / (2a), √(-d) / (2a))
+    }
+}
+
+# 4. Symbolic & Numerical Polynomial Algebra on `$vec`
+#    Polynomial `P(x) = c_0 + c_1*x + c_2*x^2 + ... + c_n*x^n` stored as `[c_0, c_1, ..., c_n]`
+
+# 4a. Horner's Method Evaluation `poly_val(coeffs, x)` in O(n) operations
+poly_val(coeffs:vec, x) = {
+    n   := coeffs.len()
+    acc := 0
+    if (n > 0) {
+        (idx in (n - 1)...0) {
+            acc = acc * x + coeffs[idx]
+        }
+    }
+    acc
+}
+
+# 4b. Symbolic Polynomial Derivative `poly_deriv([c0, c1, c2, c3])` -> `[c1, 2*c2, 3*c3]`
+poly_deriv(coeffs:vec) -> vec = {
+    n   := coeffs.len()
+    out := vec<real>()
+    if (n <= 1) {
+        0 into out
+    } else {
+        (idx in 1..<n) {
+            (idx * coeffs[idx]) into out
+        }
+    }
+    out
+}
+
+# 4c. Symbolic Polynomial Indefinite Integral `poly_integ(coeffs, c0)`
+poly_integ(coeffs:vec, c0 = 0) -> vec = {
+    n   := coeffs.len()
+    out := vec<real>()
+    c0 into out
+    if (n > 0) {
+        (idx in 0..<n) {
+            (coeffs[idx] / (idx + 1)) into out
+        }
+    }
+    out
+}
+
+# 4d. Symbolic Polynomial Addition `poly_add(p, q)`
+poly_add(p:vec, q:vec) -> vec = {
+    np  := p.len()
+    nq  := q.len()
+    n   := max(np, nq)
+    out := vec<real>()
+    if (n > 0) {
+        (idx in 0..<n) {
+            vp := (idx < np) ? p[idx] : 0
+            vq := (idx < nq) ? q[idx] : 0
+            (vp + vq) into out
+        }
+    }
+    out
+}
+
+# 4e. Symbolic Polynomial Multiplication (Cauchy Convolution) `poly_mul(p, q)`
+poly_mul(p:vec, q:vec) -> vec = {
+    np  := p.len()
+    nq  := q.len()
+    deg := np + nq - 1
+    out := vec<real>(deg, 0)
+    (ip in 0..<np) {
+        (iq in 0..<nq) {
+            k := ip + iq
+            out[k] += p[ip] * q[iq]
+        }
+    }
+    out
+}
+
+# 4f. Newton-Raphson Polynomial Root Solver `poly_newton(coeffs, x0, steps)`
+poly_newton(coeffs:vec, x0, steps = 12) = {
+    dp := poly_deriv(coeffs)
+    x  := x0
+    (k in 0..<steps) {
+        fx  := poly_val(coeffs, x)
+        dfx := poly_val(dp, x)
+        x  -= fx / dfx
+    }
+    x
+}
+
+mat2::inv(self) -> mat2  = inv_mat2(self)
+
+poly_val(coeffs:mat, x)                 = poly_val(flatten(coeffs), x)
+poly_deriv(coeffs:mat)           -> vec = poly_deriv(flatten(coeffs))
+poly_integ(coeffs:mat, c0 = 0)   -> vec = poly_integ(flatten(coeffs), c0)
+poly_add(p:mat, q:mat)           -> vec = poly_add(flatten(p), flatten(q))
+poly_mul(p:mat, q:mat)           -> vec = poly_mul(flatten(p), flatten(q))
+poly_newton(coeffs:mat, x0, steps = 12) = poly_newton(flatten(coeffs), x0, steps)

@@ -205,3 +205,38 @@ The `into` operator converts any unit-tagged scalar or vector into a compatible 
 | `biology.math` | `[biology]` | Logistic growth, Michaelis-Menten kinetics, Hardy-Weinberg, Shannon diversity, and BMI/BMR equations |
 | `geom.math` | `[geom_ext]` | `$vec2`, `$vec3`, `$mat2`, `$circle`, `$line2`, `$plane3`, `$sphere` structs and geometric intersection/projection ops |
 | `string.math` | `[string]` | String manipulation (`len`, `trim`, `upper`, `lower`, `split`, `join`, `replace`), regex (`regex_match`, `regex_find`, `regex_replace`), `csv_to_maps` |
+
+## String Interpolation & Currency Sugar (`"{25$ into RS}"`)
+
+Both standard double-quoted strings (`"..."`) and explicit `$"..."` / `f"..."` strings support inline `{expr}` and `{expr:spec}` expression evaluation, including numeric literals, physical units, and currency conversions:
+
+```math
+println("{25$ into RS}")              # Evaluates 25$ into RS and prints the converted INR value
+printl("{25$ into RS}")               # `printl` is supported as a convenience alias for `println`
+println("Distance: {2km into m} m")   # Prints: Distance: 2000 m
+println("Formatted: {π:.4f}")         # Prints: Formatted: 3.1416
+```
+
+Supported currency identifiers in `[currency]` (`patches/currency.math`):
+- **USD**: `$`, `USD`, `usd`
+- **INR**: `₹`, `RS`, `Rs`, `rs`, `INR`, `inr`
+- **EUR**: `€`, `EUR`, `eur`
+- **GBP**: `£`, `GBP`, `gbp`
+- **JPY**: `¥`, `JPY`, `jpy`
+
+
+## Recent Engine Upgrades (Base-Layer Watermarks, SBO+Heap AST/Overloads, Batch Plotter & Live Catalog)
+
+1. **Single Recyclable `Engine*` via Base-Layer Watermarks (`eng_snapshot_base` & `eng_flush_user_modules`)**
+   - After loading `precompiled/stdlib.mathc` and applying global OTA `.math` patches (`eng_apply_patches`), the engine records base-layer watermarks across `SymTable` and `MemArena`.
+   - `eng_flush_user_modules(eng)` (`nativeFlushUserModules` over JNI) rewinds all user project modules, types, ephemeral 7D SI units, variables, AST nodes, and overloads back to the `stdlib + patches` baseline in $O(1)$ time (`< 5 µs`) without reloading `stdlib.mathc` or reallocating `Engine*`.
+2. **Unbounded SBO + Dynamic Heap Growth for `ast` & `overloads`**
+   - `MemArena` keeps `MEM_SBO_AST_NODES = 24,576` AST nodes inline (zero heap allocations for `stdlib.mathc` + normal scripts) and transparently spills to `heap_ast` up to `MEM_MAX_AST_NODES = 65,534` (`0xFFFE`) for large multi-file projects.
+   - `SymTable` keeps `SYM_SBO_OVERLOADS = 2,048` operator/function overloads inline and transparently spills to `heap_overloads` up to `SYM_MAX_OVERLOADS = 65,534`, reclaiming heap buffers automatically on `eng_flush_user_modules` and `eng_destroy`.
+3. **Native C11 Batch Curve Sampler (`eng_sample_plot` / `nativeSamplePlot`)**
+   - Parses a plotted expression, 1-arg function, `vec<real>`, or `vec<vec2>` trajectory once into a temporary AST and evaluates all `N` sample points across `[x_min, x_max]` in a single C loop, returning a flat `double[]` (`[x0, y0, x1, y1, ...]`) over a single JNI call.
+4. **Live `SymTable` Catalog Export (`eng_export_catalog` / `nativeExportCatalog`)**
+   - Exports all active functions, operators, units, types/structs, constants, and modules directly from the live C `SymTable` (`kind|name|sig|retType|retUnit|modName`) so host IDEs and editors automatically autocomplete newly loaded OTA `.math` patches and linked project modules.
+
+5. **Multi-Curve 2D Plotting (`MathPlotView` & `sampleMultiPlotSeries`)**
+   - Separate multiple functions or expressions with `;` or `,` (e.g. `sin(x); cos(x)` or `x^2 - 2; 2*x + 1`) in the Interactive 2D Plotter to overlay up to 6 curves simultaneously with distinct colors, a color-coded legend bar, root/extremum/intersection markers, and multi-curve crosshair readouts.

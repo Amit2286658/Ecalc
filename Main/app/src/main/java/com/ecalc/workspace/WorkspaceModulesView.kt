@@ -38,7 +38,6 @@ import kotlin.math.hypot
 /**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
  * with Left-Drawer Project & File Manager.
- */
 
 internal fun MathWorkspaceFragment.buildModulesSection(
     ctx: Context,
@@ -131,7 +130,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             holdListener = { held ->
                 if (held) activity.showButtonPopup(
                     this,
-                    "📋 Output & Vars — inspect bound module variables & constants, formatted tables (\$map / JSON / CSV / \$mat / \$vec), console output, and the statement log."
+                    "📋 Output & Vars — inspect bound module variables & constants, formatted tables ($map / JSON / CSV / $mat / $vec), console output, and the statement log."
                 ) else activity.dismissButtonPopup()
             }
         }
@@ -196,6 +195,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 Triple("...", "...", 0),
                 Triple("??", " ?? {\n    \n}", 2),
                 Triple("|>", " |> ", 0),
+                Triple("\"{}\"", "\"{}\"", 2),
                 Triple("\$\"\"", "\$\"{}\"", 2),
                 Triple("struct", "struct Point(x: real, y: real)", 0),
                 Triple("into", " into ", 0),
@@ -491,7 +491,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             }
             inspectorTableContainer?.addView(tvInspPlaceholder)
             inspCard.addView(inspectorTableContainer)
-            outStack.addView(inspCard)
+            // inspCard added after mLogCard
 
             // 3. Dedicated Console Stream (print / println) Card
             val cCard = LinearLayout(ctx).apply {
@@ -555,7 +555,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                )
+                ).apply { bottomMargin = dp(6f) }
                 setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
             }
             moduleLogCard = mLogCard
@@ -569,6 +569,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             }
             mLogCard.addView(tvModuleLogOutput)
             outStack.addView(mLogCard)
+            outStack.addView(inspCard)
 
             outOuterScroll.addView(outStack)
             addView(outOuterScroll)
@@ -752,7 +753,7 @@ internal fun MathWorkspaceFragment.ensureSampleAndMigratedModuleFiles(ctx: Conte
             }
     }
 
-    val seedMarker = File(modDir, ".seeded_unified_modules_v7")
+    val seedMarker = File(modDir, ".seeded_unified_modules_v9")
     if (!seedMarker.exists()) {
         File(modDir, "config.json").writeText(
             "{\n  \"project\": \"MEP Telemetry\",\n  \"sample_hz\": 50,\n  \"active\": true\n}\n"

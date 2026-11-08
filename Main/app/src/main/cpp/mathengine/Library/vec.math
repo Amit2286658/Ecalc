@@ -1,0 +1,444 @@
+# =============================================================================
+# Library/vec.math — Dynamic Vectors (`$vec`), Lists, Stacks, Queues & Ranges
+# =============================================================================
+# Dedicated module for 1D dynamic containers (`vec<T>`, `list<T>`, `stack<T>`,
+# `queue<T>`), range operators (`...`, `..<`, `>..`, `>..<`, `by`, `range`),
+# higher-order functional pipelines, pure MEP elementwise vector arithmetic /
+# Hadamard operators (`+`, `-`, `.*`, `./`, `.^`), and vector statistics.
+
+[vec]
+<[boot_types]
+<[boot_control]
+<[arith]
+
+# 1. Constructors & Mutating / Query Methods for `vec<T>`, `list<T>`, `stack<T>`, `queue<T>`
+vec()                         -> vec = @vnew(0)
+vec(cap:real, none)           -> vec = @vnew(cap)
+vec(count:real, none, init:T) -> vec = @vfill(count, init)
+list()                  -> vec = @vnew(0)
+list(item:T)            -> vec = @vfill(1, item)
+stack()                 -> vec = @vnew(0)
+stack(item:T)            -> vec = @vfill(1, item)
+queue()                 -> vec = @vnew(0)
+queue(item:T)            -> vec = @vfill(1, item)
+len(v:vec)                     = @vlen(v)
+cap(v:vec)                     = @vcap(v)
+is_empty(v:vec)                = (len(v) == 0)
+at(v:vec, idx)          -> T   = @vget(v, idx)
+set(v:vec, idx, val:T)  -> vec = @vset(v, idx, val)
+resize(v:vec, new_len)  -> vec = @vresize(v, new_len)
+shrink(v:vec)           -> vec = @vshrink(v)
+clear(v:vec)            -> vec = @vclear(v)
+push(v:vec, item:T)     -> vec = @vpush(v, item)
+pop(v:vec)              -> T   = @vpop(v)
+enqueue(q:vec, item:T)  -> vec = @vpush(q, item)
+dequeue(q:vec)          -> T   = @vshift(q)
+shift(q:vec)            -> T   = @vshift(q)
+pop_front(q:vec)        -> T   = @vshift(q)
+peek(s:vec)             -> T   = (s.len() == 0) ? error("Cannot peek into an empty vector") : s[-1]
+top(s:vec)              -> T   = peek(s)
+back(s:vec)             -> T   = peek(s)
+front(q:vec)            -> T   = (q.len() == 0) ? error("Cannot peek into an empty vector") : q[0]
+
+# 2. Range Operators (`...`, `..<`, `>..`, `>..<`), Stepped Range (`by`), Membership (`in`) & Insert (`into`)
+(a:real, T) "..."  (b:real, T) :<45 -> vec = @vrange(a, b, 0)
+(a:real, T) "..<"  (b:real, T) :<45 -> vec = @vrange(a, b, 1)
+(a:real, T) ">.."  (b:real, T) :<45 -> vec = @vrange(a, b, 2)
+(a:real, T) ">..<" (b:real, T) :<45 -> vec = @vrange(a, b, 3)
+(r:vec)     by    (step:real) :<44 -> vec = @vrange_step(r, step, 0)
+(item:T)    into  (v:vec)     :>55 -> vec = @vpush(v, item)
+
+(item:T) in (v:vec) :<42 = {
+    u_it := unit_of(item)
+    t_it := type_of(item)
+    (x in v) {
+        if (@eq(type_of(x), t_it)) {
+            if (@eq(unit_of(x), u_it)) {
+                if (x == item) { return 1 }
+            }
+        }
+    }
+    0
+}
+
+# Pure MEP `range(start, stop, step = 1)` function
+range(start:real, T, stop:real, T, step = 1) -> vec = {
+    if (step == 0) { error("Range step cannot be zero") }
+    out := vec<real, T>()
+    eps := 1e-11 * (1 + @abs(start) + @abs(stop) + @abs(step))
+    k   := 0
+    if (step > 0) {
+        (start + k * step <= stop + eps) ?? {
+            v := start + k * step
+            if (@abs(v) < 1e-15) { v = 0 }
+            v into out
+            k += 1
+        }
+    } else {
+        (start + k * step >= stop - eps) ?? {
+            v := start + k * step
+            if (@abs(v) < 1e-15) { v = 0 }
+            v into out
+            k += 1
+        }
+    }
+    out
+}
+
+# 3. Higher-Order Functional Pipelines on `$vec`
+map(v:vec, f:fn)            -> vec = [f(x) for x in v]
+filter(v:vec, f:fn)         -> vec = [x for x in v if f(x)]
+reduce(v:vec, f:fn)         -> T   = {
+    if (v.len() == 0) { error("Cannot reduce an empty collection without an initial value") }
+    acc := v[0]
+    (i, x in v) { if (i > 0) { acc = f(acc, x) } }
+    acc
+}
+reduce(v:vec, init:T, f:fn) -> T   = {
+    acc := init
+    (x in v) { acc = f(acc, x) }
+    acc
+}
+fold(v:vec, init:T, f:fn)   -> T   = reduce(v, init, f)
+any(v:vec, f:fn)                   = {
+    (x in v) { if (f(x)) { return 1 } }
+    0
+}
+all(v:vec, f:fn)                   = {
+    (x in v) { if (!f(x)) { return 0 } }
+    1
+}
+find(v:vec, f:fn)           -> T   = {
+    (x in v) { if (f(x)) { return x } }
+    0
+}
+count_if(v:vec, f:fn)              = {
+    c := 0
+    (x in v) { if (f(x)) { c += 1 } }
+    c
+}
+
+# 4. Pure MEP Elementwise Vector Arithmetic & Hadamard Operators (`+`, `-`, `.*`, `./`, `.^`)
+(a:vec) "+" (b:vec) :<50 -> vec = {
+    if (a.len() != b.len()) { error("Vector length mismatch for '+'") }
+    [x + b[i] for i, x in a]
+}
+
+(a:vec) "-" (b:vec) :<50 -> vec = {
+    if (a.len() != b.len()) { error("Vector length mismatch for '-'") }
+    [x - b[i] for i, x in a]
+}
+
+(a:vec) ".*" (b:vec) :<60 -> vec = {
+    if (a.len() != b.len()) { error("Vector length mismatch for '.*'") }
+    [x * b[i] for i, x in a]
+}
+
+(a:vec) "./" (b:vec) :<60 -> vec = {
+    if (a.len() != b.len()) { error("Vector length mismatch for './'") }
+    [x / b[i] for i, x in a]
+}
+
+(a:vec) ".^" (b:vec) :>85 -> vec = {
+    if (a.len() != b.len()) { error("Vector length mismatch for '.^'") }
+    [x ^ b[i] for i, x in a]
+}
+
+(a:vec)  ".^" (p:real) :>85 -> vec = [x ^ p for x in a]
+(s:real) ".^" (a:vec)  :>85 -> vec = [s ^ x for x in a]
+
+# 5. Pure MEP Vector Statistics & Time-Series Functions (`vec_sum`, `sum`, `mean`, `variance`, `stddev`, `sma`)
+vec_sum(v:vec) = {
+    s := 0
+    (x in v) { s += x }
+    s
+}
+
+sum(v:vec)  = vec_sum(v)
+mean(v:vec) = vec_sum(v) / v.len()
+
+variance(v:vec) = {
+    mu  := mean(v)
+    acc := 0
+    (x in v) {
+        d := x - mu
+        acc += d^2
+    }
+    acc / v.len()
+}
+
+stddev(v:vec) = √variance(v)
+
+sma(v:vec, window) = {
+    n     := v.len()
+    if (n == 0) { error("Cannot compute sma() of an empty vector") }
+    if (window <= 0) { error("sma() window must be positive") }
+    w     := min(window, n)
+    start := n - w
+    acc   := 0
+    (idx in start..<n) {
+        acc += v[idx]
+    }
+    acc / w
+}
+
+# 6. Pure MEP Vector Sorting (Shellsort), Reversal, Extrema, Cumulative Ops, Dot/Norm & Linear Regression
+sort(v:vec) -> vec = {
+    n := v.len()
+    if (n <= 1) { return [x for x in v] }
+    out := [x for x in v]
+    gap := @floor(n / 2)
+    (gap > 0) ?? {
+        (i in gap..<n) {
+            temp := out[i]
+            j    := i
+            (j >= gap && out[j - gap] > temp) ?? {
+                out[j] = out[j - gap]
+                j -= gap
+            }
+            out[j] = temp
+        }
+        gap = @floor(gap / 2)
+    }
+    out
+}
+
+sort_desc(v:vec) -> vec = {
+    n := v.len()
+    if (n <= 1) { return [x for x in v] }
+    out := [x for x in v]
+    gap := @floor(n / 2)
+    (gap > 0) ?? {
+        (i in gap..<n) {
+            temp := out[i]
+            j    := i
+            (j >= gap && out[j - gap] < temp) ?? {
+                out[j] = out[j - gap]
+                j -= gap
+            }
+            out[j] = temp
+        }
+        gap = @floor(gap / 2)
+    }
+    out
+}
+
+reverse(v:vec) -> vec = {
+    n := v.len()
+    if (n <= 1) { return v }
+    v[(n - 1)...0]
+}
+
+vec_min(v:vec) -> T = {
+    if (v.len() == 0) { error("Cannot compute min of an empty vector") }
+    m := v[0]
+    (x in v) { if (x < m) { m = x } }
+    m
+}
+
+vec_max(v:vec) -> T = {
+    if (v.len() == 0) { error("Cannot compute max of an empty vector") }
+    m := v[0]
+    (x in v) { if (x > m) { m = x } }
+    m
+}
+
+min(v:vec) -> T = vec_min(v)
+max(v:vec) -> T = vec_max(v)
+
+argmin(v:vec) = {
+    if (v.len() == 0) { error("Cannot compute argmin of an empty vector") }
+    bi := 0
+    bv := v[0]
+    (i, x in v) { if (x < bv) { bv = x ; bi = i } }
+    bi
+}
+
+argmax(v:vec) = {
+    if (v.len() == 0) { error("Cannot compute argmax of an empty vector") }
+    bi := 0
+    bv := v[0]
+    (i, x in v) { if (x > bv) { bv = x ; bi = i } }
+    bi
+}
+
+cumsum(v:vec) -> vec = {
+    out := vec()
+    acc := 0
+    (i, x in v) {
+        acc = (i == 0) ? x : (acc + x)
+        acc into out
+    }
+    out
+}
+
+cumprod(v:vec) -> vec = {
+    out := vec()
+    acc := 1
+    (x in v) {
+        acc = acc * x
+        acc into out
+    }
+    out
+}
+
+diff_vec(v:vec) -> vec = {
+    n := v.len()
+    if (n <= 1) { return vec() }
+    [v[i + 1] - v[i] for i in 0..<(n - 1)]
+}
+
+dot(a:vec, b:vec) = {
+    if (a.len() != b.len()) { error("Vector length mismatch for dot()") }
+    s := 0
+    (i, x in a) { s += x * b[i] }
+    s
+}
+
+norm(v:vec) = √dot(v, v)
+
+linspace(start:real, T, stop:real, T, n = 50) -> vec = {
+    if (n < 1) { error("linspace() count must be >= 1") }
+    if (n == 1) { return vec(start) }
+    step := (stop - start) / (n - 1)
+    [start + k * step for k in 0..<n]
+}
+
+unique(v:vec) -> vec = {
+    out := vec()
+    (x in v) { if (!(x in out)) { x into out } }
+    out
+}
+
+zip_with(a:vec, b:vec, f:fn) -> vec = {
+    if (a.len() != b.len()) { error("Vector length mismatch for zip_with()") }
+    [f(x, b[i]) for i, x in a]
+}
+
+median(v:vec) = {
+    n := v.len()
+    if (n == 0) { error("Cannot compute median of an empty vector") }
+    s   := sort(v)
+    mid := @floor(n / 2)
+    (n % 2 == 1) ? s[mid] : 0.5 * (s[mid - 1] + s[mid])
+}
+
+sample_variance(v:vec) = {
+    n := v.len()
+    if (n <= 1) { error("sample_variance() requires at least 2 elements") }
+    variance(v) * n / (n - 1)
+}
+
+sample_stddev(v:vec) = √sample_variance(v)
+
+cov(x:vec, y:vec) = {
+    n := x.len()
+    if (n != y.len() || n == 0) { error("cov() requires non-empty vectors of equal length") }
+    mx  := mean(x)
+    my  := mean(y)
+    acc := 0
+    (i, xv in x) { acc += (xv - mx) * (y[i] - my) }
+    acc / n
+}
+
+corr(x:vec, y:vec)             = cov(x, y) / (stddev(x) * stddev(y))
+linreg_slope(x:vec, y:vec)     = cov(x, y) / variance(x)
+linreg_intercept(x:vec, y:vec) = mean(y) - linreg_slope(x, y) * mean(x)
+linreg_r2(x:vec, y:vec)        = corr(x, y) ^ 2
+
+
+# 7. First-Class Key-Value Dictionary / Map (`$map`: `map()`, `dict()`, `m["k"]`, `"k" in m`)
+map()                           -> map = @map_new(0)
+dict()                          -> map = @map_new(0)
+map_set(m:map, k:T, val:T)      -> map = @map_set(m, k, val)
+put(m:map, k:T, val:T)          -> map = @map_set(m, k, val)
+set(m:map, k:T, val:T)          -> map = @map_set(m, k, val)
+map_get(m:map, k:T)             -> T   = @map_get(m, k)
+get(m:map, k:T)                 -> T   = @map_get(m, k)
+map_get(m:map, k:T, def_val:T)  -> T   = @map_get(m, k, def_val)
+get_or(m:map, k:T, def_val:T)   -> T   = @map_get(m, k, def_val)
+map_has(m:map, k:T)                    = @map_has(m, k)
+has_key(m:map, k:T)                    = @map_has(m, k)
+map_del(m:map, k:T)             -> map = @map_del(m, k)
+remove(m:map, k:T)              -> map = @map_del(m, k)
+keys(m:map)                     -> vec = [k for k in m]
+vals(m:map)                     -> vec = [v for k, v in m]
+values(m:map)                   -> vec = [v for k, v in m]
+entries(m:map)                  -> vec = [k + "=" + (v_) for k, v in m]
+len(m:map)                             = @vlen(m)
+is_empty(m:map)                        = @eq(@vlen(m), 0)
+clear(m:map)                    -> map = @vclear(m)
+
+(a:vec) "==" (b:vec) :<30 = {
+    if (a.len() != b.len()) { return 0 }
+    (i, x in a) { if (x != b[i]) { return 0 } }
+    1
+}
+(a:vec) "!=" (b:vec) :<30 = !(a == b)
+(a:vec) "~"  (b:vec) :<30 = {
+    if (a.len() != b.len()) { return 0 }
+    (i, x in a) { if (!(x ~ b[i])) { return 0 } }
+    1
+}
+
+# 8. Pure MEP 7D SI Unit Dimensional Introspection (`dim_vec`, `same_dim`)
+dim_vec(x:T)         -> vec = [@unit_name(x, i) for i in 0..<7]
+same_dim(a:T, b:T)          = (dim_vec(a) == dim_vec(b))
+
+# 9. Extended Collection Slicing, Custom-Key Sorting & Functional Map Helpers
+take(v:vec, k) -> vec = {
+    n := v.len()
+    m := clamp(@floor(k), 0, n)
+    (m <= 0) ? vec() : v[0..<m]
+}
+
+drop(v:vec, k) -> vec = {
+    n := v.len()
+    m := clamp(@floor(k), 0, n)
+    (m >= n) ? vec() : v[m..<n]
+}
+
+sort_by(v:vec, key_fn:fn) -> vec = {
+    n := v.len()
+    if (n <= 1) { return [x for x in v] }
+    out  := [x for x in v]
+    keys := [key_fn(x) for x in v]
+    gap  := @floor(n / 2)
+    (gap > 0) ?? {
+        (i in gap..<n) {
+            temp_v := out[i]
+            temp_k := keys[i]
+            j      := i
+            (j >= gap && keys[j - gap] > temp_k) ?? {
+                out[j]  = out[j - gap]
+                keys[j] = keys[j - gap]
+                j -= gap
+            }
+            out[j]  = temp_v
+            keys[j] = temp_k
+        }
+        gap = @floor(gap / 2)
+    }
+    out
+}
+
+map_merge(a:map, b:map) -> map = {
+    out := map()
+    (k, v in a) { map_set(out, k, v) }
+    (k, v in b) { map_set(out, k, v) }
+    out
+}
+
+map_filter(m:map, pred:fn) -> map = {
+    out := map()
+    (k, v in m) {
+        if (pred(k, v)) { map_set(out, k, v) }
+    }
+    out
+}
+
+map_values(m:map, f:fn) -> map = {
+    out := map()
+    (k, v in m) { map_set(out, k, f(v)) }
+    out
+}

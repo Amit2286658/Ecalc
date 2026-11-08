@@ -1,0 +1,272 @@
+# =============================================================================
+# Library/arith.math — Core & Commercial Arithmetic, Logic, Sequences & Stats
+# =============================================================================
+
+[arith]
+<[boot_types]
+<[boot_control]
+
+# 1. Basic Left-Associative Infix Arithmetic (:<prec) & Likewise `into` Sum
+(a:real, T) "+"    (b:real, T) :<50 -> real, T = @add(a, b)
+(a:real, T) "-"    (b:real, T) :<50 -> real, T = @sub(a, b)
+(a:real, none) into (b:real, none) :>55 -> real, none = @add(a, b)
+(a)         "*"    (b)         :<60            = @mul(a, b)
+(a)         "/"    (b)         :<60            = @div(a, b)
+(a)         "%"    (b)         :<60            = @mod(a, b)
+
+# 2. Word-Based Operators Calling `+` and `-` (Inlined at Parse Time)
+(a) plus  (b) :<45 = a + b
+(a) minus (b) :<45 = a - b
+
+# 3. Right-Associative Infix Exponentiation (:>85, binds tighter than unary '-' :80 so -x^2 == -(x^2))
+(a) "^" (b) :>85 = @pow(a, b)
+
+# 4. Relational Comparisons, Approximate Equality `~` (:<30) & Chained Boolean Logic
+(a)         "==" (b)         :<30 = @eq(a, b)
+(a)         "!=" (b)         :<30 = @ne(a, b)
+(a)         "<"  (b)         :<30 = @lt(a, b)
+(a)         "<=" (b)         :<30 = @le(a, b)
+(a)         ">"  (b)         :<30 = @gt(a, b)
+(a)         ">=" (b)         :<30 = @ge(a, b)
+(a:real, T) "~"  (b:real, T) :<30 = (@abs(a - b) <= 0.001 + 1e-12)
+
+not(x) :25 = !x
+
+(a) "&&" (b) :<20 = (a != 0) ? ((b != 0) ? 1 : 0) : 0
+(a) and  (b) :<20 = (a != 0) ? ((b != 0) ? 1 : 0) : 0
+(a) nand (b) :<20 = (a != 0) ? ((b != 0) ? 0 : 1) : 1
+(a) xor  (b) :<18 = ((a != 0) != (b != 0))
+(a) "^^" (b) :<18 = ((a != 0) != (b != 0))
+(a) "||" (b) :<15 = (a != 0) ? 1 : ((b != 0) ? 1 : 0)
+(a) or   (b) :<15 = (a != 0) ? 1 : ((b != 0) ? 1 : 0)
+(a) nor  (b) :<15 = (a == 0) ? ((b == 0) ? 1 : 0) : 0
+
+# 5. Prefix Unary Operators
+"-" (x) :80 = @neg(x)
+"+" (x) :80 = x
+"√" (x) :80 = @sqrt(x)
+"~" (x:real, none) :80 = @bnot(x)
+(a:real, none) "<<" (b:real, none) :<40 = @bshl(a, b)
+(a:real, none) ">>" (b:real, none) :<40 = @bshr(a, b)
+
+# 6. Multi-Character Overlapping Prefix & Postfix Operators (`++`, `+++`, `--`, `---`)
+"++"  (x) :85 = x + 1
+"+++" (x) :85 = x + 2
+"--"  (x) :85 = x - 1
+"---" (x) :85 = x - 2
+(x) "++"  :90 = x + 1
+(x) "+++" :90 = x + 2
+(x) "--"  :90 = x - 1
+(x) "---" :90 = x - 2
+
+# 7. Postfix Factorial (`(n) "!" :90`)
+(n:real, none) "!" :90 = {
+    if (n != n || n < 0 || n != @floor(n)) { error("Factorial '!' requires a non-negative integer") }
+    if (n > 170) { error("Factorial overflow (max 170!)") }
+    acc := 1
+    k   := n
+    (k > 1) ?? {
+        acc *= k
+        k   -= 1
+    }
+    acc
+}
+
+# 8. Common Utility, Rounding (with default parameter `digits = 0`) & Boolean Predicate Functions
+abs(x)   = @abs(x)
+floor(x) = @floor(x)
+ceil(x)  = @ceil(x)
+round(x, digits = 0) = {
+    if (digits != digits || digits != @floor(digits)) { error("round() digits must be an integer") }
+    if (digits > 300 || x == 0 || x != x) { return x }
+    if (digits < -308) { return 0 }
+    if (digits >= 0) {
+        s := 10 ^ digits
+        ((x >= 0) ? @floor(x * s + 0.5) : @ceil(x * s - 0.5)) / s
+    } else {
+        s := 10 ^ (-digits)
+        ((x >= 0) ? @floor(x / s + 0.5) : @ceil(x / s - 0.5)) * s
+    }
+}
+trunc(x) = (x >= 0) ? @floor(x) : @ceil(x)
+fract(x) = x - @floor(x)
+sign(x)  = (x != x) ? x : ((x > 0) ? 1 : (x < 0) ? -1 : 0)
+is_nan(x) = (x != x)
+min(a, b) = (a != a) ? a : ((b != b) ? b : ((a < b) ? a : b))
+max(a, b) = (a != a) ? a : ((b != b) ? b : ((a > b) ? a : b))
+clamp(x, lo, hi) = min(max(x, lo), hi)
+abs_diff(a, b)   = (a < b) ? (b - a) : (a - b)
+is_even(n) = (n % 2 == 0)
+is_odd(n)  = (n % 2 != 0)
+is_close(a, b, tol = 0.000001) = (@abs(a - b) <= tol)
+
+# 9. Number Theory & Combinatorics (`gcd`, `lcm`, `ncr`, `npr`, `fib`, `is_prime`, `mod_pow`)
+gcd(a, b) = {
+    x := @abs(a)
+    y := @abs(b)
+    (y > 0) ?? {
+        t := x % y
+        x = y
+        y = t
+    }
+    x
+}
+
+lcm(a, b) = (a == 0 || b == 0) ? 0 : @abs(a * b) / gcd(a, b)
+npr(n, r) = (r < 0 || r > n) ? 0 : (n!) / ((n - r)!)
+ncr(n, r) = (r < 0 || r > n) ? 0 : (n!) / ((r!) * ((n - r)!))
+
+fib(n) = {
+    a := 0
+    b := 1
+    k := 0
+    (k < n) ?? {
+        nxt := a + b
+        a = b
+        b = nxt
+        k += 1
+    }
+    a
+}
+
+is_prime(n) = {
+    if (n < 2) { return 0 }
+    d := 2
+    (d^2 <= n) ?? {
+        if (n % d == 0) { return 0 }
+        d += 1
+    }
+    1
+}
+
+mod_pow(base, exp_n, m) = {
+    res := 1
+    b   := base % m
+    e_k := exp_n
+    (e_k > 0) ?? {
+        if (e_k % 2 == 1) { res = (res * b) % m }
+        e_k = @floor(e_k / 2)
+        b   = (b^2) % m
+    }
+    res
+}
+
+# 10. Percentages, Profit & Loss, Markup & Discounts
+pct_of(part, whole)        = (part / whole) * 100
+pct_val(pct, total)        = (pct / 100) * total
+pct_change(old_v, new_v)   = ((new_v - old_v) / old_v) * 100
+pct_inc(val, pct)          = val * (1 + pct / 100)
+pct_dec(val, pct)          = val * (1 - pct / 100)
+pct_error(measured, exact) = (@abs(measured - exact) / @abs(exact)) * 100
+successive_pct(p1, p2)     = p1 + p2 + (p1 * p2) / 100
+
+profit(cp, sp)                 = sp - cp
+loss(cp, sp)                   = cp - sp
+profit_pct(cp, sp)             = ((sp - cp) / cp) * 100
+loss_pct(cp, sp)               = ((cp - sp) / cp) * 100
+sp_from_profit_pct(cp, p_pct)  = cp * (1 + p_pct / 100)
+sp_from_loss_pct(cp, l_pct)    = cp * (1 - l_pct / 100)
+cp_from_profit_pct(sp, p_pct)  = sp / (1 + p_pct / 100)
+cp_from_loss_pct(sp, l_pct)    = sp / (1 - l_pct / 100)
+discount_amt(marked_p, d_pct)  = marked_p * (d_pct / 100)
+sp_after_discount(marked_p, d_pct) = marked_p * (1 - d_pct / 100)
+successive_discount(d1, d2)    = d1 + d2 - (d1 * d2) / 100
+
+# 11. Simple & Compound Interest, Depreciation & Loan EMI
+simple_interest(p, r_pct, t_yr)   = (p * r_pct * t_yr) / 100
+si_amount(p, r_pct, t_yr)         = p + simple_interest(p, r_pct, t_yr)
+compound_amount(p, r_pct, t_yr)   = p * ((1 + r_pct / 100) ^ t_yr)
+compound_interest(p, r_pct, t_yr) = compound_amount(p, r_pct, t_yr) - p
+ci_amount_n(p, r_pct, t_yr, n_per_yr) =
+    p * ((1 + (r_pct / 100) / n_per_yr) ^ (n_per_yr * t_yr))
+ci_si_diff_2yr(p, r_pct)          = p * ((r_pct / 100) ^ 2)
+depreciated_val(p0, r_pct, t_yr)  = p0 * ((1 - r_pct / 100) ^ t_yr)
+emi(principal, annual_rate_pct, months) = {
+    r_m := (annual_rate_pct / 12) / 100
+    f   := (1 + r_m) ^ months
+    (principal * r_m * f) / (f - 1)
+}
+
+# 12. Work & Time, Pipes & Cisterns, and Chain Rule (`M1*D1/W1 = M2*D2/W2`)
+work_rate(days)                      = 1 / days
+work_together_2(d1, d2)              = (d1 * d2) / (d1 + d2)
+work_together_3(d1, d2, d3)          = (d1 * d2 * d3) / (d1 * d2 + d2 * d3 + d3 * d1)
+work_other_person(d_both, d_one)     = (d_both * d_one) / (d_one - d_both)
+work_rem_after(d_total, days_worked) = 1 - (days_worked / d_total)
+pipe_fill_with_leak(t_fill, t_empty) = (t_fill * t_empty) / (t_empty - t_fill)
+man_days_solve(m1, d1, w1, m2, w2)   = (m1 * d1 * w2) / (w1 * m2)
+
+# 13. Progressions (AP / GP / HP), Means, Proportions, Mixtures & Speed/Boats
+ap_nth(a, d, n)    = a + (n - 1) * d
+ap_sum(a, d, n)    = (n / 2) * (2a + (n - 1) * d)
+gp_nth(a, r, n)    = a * (r ^ (n - 1))
+gp_sum(a, r, n)    = (r == 1) ? (a * n) : a * ((r ^ n) - 1) / (r - 1)
+gp_inf_sum(a, r)   = a / (1 - r)
+hp_nth(a, d, n)    = 1 / (a + (n - 1) * d)
+
+arith_mean(a, b)   = (a + b) / 2
+geom_mean(a, b)    = √(a * b)
+harm_mean(a, b)    = 2a * b / (a + b)
+fourth_proportional(a, b, c) = (b * c) / a
+third_proportional(a, b)     = (b^2) / a
+mean_proportional(a, b)      = √(a * b)
+alligation_ratio(cheaper, dearer, mean_p) = (dearer - mean_p) / (mean_p - cheaper)
+
+avg_speed_2(s1, s2)              = 2s1 * s2 / (s1 + s2)
+rel_speed_same(s1, s2)           = @abs(s1 - s2)
+rel_speed_opp(s1, s2)            = s1 + s2
+boat_downstream(u_boat, v_stream)= u_boat + v_stream
+boat_upstream(u_boat, v_stream)  = u_boat - v_stream
+boat_still_speed(d_spd, u_spd)   = (d_spd + u_spd) / 2
+stream_speed(d_spd, u_spd)       = (d_spd - u_spd) / 2
+
+sum_n(n)      = n * (n + 1) / 2
+sum_sq_n(n)   = n * (n + 1) * (2n + 1) / 6
+sum_cube_n(n) = (n * (n + 1) / 2) ^ 2
+
+# 13b. Bitwise Integer Operations & Discrete/Exponential Probability Functions
+bit_and(a:real, none, b:real, none) = @band(a, b)
+bit_or(a:real, none, b:real, none)  = @bor(a, b)
+bit_xor(a:real, none, b:real, none) = @bxor(a, b)
+bit_not(a:real, none)               = @bnot(a)
+bit_shl(a:real, none, b:real, none) = @bshl(a, b)
+bit_shr(a:real, none, b:real, none) = @bshr(a, b)
+
+popcount(n:real, none) = {
+    if (n < 0 || n != @floor(n)) { error("popcount() requires a non-negative integer") }
+    c := 0
+    x := n
+    (x > 0) ?? {
+        c += (x % 2)
+        x = @floor(x / 2)
+    }
+    c
+}
+
+bit_len(n:real, none) = {
+    if (n < 0 || n != @floor(n)) { error("bit_len() requires a non-negative integer") }
+    b := 0
+    x := n
+    (x > 0) ?? {
+        b += 1
+        x = @floor(x / 2)
+    }
+    b
+}
+
+binom_pmf(n, k, p)   = ncr(n, k) * (p ^ k) * ((1 - p) ^ (n - k))
+poisson_pmf(k, lam)  = ((lam ^ k) * @exp(-lam)) / (k!)
+geom_pmf(k, p)       = ((1 - p) ^ (k - 1)) * p
+exp_pdf(x, lam)      = (x < 0) ? 0 : lam * @exp(-lam * x)
+exp_cdf(x, lam)      = (x < 0) ? 0 : 1 - @exp(-lam * x)
+
+# 14. Fundamental Mathematical Constants
+π   = 3.141592653589793
+pi  = 3.141592653589793
+e   = 2.718281828459045
+phi = 1.618033988749895
+φ   = 1.618033988749895
+ϕ   = 1.618033988749895
+inf = 1e300 * 1e300
+nan = (-1) ^ 0.5
+is_inf(x) = (@abs(x) == inf)

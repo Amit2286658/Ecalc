@@ -38,7 +38,6 @@ import kotlin.math.hypot
 /**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
  * with Left-Drawer Project & File Manager.
- */
 
 internal fun MathWorkspaceFragment.refreshModuleChips() {
     val ctx = context ?: return
@@ -476,7 +475,7 @@ internal fun MathWorkspaceFragment.applyExecutionResultsToUi(
     headerBanner: String,
     targetFile: String,
     modId: String,
-    results: List<Pair<String, EvalOutcome>>,
+    results: List<Pair<String, MathEngineManager.EvalOutcome>>,
     varsSummary: String,
     switchToLogAfterRun: Boolean,
     toastPrefix: String
@@ -545,10 +544,25 @@ internal fun MathWorkspaceFragment.applyExecutionResultsToUi(
         sb.append(varsSummary)
     }
 
+    val exprValueLines = results.mapNotNull { (stmt, outcome) ->
+        if (outcome.ok && outcome.type != "void" && !MathEngineManager.isDeclarationOrBindingStatement(stmt)) {
+            val oneLine = stmt.replace(Regex("\\s+"), " ").trim()
+            val u = if (outcome.unit != "none") " [${outcome.unit}]" else ""
+            "$oneLine  ⟹  ${outcome.value}$u"
+        } else null
+    }
     val scopedFileKey = projectScopedKey(targetFile)
     val scopedModKey = projectScopedKey(modId)
     val fullLog = sb.toString().trimEnd()
-    val consoleText = consoleSb.toString().trimEnd().ifEmpty { "(No print / println output emitted)" }
+    val rawConsole = consoleSb.toString().trimEnd()
+    val consoleText = when {
+        rawConsole.isNotEmpty() && exprValueLines.isNotEmpty() ->
+            "$rawConsole\n\n--- Top-Level Expression Results ---\n" + exprValueLines.joinToString("\n")
+        rawConsole.isNotEmpty() -> rawConsole
+        exprValueLines.isNotEmpty() ->
+            exprValueLines.joinToString("\n")
+        else -> "(No print / println or standalone expression output emitted)"
+    }
     moduleLogs[scopedFileKey] = fullLog
     moduleConsoleLogs[scopedFileKey] = consoleText
     moduleVarsCache[scopedModKey] = varsSummary
@@ -716,7 +730,7 @@ internal fun MathWorkspaceFragment.switchToProject(targetProjectRaw: String, clo
     refreshFileManagerDrawer()
 
     val pStat = MathEngineManager.getProjectBinaryStatus(ctx, targetProject)
-    tvModuleQuickStatus?.text = "📦 Switched to project '$targetProject' (isolated engine.so & stdlib.mathc • ${pStat.stdlibMathcBytes / 1024} KB)."
+    tvModuleQuickStatus?.text = "📦 Switched to project '$targetProject' (recycled shared engine • stdlib+patches ${pStat.stdlibMathcBytes / 1024} KB)."
     activity.showButtonToast("Project: $targetProject")
     if (closeDrawerAfter && isFileManagerDrawerOpen) {
         toggleFileManagerDrawer(open = false, animate = true)
@@ -735,8 +749,8 @@ internal fun MathWorkspaceFragment.promptNewProjectDialog() {
     showFrostedFileNamingModal(
         badgeIcon = "📦",
         title = "New .math Project",
-        subtitle = "Isolated Workspace • Own engine.so & stdlib.mathc",
-        description = "Creates a new isolated project folder in math_projects/ accompanied by its own engine.so and stdlib.mathc so compiled modules never interfere across projects.",
+        subtitle = "Recyclable Project Workspace • Shared Engine (O(1) Module Flush)",
+        description = "Creates a new project folder in math_projects/. Switching or running projects flushes previous user modules on the single shared engine in O(1) time.",
         initialText = "",
         hintText = defaultProjName,
         suggestions = listOf(
@@ -767,7 +781,7 @@ internal fun MathWorkspaceFragment.promptNewProjectDialog() {
                 )
             }
             switchToProject(projName, closeDrawerAfter = false)
-            activity.showButtonToast("Created project $projName (with engine.so & stdlib.mathc)")
+            activity.showButtonToast("Created project $projName")
         }
     )
 }
@@ -779,11 +793,11 @@ internal fun MathWorkspaceFragment.promptRenameOrCopyProjectDialog(sourceProj: S
     showFrostedFileNamingModal(
         badgeIcon = "📦",
         title = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) "Copy Project '$sourceProj'" else "Rename or Copy Project",
-        subtitle = "Project [$sourceProj] • Clones .math files, engine.so & stdlib.mathc",
+        subtitle = "Project [$sourceProj] • Clones .math & data files",
         description = if (sourceProj == MathEngineManager.DEFAULT_PROJECT_NAME) {
-            "Default project1 is always kept with all Studio demos, tests & examples (while project0 is dedicated to the Basic Calculator). Enter a name below to clone project1 into a new isolated project."
+            "Default project1 holds the bundled Studio demos & examples. Enter a name below to clone project1 into a new project folder."
         } else {
-            "Enter a new name to rename '$sourceProj', or tap 'Save Copy' to clone its modules, engine.so, and stdlib.mathc."
+            "Enter a new name to rename '$sourceProj', or tap 'Save Copy' to clone its .math modules and data files."
         },
         initialText = "${sourceProj}_copy",
         hintText = "${sourceProj}_v2",
@@ -820,9 +834,9 @@ internal fun MathWorkspaceFragment.resetSpecificProjectEngine(projectName: Strin
             moduleVarsCache.clear()
             refreshFileManagerDrawer()
             loadModuleStateIntoEditor(animate = false)
-            tvModuleQuickStatus?.text = "↺ Restored clean stdlib.mathc & restarted engine.so for project [$projectName]."
+            tvModuleQuickStatus?.text = "↺ Flushed user modules on shared engine back to clean stdlib + patches baseline."
             activity.showButtonToast(
-                if (ok) "Reset engine & stdlib.mathc for $projectName"
+                if (ok) "Flushed user modules for $projectName"
                 else "Reset $projectName"
             )
         }
@@ -836,11 +850,11 @@ internal fun MathWorkspaceFragment.confirmDeleteOrResetProject(projectName: Stri
     showFrostedConfirmModal(
         badgeIcon = if (isDefault) "↺" else "🗑",
         title = if (isDefault) "Reset Default '$projectName'?" else "Delete Project '$projectName'?",
-        subtitle = "Project [$projectName] • Isolated engine.so & stdlib.mathc",
+        subtitle = "Project [$projectName] • Shared Recyclable Engine",
         message = if (isDefault) {
-            "Restore '$projectName' to its default demos/examples and fresh engine.so + stdlib.mathc?"
+            "Restore '$projectName' to its default demos/examples and flush user modules on the shared engine?"
         } else {
-            "Permanently delete project '$projectName', its .math modules, and its isolated engine.so & stdlib.mathc?"
+            "Permanently delete project '$projectName' and its .math modules?"
         },
         confirmLabel = if (isDefault) "Reset project1" else "Delete Project",
         onConfirm = {

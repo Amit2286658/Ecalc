@@ -1,0 +1,257 @@
+# =============================================================================
+# Library/units.math — SI & Imperial Unit Groups & Postfix Suffixes
+# =============================================================================
+
+[units]
+<[arith]
+<[trig]
+<[complex_ext]
+
+# 0. 7D SI Base Dimensional Exponent Declarations (`@dim(unit_group, m, kg, s, A, K, mol, cd)`)
+@dim(length,               1,  0,  0,  0,  0,  0,  0)
+@dim(area,                 2,  0,  0,  0,  0,  0,  0)
+@dim(volume,               3,  0,  0,  0,  0,  0,  0)
+@dim(mass,                 0,  1,  0,  0,  0,  0,  0)
+@dim(density,             -3,  1,  0,  0,  0,  0,  0)
+@dim(time,                 0,  0,  1,  0,  0,  0,  0)
+@dim(time2,                0,  0,  2,  0,  0,  0,  0)
+@dim(frequency,            0,  0, -1,  0,  0,  0,  0)
+@dim(speed,                1,  0, -1,  0,  0,  0,  0)
+@dim(acceleration,         1,  0, -2,  0,  0,  0,  0)
+@dim(specific_energy,      2,  0, -2,  0,  0,  0,  0)
+@dim(momentum,             1,  1, -1,  0,  0,  0,  0)
+@dim(force,                1,  1, -2,  0,  0,  0,  0)
+@dim(pressure,            -1,  1, -2,  0,  0,  0,  0)
+@dim(energy,               2,  1, -2,  0,  0,  0,  0)
+@dim(power,                2,  1, -3,  0,  0,  0,  0)
+@dim(current,              0,  0,  0,  1,  0,  0,  0)
+@dim(charge,               0,  0,  1,  1,  0,  0,  0)
+@dim(voltage,              2,  1, -3, -1,  0,  0,  0)
+@dim(resistance,           2,  1, -3, -2,  0,  0,  0)
+@dim(capacitance,         -2, -1,  4,  2,  0,  0,  0)
+@dim(temperature,          0,  0,  0,  0,  1,  0,  0)
+@dim(heat_capacity,        2,  1, -2,  0, -1,  0,  0)
+@dim(specific_heat,        2,  0, -2,  0, -1,  0,  0)
+@dim(substance,            0,  0,  0,  0,  0,  1,  0)
+@dim(molar_mass,           0,  1,  0,  0,  0, -1,  0)
+@dim(molarity,            -3,  0,  0,  0,  0,  1,  0)
+@dim(molar_energy,         2,  1, -2,  0,  0, -1,  0)
+@dim(molar_heat_capacity,  2,  1, -2,  0, -1, -1,  0)
+@dim(catalytic_activity,   0,  0, -1,  0,  0,  1,  0)
+@dim(luminous_intensity,   0,  0,  0,  0,  0,  0,  1)
+@dim(illuminance,         -2,  0,  0,  0,  0,  0,  1)
+
+# 1. Angle Unit Group (`angle`, normalized to SI radians) + Dimensionless Ratios
+(d) deg    :95 -> real, angle = d * π / 180
+(d) "°"    :95 -> real, angle = d * π / 180
+(r) rad    :95 -> real, angle = r
+(m) arcmin :95 -> real, angle = m * π / (180 * 60)
+(s) arcsec :95 -> real, angle = s * π / (180 * 3600)
+(x) pct    :95                = x * 0.01
+(x) dB     :95                = 10 ^ (x / 20)
+(x) dBm    :95                = 0.001 * (10 ^ (x / 10))
+
+deg2rad(deg) -> real, angle = deg * π / 180
+rad2deg(rad)                = rad * 180 / π
+
+# 2. Length Unit Group (`length`, normalized to SI meters `m`)
+(x)      m    :95 -> real, length = x
+(x:iota) m    :95 -> iota, length = @raw(x)
+(x)      km   :95 -> real, length = x * 1000
+(x:iota) km   :95 -> iota, length = @mul(x, 1000)
+(x)      cm   :95 -> real, length = x * 0.01
+(x:iota) cm   :95 -> iota, length = @mul(x, 0.01)
+(x)      mm   :95 -> real, length = x * 0.001
+(x:iota) mm   :95 -> iota, length = @mul(x, 0.001)
+(x)      im   :95 -> iota, length = @raw(x)
+(x)      ikm  :95 -> iota, length = @mul(x, 1000)
+(x)      icm  :95 -> iota, length = @mul(x, 0.01)
+(x)      imm  :95 -> iota, length = @mul(x, 0.001)
+(x)      um   :95 -> real, length = x * (10 ^ -6)
+(x)      nm   :95 -> real, length = x * (10 ^ -9)
+(x)      mi   :95 -> real, length = x * 1609.344
+(x)      nmi  :95 -> real, length = x * 1852
+(x)      yd   :95 -> real, length = x * 0.9144
+(x)      ft   :95 -> real, length = x * 0.3048
+(x)      inch :95 -> real, length = x * 0.0254
+
+m_to_km(m)                    = m / 1000
+m_to_ft(m)                    = m / 0.3048
+m_to_mi(m)                    = m / 1609.344
+ft_to_m(ft_v) -> real, length = ft_v * 0.3048
+in_to_cm(in_v)                = in_v * 2.54
+cm_to_in(cm_v)                = cm_v / 2.54
+
+# 3. Area (`area`, SI `m^2`) & Volume (`volume`, SI `m^3`) Unit Groups
+(x) m2   :95 -> real, area   = x
+(x) km2  :95 -> real, area   = x * 1000000
+(x) cm2  :95 -> real, area   = x * 0.0001
+(x) mm2  :95 -> real, area   = x * (10 ^ -6)
+(x) ha   :95 -> real, area   = x * 10000
+(x) acre :95 -> real, area   = x * 4046.8564224
+(x) yd2  :95 -> real, area   = x * 0.83612736
+(x) ft2  :95 -> real, area   = x * 0.09290304
+(x) in2  :95 -> real, area   = x * 0.00064516
+
+(x) m3    :95 -> real, volume = x
+(x) cm3   :95 -> real, volume = x * (10 ^ -6)
+(x) mm3   :95 -> real, volume = x * (10 ^ -9)
+(x) L     :95 -> real, volume = x * 0.001
+(x) liter :95 -> real, volume = x * 0.001
+(x) mL    :95 -> real, volume = x * (10 ^ -6)
+(x) gal   :95 -> real, volume = x * 0.003785411784
+(x) ft3   :95 -> real, volume = x * 0.028316846592
+(x) in3   :95 -> real, volume = x * 0.000016387064
+
+# 4. Mass Unit Group (`mass`, normalized to SI kilograms `kg`) & Density (`density`, SI `kg/m^3`)
+(x) kg   :95 -> real, mass = x
+(x) gram :95 -> real, mass = x * 0.001
+(x) mg   :95 -> real, mass = x * (10 ^ -6)
+(x) ton  :95 -> real, mass = x * 1000
+(x) lb   :95 -> real, mass = x * 0.45359237
+(x) oz   :95 -> real, mass = x * 0.028349523125
+(x) amu  :95 -> real, mass = x * 1.66053906660 * (10 ^ -27)
+
+(x) kgm3 :95 -> real, density = x
+(x) gcm3 :95 -> real, density = x * 1000
+
+kg_to_lb(kg_v)                = kg_v / 0.45359237
+lb_to_kg(lb_v) -> real, mass  = lb_v * 0.45359237
+
+# 5. Time (`time`, SI `s`), Squared Time (`time2`, SI `s^2`) & Frequency (`frequency`, SI `Hz` = `s^-1`)
+(x) ms    :95 -> real, time = x * 0.001
+(x) us    :95 -> real, time = x * (10 ^ -6)
+(x) ns    :95 -> real, time = x * (10 ^ -9)
+(x) sec   :95 -> real, time = x
+(x) min_t :95 -> real, time = x * 60
+(x) hr    :95 -> real, time = x * 3600
+(x) day   :95 -> real, time = x * 86400
+(x) sec2  :95 -> real, time2 = x
+
+(x) Hz    :95 -> real, frequency = x
+(x) kHz   :95 -> real, frequency = x * 1000
+(x) MHz   :95 -> real, frequency = x * 1000000
+(x) GHz   :95 -> real, frequency = x * (10 ^ 9)
+(x) rpm   :95 -> real, frequency = x / 60
+
+# 6. Speed (`speed`, SI `m/s`), Acceleration (`acceleration`, SI `m/s^2`) & Specific Energy (`specific_energy`, SI `m^2/s^2`)
+(x) mps   :95 -> real, speed = x
+(x) kph   :95 -> real, speed = x / 3.6
+(x) mph   :95 -> real, speed = x * 0.44704
+(x) knots :95 -> real, speed = x * (1852 / 3600)
+
+(x) mps2  :95 -> real, acceleration    = x
+(x) g_acc :95 -> real, acceleration    = x * 9.80665
+(x) cmps2 :95 -> real, acceleration    = x * 0.01
+(x) fps2  :95 -> real, acceleration    = x * 0.3048
+(x) Jpkg  :95 -> real, specific_energy = x
+
+mps_to_kph(v) = v * 3.6
+mps_to_mph(v) = v / 0.44704
+
+# 7. Force (`force`, SI Newtons `N` = `kg*m/s^2`) & Momentum/Impulse (`momentum`, SI `N*s` = `kg*m/s`)
+(x) N     :95 -> real, force    = x
+(x) kN    :95 -> real, force    = x * 1000
+(x) MN    :95 -> real, force    = x * 1000000
+(x) mN    :95 -> real, force    = x * 0.001
+(x) dyn   :95 -> real, force    = x * 0.00001
+(x) lbf   :95 -> real, force    = x * 4.4482216152605
+(x) kgf   :95 -> real, force    = x * 9.80665
+
+(x) Ns    :95 -> real, momentum = x
+(x) kgmps :95 -> real, momentum = x
+
+# 8. Pressure Unit Group (`pressure`, normalized to SI Pascals `Pa` = `N/m^2`)
+(x) Pa   :95 -> real, pressure = x
+(x) kPa  :95 -> real, pressure = x * 1000
+(x) MPa  :95 -> real, pressure = x * 1000000
+(x) bar  :95 -> real, pressure = x * 100000
+(x) atm  :95 -> real, pressure = x * 101325
+(x) psi  :95 -> real, pressure = x * 6894.757293168
+(x) torr :95 -> real, pressure = x * (101325 / 760)
+
+# 9. Energy (`energy`, SI Joules `J` = `N*m`) & Power (`power`, SI Watts `W` = `J/s`) Unit Groups
+(x) J    :95 -> real, energy = x
+(x) kJ   :95 -> real, energy = x * 1000
+(x) MJ   :95 -> real, energy = x * 1000000
+(x) cal  :95 -> real, energy = x * 4.184
+(x) kcal :95 -> real, energy = x * 4184
+(x) Wh   :95 -> real, energy = x * 3600
+(x) kWh  :95 -> real, energy = x * 3600000
+(x) eV   :95 -> real, energy = x * 1.602176634 * (10 ^ -19)
+(x) W    :95 -> real, power  = x
+(x) kW   :95 -> real, power  = x * 1000
+(x) MW   :95 -> real, power  = x * 1000000
+(x) hp   :95 -> real, power  = x * 745.699872
+
+# 10. Electromagnetic Unit Groups (`current`, `charge`, `voltage`, `resistance`, `capacitance`)
+(x) A     :95 -> real, current     = x
+(x) mA    :95 -> real, current     = x * 0.001
+(x) uA    :95 -> real, current     = x * (10 ^ -6)
+(x) kA    :95 -> real, current     = x * 1000
+
+(x) C     :95 -> real, charge      = x
+(x) mC    :95 -> real, charge      = x * 0.001
+(x) uC    :95 -> real, charge      = x * (10 ^ -6)
+(x) Ah    :95 -> real, charge      = x * 3600
+(x) mAh   :95 -> real, charge      = x * 3.6
+
+(x) V     :95 -> real, voltage     = x
+(x) mV    :95 -> real, voltage     = x * 0.001
+(x) kV    :95 -> real, voltage     = x * 1000
+
+(x) ohm   :95 -> real, resistance  = x
+(x) kohm  :95 -> real, resistance  = x * 1000
+(x) Mohm  :95 -> real, resistance  = x * 1000000
+
+(x) F_cap :95 -> real, capacitance = x
+(x) mF    :95 -> real, capacitance = x * 0.001
+(x) uF    :95 -> real, capacitance = x * (10 ^ -6)
+(x) nF    :95 -> real, capacitance = x * (10 ^ -9)
+(x) pF    :95 -> real, capacitance = x * (10 ^ -12)
+
+# 11. Thermodynamic Temperature (`temperature`, SI `K`) & Thermal Capacity Groups (`heat_capacity`, `specific_heat`)
+(x) K      :95 -> real, temperature   = x
+(x) kelvin :95 -> real, temperature   = x
+(x) mK     :95 -> real, temperature   = x * 0.001
+(x) degC   :95 -> real, temperature   = x + 273.15
+(x) degF   :95 -> real, temperature   = (x - 32) / 1.8 + 273.15
+
+(x) JpK    :95 -> real, heat_capacity = x
+(x) JpkgK  :95 -> real, specific_heat = x
+
+c_to_k(c) = c + 273.15
+k_to_c(k) = k - 273.15
+c_to_f(c) = c * 1.8 + 32
+f_to_c(f) = (f - 32) / 1.8
+f_to_k(f) = (f - 32) / 1.8 + 273.15
+k_to_f(k) = (k - 273.15) * 1.8 + 32
+
+# 12. Amount of Substance (`substance`, SI `mol`) & Chemical / Molar Unit Groups
+#     (`molar_mass` kg/mol, `molarity` mol/m^3, `molar_energy` J/mol, `molar_heat_capacity` J/(mol*K), `catalytic_activity` kat = mol/s)
+(x) mol     :95 -> real, substance           = x
+(x) mmol    :95 -> real, substance           = x * 0.001
+(x) umol    :95 -> real, substance           = x * 1e-6
+(x) nmol    :95 -> real, substance           = x * 1e-9
+(x) kmol    :95 -> real, substance           = x * 1000
+
+(x) kgpmol  :95 -> real, molar_mass          = x
+(x) gpmol   :95 -> real, molar_mass          = x * 0.001
+
+(x) molm3   :95 -> real, molarity            = x
+(x) M_conc  :95 -> real, molarity            = x * 1000
+(x) mM_conc :95 -> real, molarity            = x
+
+(x) Jpmol   :95 -> real, molar_energy        = x
+(x) kJpmol  :95 -> real, molar_energy        = x * 1000
+(x) JpmolK  :95 -> real, molar_heat_capacity = x
+
+(x) kat     :95 -> real, catalytic_activity  = x
+(x) mkat    :95 -> real, catalytic_activity  = x * 0.001
+(x) ukat    :95 -> real, catalytic_activity  = x * 1e-6
+
+# 13. Photometric Unit Groups (`luminous_intensity`, SI `cd`/`lm`; `illuminance`, SI `lx` = `lm/m^2`)
+(x) cd      :95 -> real, luminous_intensity  = x
+(x) lm      :95 -> real, luminous_intensity  = x
+(x) lx      :95 -> real, illuminance         = x
+(x) klx     :95 -> real, illuminance         = x * 1000

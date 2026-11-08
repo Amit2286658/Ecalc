@@ -44,7 +44,7 @@ ENUM_HEADER = "Core/Headers/sym_table.h"
 
 
 def read(path):
-    for prefix in ["", "Main/math-engine/", "Main/app/src/main/cpp/mathengine/", "app/src/main/cpp/mathengine/"]:
+    for prefix in ["", "Main/app/src/main/cpp/mathengine/", "app/src/main/cpp/mathengine/"]:
         try:
             with open(prefix + path, "r", errors="replace") as f:
                 return f.read()

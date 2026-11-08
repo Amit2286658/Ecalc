@@ -1,64 +1,46 @@
 package com.ecalc
 
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import com.mathengine.MathEngineBridge
 import java.io.File
 import java.util.concurrent.Executors
-import java.util.zip.ZipFile
 
 /**
- * App-side manager for the C11 Math Engine (MEP) with Multi-Project Isolation,
- * Global Patch Propagation (`stdlib.mathc` + `math_patches/`), Project-wide Entry Execution,
- * and Top-to-Bottom Individual Module Execution.
+ * App-side manager for the C11 Math Engine (MEP) using a **Single Recyclable `Engine*` Instance**
+ * and Two Unified Execution Modes matching the C engine:
  *
- * Project Architecture:
- * 1. **`project0` ([CALC_PROJECT_NAME]) — Dedicated Basic Calculator Project**:
- *    - Lives in `filesDir/math_projects/project0/` with its own `engine.so` and `stdlib.mathc`.
- *    - Used exclusively by the Basic/Scientific Calculator (`MainActivity` keypad -> [evaluate]).
- *    - Completely isolated from freeform Studio projects so user experiments never interfere
- *      with basic calculator evaluation.
- * 2. **`project1` ([DEFAULT_STUDIO_PROJECT_NAME]) & User Projects (`project2`, ...)**:
- *    - `project1` is the default project opened in the Freeform `.math Studio` and holds all
- *      bundled demos, tests, and examples (`physics_sim.math`, `custom_ops.math`,
- *      `vectors_stats.math`, `data_io_json.math`, `config.json`, `sensor_data.csv`).
- *    - Every project lives in `filesDir/math_projects/<projectName>/` accompanied by its own
- *      `engine.so` and `stdlib.mathc` and runs on its own isolated native `Engine*` handle.
- * 3. **Global Patches as Extensions of `stdlib.mathc`**:
- *    - All `.math` patches in `filesDir/math_patches/` (e.g. `currency.math`) are compiled onto
- *      `assets/precompiled/stdlib.mathc` to form the universal baseline (`compiled_state.mathc`).
- *    - Every project (`project0`, `project1`, `project2`, ...) receives this patched `stdlib.mathc`
- *      baseline so patches are visible everywhere just like `stdlib`.
+ * 1. **Single Shared `Engine*` Instance ([engineHandle])**:
+ *    - Loaded once from `assets/precompiled/stdlib.mathc` + global patches (`filesDir/math_patches/compiled_state.mathc`).
+ *    - Its Base-Layer watermarks (`stdlib + patches`) are snapshotted in C (`eng_snapshot_base`).
+ *    - Recycled in O(1) time (`< 5 µs`) via `MathEngineBridge.nativeFlushUserModules(engineHandle)`
+ *      (`eng_flush_user_modules`), eliminating per-project `Engine*` allocations (~1 MB RAM each)
+ *      and eliminating per-project `engine.so` and `stdlib.mathc` disk copies (~550 KB each).
+ *
+ * 2. **Two Unified Execution Paths**:
+ *    - **Standalone Mode (`eng_eval` / single-unit `eng_build_and_run`)**:
+ *      Used by the Basic/Scientific Calculator (`MainActivity` -> [evaluate]) and standalone single-file
+ *      `.math` scripts (`unit_count == 1`).
+ *    - **Projects Mode (`eng_flush_user_modules` + multi-unit `eng_build_and_run`)**:
+ *      Used by `.math` Studio Projects ([runProject] / [runModuleFile]). Flushes previous user modules
+ *      back to the `stdlib + patches` base watermark in O(1) time, sets the project's sandboxed
+ *      `import_dir`, and compiles, topologically links (`<[dep]`), and executes the project's
+ *      `@entry(fn)` or `main()` entry point via `MathEngineBridge.nativeBuildAndRun`.
  */
-/** Result of an evaluation, mirroring the engine's wire format. */
-data class EvalOutcome(
-    val ok: Boolean,
-    val value: String,
-    val type: String,
-    val unit: String,
-    val error: String?,
-    val stdout: String = "",
-    val sourceLine: Int = 1
-)
-/** Describes a project-level `main()` or `@entry(fn)` entry point located in any `.math` file of a project. */
-data class ProjectEntryPoint(
-    val fileName: String,
-    val modName: String,
-    val entryFn: String,
-    val isExplicitDirective: Boolean,
-    val sourceLine: Int = 1
-)
-/** Per-project runtime state (native handle + linked module sources). */
-internal class ProjectRuntimeState(
-    val projectName: String,
-    var engineHandle: Long = 0L,
-    val studioModuleSourcesByName: LinkedHashMap<String, String> = linkedMapOf()
-)
-
 object MathEngineManager {
 
-    /** Per-project binary & linked-module status for UI inspection in the Project Drawer. */
+    /** Result of an evaluation, mirroring the engine's wire format. */
+    data class EvalOutcome(
+        val ok: Boolean,
+        val value: String,
+        val type: String,
+        val unit: String,
+        val error: String?,
+        val stdout: String = "",
+        val sourceLine: Int = 1
+    )
+
+    /** Engine & project status for UI inspection in the Project Drawer. */
     data class ProjectBinaryStatus(
         val projectName: String,
         val hasEngineSo: Boolean,
@@ -68,11 +50,19 @@ object MathEngineManager {
         val linkedModulesCount: Int
     )
 
+    /** Describes a project-level `main()` or `@entry(fn)` entry point located in any `.math` file of a project. */
+    data class ProjectEntryPoint(
+        val fileName: String,
+        val modName: String,
+        val entryFn: String,
+        val isExplicitDirective: Boolean,
+        val sourceLine: Int = 1
+    )
+
     internal const val TAG = "MathEngineManager"
     internal const val BUNDLED_STDLIB_ASSET = "precompiled/stdlib.mathc"
-    internal const val NOOP_TRAILING_MODULE = "noopMod"
 
-    /** `project0` is dedicated exclusively to the Basic Calculator. */
+    /** Legacy constant kept for migration cleanup only; Basic Calculator now uses Standalone Mode on the single engine. */
     const val CALC_PROJECT_NAME = "project0"
 
     /** `project1` is the default project in the Freeform `.math` Studio with all demos & examples. */
@@ -109,12 +99,29 @@ object MathEngineManager {
     internal val lambdaExprRegex = Regex("^\\(?\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\)?\\s*=>\\s*(.+)$", setOf(RegexOption.DOT_MATCHES_ALL))
     internal val inlineFnDefExtractRegex = Regex("^(?:(?:pub|priv)\\s+)*(?:\\$?fn\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^()\"]*)\\)\\s*(?:->[^=]+|:[a-zA-Z0-9_,\\s<>]+)?(?::=|=)(?![=>])\\s*(.+)$", setOf(RegexOption.DOT_MATCHES_ALL))
     internal val simpleIdentRegex = Regex("^[a-zA-Z_][a-zA-Z0-9_]*$")
+    internal val errorLineExtractRegex = Regex("(?i)\\bline\\s+(\\d+)\\b")
 
     @Volatile
     internal var appContext: Context? = null
 
-    /** Per-project isolated runtime state and native `Engine*` handles (includes `project0` and Studio projects). */
-    internal val projectStates = linkedMapOf<String, ProjectRuntimeState>()
+    /** Single shared native `Engine*` handle recycled across Standalone Mode (Calc) and Projects Mode (Studio). */
+    @Volatile
+    internal var engineHandle: Long = 0L
+
+    /** Content hash of the `stdlib + patches` baseline currently loaded into [engineHandle]. */
+    @Volatile
+    internal var loadedBaseHash: Int = 0
+
+    /** True when user project modules are currently linked above the base watermark in [engineHandle]. */
+    @Volatile
+    internal var isProjectModeActive: Boolean = false
+
+    /** Name of the Studio project whose modules are currently linked in [engineHandle], or `null` in Standalone Mode. */
+    @Volatile
+    internal var linkedProjectName: String? = null
+
+    /** Module sources currently linked in [engineHandle] for the active Studio project. */
+    internal val linkedModuleSourcesByName = LinkedHashMap<String, String>()
 
     /** Currently active project in the freeform `.math` Studio (defaults to `project1`). */
     @Volatile
@@ -123,12 +130,11 @@ object MathEngineManager {
     internal val worker = Executors.newSingleThreadExecutor()
     internal val customExternCallbacks = linkedMapOf<String, MathEngineBridge.ExternCallback>()
 
-    /** Provides the application context so `assets/precompiled/stdlib.mathc`,
-     *  remotely fetched patches in `filesDir/math_patches/`, `project0` (Basic Calculator),
-     *  `project1` (Freeform Studio demos), and [CurrencyConverter] live rates can be initialized. */
+    /** Initializes application context, bundled patches (`assets/patches/`), and [CurrencyConverter] rates. */
     fun initialize(context: Context) {
         val app = context.applicationContext
         appContext = app
+        MathPatchDownloader.ensureBundledPatchesSeeded(app)
         CurrencyConverter.initialize(app)
     }
 
@@ -139,22 +145,22 @@ object MathEngineManager {
             .removeSuffix(".math")
             .replace(sanitizeNameRegex, "_")
             .trim('_')
-        if (cleaned.isEmpty()) return if (allowCalcProject0) CALC_PROJECT_NAME else DEFAULT_STUDIO_PROJECT_NAME
+        if (cleaned.isEmpty()) return DEFAULT_STUDIO_PROJECT_NAME
         if (!allowCalcProject0 && cleaned.equals(CALC_PROJECT_NAME, ignoreCase = true)) {
             return DEFAULT_STUDIO_PROJECT_NAME
         }
         return cleaned
     }
 
-    /** Root directory containing all projects (`filesDir/math_projects/`). */
+    /** Root directory containing all Studio projects (`filesDir/math_projects/`). */
     fun getProjectsRootDir(ctx: Context): File =
         File(ctx.filesDir, PROJECTS_ROOT_FOLDER).also { if (!it.exists()) it.mkdirs() }
 
-    /** Directory for a specific project (`filesDir/math_projects/<projectName>/`). */
+    /** Directory for a specific Studio project (`filesDir/math_projects/<projectName>/`). */
     fun getProjectDir(
         ctx: Context,
         projectName: String = activeProjectName,
-        allowCalcProject0: Boolean = true
+        allowCalcProject0: Boolean = false
     ): File {
         val safeName = sanitizeProjectName(projectName, allowCalcProject0 = allowCalcProject0)
         return File(getProjectsRootDir(ctx), safeName).also { if (!it.exists()) it.mkdirs() }
@@ -162,13 +168,11 @@ object MathEngineManager {
 
     /** Returns the sandboxed file I/O directory for [projectName] (`filesDir/math_projects/<projectName>/`). */
     fun getWorkspaceSandboxDir(ctx: Context, projectName: String = activeProjectName): File =
-        getProjectDir(ctx, projectName, allowCalcProject0 = true)
+        getProjectDir(ctx, projectName, allowCalcProject0 = false)
 
     /**
      * Returns the universal baseline `stdlib.mathc` byte array (`assets/precompiled/stdlib.mathc`
      * extended with all compiled patches from `filesDir/math_patches/compiled_state.mathc`).
-     * Because patches are extensions of `stdlib` rather than custom project modules, every
-     * project (`project0`, `project1`, `project2`, ...) uses this patched image as its base stdlib.
      */
     @Synchronized
     internal fun getUniversalPatchedStdlibBytes(ctx: Context): ByteArray {
@@ -181,94 +185,37 @@ object MathEngineManager {
     }
 
     /**
-     * Ensures that [projectName]'s directory contains its own `engine.so` and `stdlib.mathc`
-     * (plus `.base_stdlib.mathc` seeded with `stdlib + patches` so every project sees all global patches).
+     * Ensures that [projectName]'s directory exists for `.math` and data files, and removes any
+     * obsolete per-project `engine.so`, `stdlib.mathc`, or `.base_stdlib.mathc` duplicates.
      */
     @Synchronized
     fun ensureProjectSetup(
         ctx: Context,
         projectName: String = activeProjectName,
-        allowCalcProject0: Boolean = true
+        allowCalcProject0: Boolean = false
     ): File {
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = allowCalcProject0)
-        val projDir = getProjectDir(ctx, safeName, allowCalcProject0 = allowCalcProject0)
-        val stdlibFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-        val baseBackupFile = File(projDir, PROJECT_BASE_STDLIB_BACKUP)
-        val engineSoFile = File(projDir, PROJECT_ENGINE_SO_NAME)
+        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = false)
+        val projDir = getProjectDir(ctx, safeName, allowCalcProject0 = false)
 
-        // 1. Provision per-project stdlib.mathc + clean baseline backup (including global patches)
+        // Clean up any legacy per-project binary duplicates (engine.so and stdlib.mathc are now shared once)
         runCatching {
-            val universalBaseBytes = getUniversalPatchedStdlibBytes(ctx)
-            if (!baseBackupFile.exists() || baseBackupFile.length() != universalBaseBytes.size.toLong()) {
-                baseBackupFile.writeBytes(universalBaseBytes)
+            File(projDir, PROJECT_ENGINE_SO_NAME).takeIf { it.exists() }?.delete()
+            File(projDir, PROJECT_STDLIB_MATHC_NAME).takeIf { it.exists() }?.delete()
+            File(projDir, PROJECT_BASE_STDLIB_BACKUP).takeIf { it.exists() }?.delete()
+            val legacyProj0 = File(getProjectsRootDir(ctx), CALC_PROJECT_NAME)
+            if (legacyProj0.exists()) {
+                File(legacyProj0, PROJECT_ENGINE_SO_NAME).takeIf { it.exists() }?.delete()
+                File(legacyProj0, PROJECT_STDLIB_MATHC_NAME).takeIf { it.exists() }?.delete()
+                File(legacyProj0, PROJECT_BASE_STDLIB_BACKUP).takeIf { it.exists() }?.delete()
             }
-            if (!stdlibFile.exists() || stdlibFile.length() == 0L) {
-                stdlibFile.writeBytes(universalBaseBytes)
-            }
-        }.onFailure { t ->
-            Log.w(TAG, "Could not provision stdlib.mathc for project '$safeName': ${t.message}")
         }
-
-        // 2. Provision per-project engine.so from installed nativeLibraryDir or APK zip
-        runCatching {
-            if (!engineSoFile.exists() || engineSoFile.length() == 0L) {
-                val copied = copyNativeEngineSoToProject(ctx, engineSoFile)
-                if (copied) {
-                    engineSoFile.setReadable(true, false)
-                    engineSoFile.setExecutable(true, false)
-                }
-            }
-        }.onFailure { t ->
-            Log.w(TAG, "Could not provision engine.so for project '$safeName': ${t.message}")
-        }
-
         return projDir
     }
 
-    /**
-     * Copies `libmathengine.so` into [destEngineSo] from `applicationInfo.nativeLibraryDir`
-     * or extracts it directly from the APK archive (`applicationInfo.sourceDir`).
-     */
-    internal fun copyNativeEngineSoToProject(ctx: Context, destEngineSo: File): Boolean {
-        val nativeDir = ctx.applicationInfo?.nativeLibraryDir?.let { File(it) }
-        if (nativeDir != null && nativeDir.isDirectory) {
-            val candidate = File(nativeDir, "libmathengine.so")
-            if (candidate.isFile && candidate.canRead() && candidate.length() > 0L) {
-                candidate.copyTo(destEngineSo, overwrite = true)
-                return true
-            }
-        }
-        val apkPath = ctx.applicationInfo?.sourceDir
-        if (!apkPath.isNullOrBlank()) {
-            val apkFile = File(apkPath)
-            if (apkFile.isFile && apkFile.canRead()) {
-                ZipFile(apkFile).use { zip ->
-                    val abis = Build.SUPPORTED_ABIS.orEmpty().toList() + listOf("arm64-v8a", "x86_64", "armeabi-v7a")
-                    for (abi in abis.distinct()) {
-                        val entry = zip.getEntry("lib/$abi/libmathengine.so")
-                        if (entry != null) {
-                            zip.getInputStream(entry).use { input ->
-                                destEngineSo.outputStream().use { output ->
-                                    input.copyTo(output)
-                                }
-                            }
-                            if (destEngineSo.length() > 0L) return true
-                        }
-                    }
-                }
-            }
-        }
-        return false
-    }
-
-    /**
-     * Lists all Freeform Studio project names in `filesDir/math_projects/`,
-     * keeping `project0` dedicated to the Basic Calculator and ordering `project1` first.
-     */
+    /** Lists all Studio project names in `filesDir/math_projects/`, ordering `project1` first. */
     @Synchronized
     fun listProjects(ctx: Context): List<String> {
-        ensureProjectSetup(ctx, CALC_PROJECT_NAME, allowCalcProject0 = true)
-        ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME, allowCalcProject0 = false)
+        ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME)
         val root = getProjectsRootDir(ctx)
         val dirs = root.listFiles { f ->
             f.isDirectory && !f.name.startsWith(".") && !f.name.equals(CALC_PROJECT_NAME, ignoreCase = true)
@@ -279,47 +226,52 @@ object MathEngineManager {
         return if (DEFAULT_STUDIO_PROJECT_NAME in dirs) dirs else (listOf(DEFAULT_STUDIO_PROJECT_NAME) + dirs)
     }
 
-    /** Inspects the on-disk `engine.so` and `stdlib.mathc` binaries for [projectName]. */
+    /** Inspects the shared engine & stdlib+patches status alongside [projectName]'s linked module count. */
     @Synchronized
     fun getProjectBinaryStatus(ctx: Context, projectName: String = activeProjectName): ProjectBinaryStatus {
-        val isCalc = projectName.equals(CALC_PROJECT_NAME, ignoreCase = true)
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = isCalc)
-        val projDir = ensureProjectSetup(ctx, safeName, allowCalcProject0 = isCalc)
-        val soFile = File(projDir, PROJECT_ENGINE_SO_NAME)
-        val mathcFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-        val state = projectStates[safeName]
+        val safeName = sanitizeProjectName(projectName)
+        ensureProjectSetup(ctx, safeName)
+        val nativeSo = ctx.applicationInfo?.nativeLibraryDir?.let { File(it, "libmathengine.so") }
+        val soBytes = if (nativeSo != null && nativeSo.isFile) nativeSo.length() else 287_000L
+        val stdlibBytes = runCatching { getUniversalPatchedStdlibBytes(ctx).size.toLong() }.getOrDefault(251_891L)
+        val linkedCount = if (linkedProjectName == safeName) linkedModuleSourcesByName.size else 0
         return ProjectBinaryStatus(
             projectName = safeName,
-            hasEngineSo = soFile.isFile && soFile.length() > 0L,
-            engineSoBytes = if (soFile.isFile) soFile.length() else 0L,
-            hasStdlibMathc = mathcFile.isFile && mathcFile.length() > 0L,
-            stdlibMathcBytes = if (mathcFile.isFile) mathcFile.length() else 0L,
-            linkedModulesCount = state?.studioModuleSourcesByName?.size ?: 0
+            hasEngineSo = engineHandle != 0L,
+            engineSoBytes = soBytes,
+            hasStdlibMathc = stdlibBytes > 0L,
+            stdlibMathcBytes = stdlibBytes,
+            linkedModulesCount = linkedCount
         )
     }
 
-    /** Creates a new isolated Studio project folder with its own `engine.so` and patched `stdlib.mathc`. */
+    /** Creates a new Studio project folder for `.math` modules (reusing the single shared engine). */
     @Synchronized
     fun createProject(ctx: Context, projectName: String): File {
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = false)
-        val projDir = ensureProjectSetup(ctx, safeName, allowCalcProject0 = false)
-        projectStates.getOrPut(safeName) { ProjectRuntimeState(safeName) }
-        return projDir
+        val safeName = sanitizeProjectName(projectName)
+        return ensureProjectSetup(ctx, safeName)
     }
 
-    /** Switches the active Studio project and boots its isolated engine handle if needed. */
+    /** Switches the active Studio project and flushes previous user modules on the shared engine. */
     fun setActiveProject(
         ctx: Context,
         projectName: String,
         onDone: ((ok: Boolean, activeProject: String) -> Unit)? = null
     ) {
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = false)
+        val safeName = sanitizeProjectName(projectName)
         activeProjectName = safeName
         worker.execute {
             try {
                 val ok = synchronized(this) {
-                    ensureProjectSetup(ctx, safeName, allowCalcProject0 = false)
-                    ensureProjectEngineSync(ctx, safeName, allowCalcProject0 = false) != 0L
+                    ensureProjectSetup(ctx, safeName)
+                    val handle = ensureSharedEngineSync(ctx)
+                    if (handle != 0L && linkedProjectName != null && linkedProjectName != safeName) {
+                        flushUserModulesSync(ctx)
+                    }
+                    if (handle != 0L) {
+                        registerHostExternsOnHandle(handle, safeName)
+                    }
+                    handle != 0L
                 }
                 onDone?.invoke(ok, safeName)
             } catch (t: Throwable) {
@@ -329,7 +281,7 @@ object MathEngineManager {
         }
     }
 
-    /** Renames or duplicates an existing Studio project along with its `.math` files, `engine.so`, and `stdlib.mathc`. */
+    /** Renames or duplicates an existing Studio project's `.math` and data files. */
     @Synchronized
     fun renameOrCopyProject(
         ctx: Context,
@@ -337,27 +289,25 @@ object MathEngineManager {
         targetProjectName: String,
         copyOnly: Boolean
     ): String {
-        val srcSafe = sanitizeProjectName(sourceProjectName, allowCalcProject0 = false)
-        var dstSafe = sanitizeProjectName(targetProjectName, allowCalcProject0 = false)
+        val srcSafe = sanitizeProjectName(sourceProjectName)
+        var dstSafe = sanitizeProjectName(targetProjectName)
         if (dstSafe == srcSafe && copyOnly) {
             dstSafe = "${srcSafe}_copy"
         }
         if (dstSafe == srcSafe) return srcSafe
 
-        val srcDir = getProjectDir(ctx, srcSafe, allowCalcProject0 = false)
-        val dstDir = getProjectDir(ctx, dstSafe, allowCalcProject0 = false)
+        val srcDir = getProjectDir(ctx, srcSafe)
+        val dstDir = getProjectDir(ctx, dstSafe)
         srcDir.listFiles()?.forEach { file ->
-            if (file.isFile) {
+            if (file.isFile && !file.name.endsWith(".so") && !file.name.endsWith(".mathc")) {
                 runCatching { file.copyTo(File(dstDir, file.name), overwrite = true) }
             }
         }
-        ensureProjectSetup(ctx, dstSafe, allowCalcProject0 = false)
+        ensureProjectSetup(ctx, dstSafe)
 
         if (!copyOnly && srcSafe != DEFAULT_STUDIO_PROJECT_NAME) {
-            projectStates.remove(srcSafe)?.let { oldState ->
-                if (oldState.engineHandle != 0L) {
-                    runCatching { MathEngineBridge.nativeDestroy(oldState.engineHandle) }
-                }
+            if (linkedProjectName == srcSafe) {
+                flushUserModulesSync(ctx)
             }
             srcDir.deleteRecursively()
         }
@@ -367,21 +317,18 @@ object MathEngineManager {
         return dstSafe
     }
 
-    /** Deletes a Studio project and destroys its isolated native `Engine*` handle. If `project1` is reset, re-provisions it. */
+    /** Deletes a Studio project folder and flushes its user modules if currently linked in the shared engine. */
     @Synchronized
     fun deleteProject(ctx: Context, projectName: String): String {
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = false)
-        projectStates.remove(safeName)?.let { st ->
-            if (st.engineHandle != 0L) {
-                runCatching { MathEngineBridge.nativeDestroy(st.engineHandle) }
-                st.engineHandle = 0L
-            }
+        val safeName = sanitizeProjectName(projectName)
+        if (linkedProjectName == safeName) {
+            flushUserModulesSync(ctx)
         }
-        val projDir = getProjectDir(ctx, safeName, allowCalcProject0 = false)
+        val projDir = getProjectDir(ctx, safeName)
         projDir.deleteRecursively()
 
         if (safeName == DEFAULT_STUDIO_PROJECT_NAME) {
-            ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME, allowCalcProject0 = false)
+            ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME)
         }
         val remaining = listProjects(ctx)
         if (activeProjectName == safeName) {
@@ -391,34 +338,53 @@ object MathEngineManager {
     }
 
     /**
-     * Resets a project's isolated `stdlib.mathc` back to the universal baseline (`stdlib + patches`)
-     * and recreates its native `Engine*` handle so any previously compiled/linked custom modules are unlinked.
+     * Flushes all user project modules from the shared `Engine*` instance in O(1) time
+     * (`nativeFlushUserModules`), returning the engine to the clean `stdlib + patches` baseline.
+     */
+    @Synchronized
+    internal fun flushUserModulesSync(ctx: Context? = appContext): Long {
+        val app = ctx ?: appContext ?: return 0L
+        val handle = ensureSharedEngineSync(app)
+        if (handle == 0L) return 0L
+
+        val flushed = try {
+            MathEngineBridge.nativeFlushUserModules(handle)
+        } catch (_: UnsatisfiedLinkError) {
+            val cleanBytes = runCatching { getUniversalPatchedStdlibBytes(app) }.getOrNull()
+            cleanBytes != null && cleanBytes.isNotEmpty() && MathEngineBridge.nativeLoadMathc(handle, cleanBytes)
+        } catch (_: Throwable) {
+            false
+        }
+
+        if (!flushed) {
+            val cleanBytes = runCatching { getUniversalPatchedStdlibBytes(app) }.getOrNull()
+            if (cleanBytes != null && cleanBytes.isNotEmpty()) {
+                runCatching { MathEngineBridge.nativeLoadMathc(handle, cleanBytes) }
+            }
+        }
+
+        linkedModuleSourcesByName.clear()
+        linkedProjectName = null
+        isProjectModeActive = false
+        registerHostExternsOnHandle(handle, activeProjectName)
+        refreshLiveAutocompleteCatalogSync(handle)
+        return handle
+    }
+
+    /**
+     * Flushes all user modules on the shared engine back to the clean `stdlib + patches` baseline.
      */
     fun resetProjectEngine(
         ctx: Context,
         projectName: String = activeProjectName,
         onDone: ((ok: Boolean) -> Unit)? = null
     ) {
-        val isCalc = projectName.equals(CALC_PROJECT_NAME, ignoreCase = true)
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = isCalc)
+        val safeName = sanitizeProjectName(projectName)
         worker.execute {
             try {
                 val ok = synchronized(this) {
-                    val projDir = ensureProjectSetup(ctx, safeName, allowCalcProject0 = isCalc)
-                    val baseBackup = File(projDir, PROJECT_BASE_STDLIB_BACKUP)
-                    val stdlibFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-                    runCatching {
-                        val cleanBytes = getUniversalPatchedStdlibBytes(ctx)
-                        baseBackup.writeBytes(cleanBytes)
-                        stdlibFile.writeBytes(cleanBytes)
-                    }
-                    val st = projectStates.getOrPut(safeName) { ProjectRuntimeState(safeName) }
-                    if (st.engineHandle != 0L) {
-                        runCatching { MathEngineBridge.nativeDestroy(st.engineHandle) }
-                        st.engineHandle = 0L
-                    }
-                    st.studioModuleSourcesByName.clear()
-                    ensureProjectEngineSync(ctx, safeName, allowCalcProject0 = isCalc) != 0L
+                    ensureProjectSetup(ctx, safeName)
+                    flushUserModulesSync(ctx) != 0L
                 }
                 onDone?.invoke(ok)
             } catch (t: Throwable) {
@@ -428,9 +394,21 @@ object MathEngineManager {
         }
     }
 
-    /** Registers all built-in host externs ([CurrencyConverter]) and any custom app externs on [handle]. */
+    /** Exports the live C `SymTable` catalog (`nativeExportCatalog`) and merges it into editor autocomplete. */
     @Synchronized
-    internal fun registerHostExternsOnHandle(handle: Long, projectName: String) {
+    internal fun refreshLiveAutocompleteCatalogSync(handle: Long = engineHandle) {
+        if (handle == 0L) return
+        runCatching {
+            val raw = MathEngineBridge.nativeExportCatalog(handle)
+            if (!raw.isNullOrBlank()) {
+                mergeLiveEngineCatalog(raw)
+            }
+        }
+    }
+
+    /** Registers all built-in host externs ([CurrencyConverter]) and custom app externs on [handle]. */
+    @Synchronized
+    internal fun registerHostExternsOnHandle(handle: Long, projectName: String = activeProjectName) {
         if (handle == 0L) return
         appContext?.let { ctx ->
             val sandboxDir = getWorkspaceSandboxDir(ctx, projectName).absolutePath
@@ -442,19 +420,17 @@ object MathEngineManager {
         }
     }
 
-    /** Registers a custom host extern callback (`@<name>(...)`) on all active engines and persists it across rebuilds. */
+    /** Registers a custom host extern callback (`@<name>(...)`) on the shared engine. */
     @Synchronized
     fun registerExtern(name: String, callback: MathEngineBridge.ExternCallback): Boolean {
         customExternCallbacks[name] = callback
-        var ok = true
-        for ((_, st) in projectStates) {
-            if (st.engineHandle != 0L) {
-                ok = runCatching {
-                    MathEngineBridge.nativeRegisterExtern(st.engineHandle, name, callback)
-                }.getOrDefault(false) && ok
-            }
+        return if (engineHandle != 0L) {
+            runCatching {
+                MathEngineBridge.nativeRegisterExtern(engineHandle, name, callback)
+            }.getOrDefault(false)
+        } else {
+            true
         }
-        return ok
     }
 
     internal fun stripCommentOutsideQuotes(line: String): String {
@@ -546,11 +522,6 @@ object MathEngineManager {
     /**
      * Scans all `.math` files in a project ([projectSourcesByFileName]) to locate a project-level
      * `@entry(fn)` directive or a 0-arg `pub main()` / `main()` function located anywhere in any file.
-     *
-     * Priority order:
-     * 1. Explicit `@entry(fn)` directive (preferring [preferredActiveFile] if multiple files declare `@entry`).
-     * 2. 0-arg `pub main()` / `main()` function (preferring `main.math`, then [preferredActiveFile], then sorted file order).
-     * 3. Returns `null` if no `main` or `@entry` exists anywhere in the project.
      */
     fun findProjectEntryPoint(
         projectSourcesByFileName: Map<String, String>,
@@ -640,8 +611,8 @@ object MathEngineManager {
         activeFileName: String? = null,
         activeEditorSource: String? = null
     ): ProjectEntryPoint? {
-        val safeProj = sanitizeProjectName(projectName, allowCalcProject0 = false)
-        val projDir = getProjectDir(ctx, safeProj, allowCalcProject0 = false)
+        val safeProj = sanitizeProjectName(projectName)
+        val projDir = getProjectDir(ctx, safeProj)
         val sources = LinkedHashMap<String, String>()
         projDir.listFiles { f ->
             f.isFile && f.name.endsWith(".math", ignoreCase = true) && !f.name.startsWith(".")
@@ -655,7 +626,7 @@ object MathEngineManager {
     }
 
     /** Creates a blank engine loaded strictly with `assets/precompiled/stdlib.mathc` and registers host externs. */
-    internal fun createFreshStdlibEngine(ctx: Context, projectName: String = CALC_PROJECT_NAME): Long {
+    internal fun createFreshStdlibEngine(ctx: Context, projectName: String = activeProjectName): Long {
         val stdlibBytes = ctx.assets.open(BUNDLED_STDLIB_ASSET).use { it.readBytes() }
         val handle = MathEngineBridge.nativeCreateBlank().takeIf { it != 0L }
             ?: MathEngineBridge.nativeCreate().takeIf { it != 0L }
@@ -671,11 +642,7 @@ object MathEngineManager {
         return 0L
     }
 
-    /**
-     * Evaluates [payload] inside [modName] while appending a trailing `[noopMod]` module switch
-     * so the C compiler's end-of-slice hook (`ext_eval_slice_ex` Step 6) never auto-invokes
-     * `main()` prematurely during top-to-bottom or declaration-only evaluation.
-     */
+    /** Evaluates [payload] inside [modName] via `nativeModuleEval`. */
     internal fun evalInModuleWithoutAutoMain(handle: Long, modName: String, payload: String): String {
         val wire = MathEngineBridge.nativeModuleEval(handle, modName, payload)
         MathEngineBridge.nativeSetModule(handle, modName, true)
@@ -683,157 +650,42 @@ object MathEngineManager {
     }
 
     /**
-     * Boots or returns the isolated `Engine*` handle for [projectName] (`project0` for Basic Calculator,
-     * `project1`+ for Freeform Studio), loading the universal patched `stdlib.mathc` baseline.
+     * Ensures the single shared `Engine*` handle ([engineHandle]) is booted with `stdlib.mathc` +
+     * all global patches (`filesDir/math_patches/compiled_state.mathc`) and returns it.
      */
+    @Synchronized
+    internal fun ensureSharedEngineSync(
+        ctx: Context,
+        projectName: String = activeProjectName
+    ): Long {
+        val safeName = sanitizeProjectName(projectName)
+        ensureEngine()
+        if (engineHandle != 0L) {
+            registerHostExternsOnHandle(engineHandle, safeName)
+        }
+        return engineHandle
+    }
+
+    /** Compatibility alias returning the single shared `Engine*` handle. */
     @Synchronized
     internal fun ensureProjectEngineSync(
         ctx: Context,
         projectName: String = activeProjectName,
-        allowCalcProject0: Boolean = true
-    ): Long {
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = allowCalcProject0)
-        val projDir = ensureProjectSetup(ctx, safeName, allowCalcProject0 = allowCalcProject0)
-        val state = projectStates.getOrPut(safeName) { ProjectRuntimeState(safeName) }
-        if (state.engineHandle != 0L) {
-            registerHostExternsOnHandle(state.engineHandle, safeName)
-            return state.engineHandle
-        }
-
-        val stdlibFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-        val baseBackupFile = File(projDir, PROJECT_BASE_STDLIB_BACKUP)
-
-        val handle = MathEngineBridge.nativeCreateBlank().takeIf { it != 0L }
-            ?: MathEngineBridge.nativeCreate().takeIf { it != 0L }
-            ?: return 0L
-
-        // Always boot from the clean universal patched stdlib baseline so runtime module variables
-        // (which are not serialized in .mathc bytecode images) are cleanly evaluated on demand.
-        val cleanBytes = runCatching {
-            getUniversalPatchedStdlibBytes(ctx)
-        }.getOrNull()
-
-        var loaded = false
-        if (cleanBytes != null && cleanBytes.isNotEmpty()) {
-            loaded = MathEngineBridge.nativeLoadMathc(handle, cleanBytes)
-            if (loaded) {
-                runCatching {
-                    if (!baseBackupFile.exists() || baseBackupFile.length() != cleanBytes.size.toLong()) {
-                        baseBackupFile.writeBytes(cleanBytes)
-                    }
-                    if (!stdlibFile.exists() || stdlibFile.length() == 0L) {
-                        stdlibFile.writeBytes(cleanBytes)
-                    }
-                }
-            }
-        }
-        if (!loaded) {
-            val fallbackBytes = runCatching {
-                if (stdlibFile.isFile && stdlibFile.length() > 0L) stdlibFile.readBytes() else null
-            }.getOrNull()
-            if (fallbackBytes != null && fallbackBytes.isNotEmpty()) {
-                loaded = MathEngineBridge.nativeLoadMathc(handle, fallbackBytes)
-            }
-        }
-
-        if (!loaded) {
-            MathEngineBridge.nativeDestroy(handle)
-            return 0L
-        }
-
-        state.engineHandle = handle
-        registerHostExternsOnHandle(handle, safeName)
-        return handle
-    }
+        allowCalcProject0: Boolean = false
+    ): Long = ensureSharedEngineSync(ctx, projectName)
 
     /**
-     * Rebuilds [projectName]'s isolated engine from the universal patched baseline
-     * (`stdlib.mathc` + all global `math_patches/`) and re-links all active custom modules
-     * in `state.studioModuleSourcesByName`.
+     * Rebuilds the single shared `Engine*` instance and universal patch cache from `stdlib.mathc` +
+     * all current `.math` patches in `filesDir/math_patches/`.
      */
     @Synchronized
-    internal fun rebuildProjectEngineFromBaselineSync(
-        ctx: Context,
-        projectName: String,
-        allowCalcProject0: Boolean = true
-    ): Long {
-        val safeName = sanitizeProjectName(projectName, allowCalcProject0 = allowCalcProject0)
-        val projDir = ensureProjectSetup(ctx, safeName, allowCalcProject0 = allowCalcProject0)
-        val baseBackupFile = File(projDir, PROJECT_BASE_STDLIB_BACKUP)
-        val stdlibFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-        val state = projectStates.getOrPut(safeName) { ProjectRuntimeState(safeName) }
-
-        if (state.engineHandle != 0L) {
-            runCatching { MathEngineBridge.nativeDestroy(state.engineHandle) }
-            state.engineHandle = 0L
-        }
-
-        val cleanBytes = runCatching { getUniversalPatchedStdlibBytes(ctx) }.getOrNull() ?: return 0L
-        runCatching {
-            baseBackupFile.writeBytes(cleanBytes)
-            stdlibFile.writeBytes(cleanBytes)
-        }
-
-        val newHandle = ensureProjectEngineSync(ctx, safeName, allowCalcProject0 = allowCalcProject0)
-        if (newHandle == 0L) return 0L
-
-        for ((modName, src) in state.studioModuleSourcesByName) {
-            val declStmts = splitModuleStatements(src).filter { stmt ->
-                !stmt.trim().startsWith("@entry") && isDeclarationOrBindingStatement(stmt)
-            }
-            val declOnlySrc = declStmts.joinToString("\n")
-            if (declOnlySrc.isNotEmpty()) {
-                runCatching { evalInModuleWithoutAutoMain(newHandle, modName, declOnlySrc) }
-                runCatching { MathEngineBridge.nativeSetModule(newHandle, modName, true) }
-            }
-        }
-        return newHandle
-    }
-
-    /**
-     * Propagates the universal patched `stdlib.mathc` (`assets/precompiled/stdlib.mathc` + all
-     * `math_patches/`) to `project0` (Basic Calculator) and all Studio projects (`project1`, ...),
-     * ensuring patches are visible everywhere as extensions of `stdlib`.
-     */
-    @Synchronized
-    internal fun propagatePatchedStdlibToAllProjectsSync(ctx: Context) {
-        val universalBytes = runCatching { getUniversalPatchedStdlibBytes(ctx) }.getOrNull() ?: return
-        if (universalBytes.isEmpty()) return
-
-        val allProjNames = (listOf(CALC_PROJECT_NAME) + listProjects(ctx)).distinct()
-        for (projName in allProjNames) {
-            val isCalc = projName.equals(CALC_PROJECT_NAME, ignoreCase = true)
-            val projDir = ensureProjectSetup(ctx, projName, allowCalcProject0 = isCalc)
-            val baseBackupFile = File(projDir, PROJECT_BASE_STDLIB_BACKUP)
-            val stdlibFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-            val prevBaseLen = if (baseBackupFile.isFile) baseBackupFile.length() else -1L
-            runCatching { baseBackupFile.writeBytes(universalBytes) }
-
-            val st = projectStates[projName]
-            if (st == null || st.studioModuleSourcesByName.isEmpty()) {
-                runCatching { stdlibFile.writeBytes(universalBytes) }
-                if (st != null && st.engineHandle != 0L && prevBaseLen != universalBytes.size.toLong()) {
-                    rebuildProjectEngineFromBaselineSync(ctx, projName, allowCalcProject0 = isCalc)
-                }
-            } else if (prevBaseLen != universalBytes.size.toLong()) {
-                rebuildProjectEngineFromBaselineSync(ctx, projName, allowCalcProject0 = isCalc)
-            }
-        }
-    }
-
-    /**
-     * Rebuilds `project0` (Basic Calculator) + universal patch cache from `stdlib.mathc` +
-     * all current `.math` patches in `filesDir/math_patches/`, then propagates to all projects.
-     */
-    @Synchronized
-    internal fun rebuildCalcProject0AndPatchesSync(
+    internal fun rebuildSharedEngineAndPatchesSync(
         ctx: Context,
         onStatus: ((String) -> Unit)? = null
     ): Boolean {
-        val st0 = projectStates.getOrPut(CALC_PROJECT_NAME) { ProjectRuntimeState(CALC_PROJECT_NAME) }
-        val oldHandle = st0.engineHandle
+        val oldHandle = engineHandle
         MathPatchDownloader.invalidateCompiledCache(MathPatchDownloader.getPatchesDir(ctx))
-        val newHandle = createFreshStdlibEngine(ctx, CALC_PROJECT_NAME)
+        val newHandle = createFreshStdlibEngine(ctx, activeProjectName)
         if (newHandle == 0L) {
             onStatus?.invoke("Engine rebuild failed: could not load $BUNDLED_STDLIB_ASSET")
             return false
@@ -842,8 +694,11 @@ object MathEngineManager {
         if (oldHandle != 0L) {
             runCatching { MathEngineBridge.nativeDestroy(oldHandle) }
         }
-        st0.engineHandle = newHandle
-        registerHostExternsOnHandle(newHandle, CALC_PROJECT_NAME)
+        engineHandle = newHandle
+        linkedModuleSourcesByName.clear()
+        linkedProjectName = null
+        isProjectModeActive = false
+        registerHostExternsOnHandle(newHandle, activeProjectName)
         MathPatchLoader.resetTracking()
 
         MathPatchLoader.loadUnloadedPatches(
@@ -852,42 +707,64 @@ object MathEngineManager {
             { src -> compileAndLoadPatchOnHandleSync(newHandle, src) },
             onStatus
         )
-        propagatePatchedStdlibToAllProjectsSync(ctx)
+        loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+        refreshLiveAutocompleteCatalogSync(engineHandle)
         return true
     }
 
     /**
-     * Ensures the Basic Calculator's dedicated `project0` engine (`filesDir/math_projects/project0/`)
-     * and the global patch cache (`compiled_state.mathc`) are booted and up to date.
+     * Ensures the single shared `Engine*` instance ([engineHandle]) and the global patch cache
+     * (`compiled_state.mathc`) are booted and up to date.
      */
     @Synchronized
     fun ensureEngine(onStatus: ((String) -> Unit)? = null): Boolean {
         val ctx = appContext ?: return false
-        ensureProjectSetup(ctx, CALC_PROJECT_NAME, allowCalcProject0 = true)
-        ensureProjectSetup(ctx, activeProjectName, allowCalcProject0 = false)
+        ensureProjectSetup(ctx, activeProjectName)
 
-        val st0 = projectStates.getOrPut(CALC_PROJECT_NAME) { ProjectRuntimeState(CALC_PROJECT_NAME) }
-        if (st0.engineHandle != 0L) {
-            registerHostExternsOnHandle(st0.engineHandle, CALC_PROJECT_NAME)
-            if (MathPatchLoader.needsEngineRebuild(ctx, st0.engineHandle)) {
-                return rebuildCalcProject0AndPatchesSync(ctx, onStatus)
+        if (engineHandle != 0L) {
+            registerHostExternsOnHandle(engineHandle, activeProjectName)
+            if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
+                return rebuildSharedEngineAndPatchesSync(ctx, onStatus)
             }
-            val newlyLoaded = MathPatchLoader.loadUnloadedPatches(
-                ctx,
-                st0.engineHandle,
-                { src -> compileAndLoadPatchOnHandleSync(st0.engineHandle, src) },
-                onStatus
-            )
-            if (newlyLoaded > 0) {
-                propagatePatchedStdlibToAllProjectsSync(ctx)
+            // If user project modules are loaded, flush them before applying any newly downloaded global patches
+            val patchesDir = MathPatchDownloader.getPatchesDir(ctx)
+            val hasPatchFiles = patchesDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.isNotEmpty() == true
+            if (hasPatchFiles && isProjectModeActive) {
+                // Only flush if unloaded patches actually exist
+                val newlyLoaded = MathPatchLoader.loadUnloadedPatches(
+                    ctx,
+                    engineHandle,
+                    { src ->
+                        flushUserModulesSync(ctx)
+                        compileAndLoadPatchOnHandleSync(engineHandle, src)
+                    },
+                    onStatus
+                )
+                if (newlyLoaded > 0) {
+                    loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                }
+            } else {
+                val newlyLoaded = MathPatchLoader.loadUnloadedPatches(
+                    ctx,
+                    engineHandle,
+                    { src -> compileAndLoadPatchOnHandleSync(engineHandle, src) },
+                    onStatus
+                )
+                if (newlyLoaded > 0) {
+                    loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                }
             }
             return true
         }
+
         return try {
             val cachedHandle = MathPatchLoader.tryBootFromCompiledCache(ctx, onStatus)
             if (cachedHandle != 0L) {
-                st0.engineHandle = cachedHandle
-                registerHostExternsOnHandle(cachedHandle, CALC_PROJECT_NAME)
+                engineHandle = cachedHandle
+                linkedModuleSourcesByName.clear()
+                linkedProjectName = null
+                isProjectModeActive = false
+                registerHostExternsOnHandle(cachedHandle, activeProjectName)
                 if (onStatus == null) {
                     MathPatchLoader.loadUnloadedPatches(
                         ctx,
@@ -896,36 +773,39 @@ object MathEngineManager {
                         null
                     )
                 }
-                propagatePatchedStdlibToAllProjectsSync(ctx)
+                loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
                 return true
             }
 
-            val handle = createFreshStdlibEngine(ctx, CALC_PROJECT_NAME)
-            st0.engineHandle = handle
+            val handle = createFreshStdlibEngine(ctx, activeProjectName)
+            engineHandle = handle
+            linkedModuleSourcesByName.clear()
+            linkedProjectName = null
+            isProjectModeActive = false
             if (handle != 0L) {
-                registerHostExternsOnHandle(handle, CALC_PROJECT_NAME)
+                registerHostExternsOnHandle(handle, activeProjectName)
                 MathPatchLoader.loadUnloadedPatches(
                     ctx,
                     handle,
                     { src -> compileAndLoadPatchOnHandleSync(handle, src) },
                     onStatus
                 )
-                propagatePatchedStdlibToAllProjectsSync(ctx)
+                loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                refreshLiveAutocompleteCatalogSync(handle)
                 true
             } else {
-                Log.e(TAG, "Failed to initialize project0 engine with $BUNDLED_STDLIB_ASSET")
+                Log.e(TAG, "Failed to initialize shared engine with $BUNDLED_STDLIB_ASSET")
                 onStatus?.invoke("Engine init failed: could not load $BUNDLED_STDLIB_ASSET")
                 false
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Exception while initializing project0 engine from $BUNDLED_STDLIB_ASSET", t)
+            Log.e(TAG, "Exception while initializing shared engine from $BUNDLED_STDLIB_ASSET", t)
             onStatus?.invoke("Engine init exception: ${t.message}")
             false
         }
     }
 
-    /** Scans `filesDir/math_patches/` on the engine worker thread, links any unloaded `.math` patches,
-     *  and propagates the updated `stdlib + patches` image to `project0` and all Studio projects. */
+    /** Scans `filesDir/math_patches/` on the engine worker thread and links any unloaded `.math` patches into the shared engine. */
     fun loadPendingPatches(
         onDone: ((loadedCount: Int) -> Unit)? = null,
         onStatus: ((String) -> Unit)? = null
@@ -939,8 +819,7 @@ object MathEngineManager {
                     return@execute
                 }
                 synchronized(this) {
-                    val st0 = projectStates.getOrPut(CALC_PROJECT_NAME) { ProjectRuntimeState(CALC_PROJECT_NAME) }
-                    if (st0.engineHandle == 0L) {
+                    if (engineHandle == 0L) {
                         val ok = ensureEngine(onStatus = onStatus)
                         if (!ok) {
                             onStatus?.invoke("Patch load skipped: engine not ready")
@@ -948,19 +827,25 @@ object MathEngineManager {
                         onDone?.invoke(0)
                         return@execute
                     }
-                    registerHostExternsOnHandle(st0.engineHandle, CALC_PROJECT_NAME)
-                    if (MathPatchLoader.needsEngineRebuild(ctx, st0.engineHandle)) {
-                        rebuildCalcProject0AndPatchesSync(ctx, onStatus)
+                    registerHostExternsOnHandle(engineHandle, activeProjectName)
+                    if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
+                        rebuildSharedEngineAndPatchesSync(ctx, onStatus)
                         onDone?.invoke(1)
                         return@execute
                     }
                     val count = MathPatchLoader.loadUnloadedPatches(
                         ctx,
-                        st0.engineHandle,
-                        { src -> compileAndLoadPatchOnHandleSync(st0.engineHandle, src) },
+                        engineHandle,
+                        { src ->
+                            if (isProjectModeActive) flushUserModulesSync(ctx)
+                            compileAndLoadPatchOnHandleSync(engineHandle, src)
+                        },
                         onStatus
                     )
-                    propagatePatchedStdlibToAllProjectsSync(ctx)
+                    if (count > 0) {
+                        loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                        refreshLiveAutocompleteCatalogSync(engineHandle)
+                    }
                     onDone?.invoke(count)
                 }
             } catch (t: Throwable) {

@@ -31,6 +31,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
 import java.io.File
 import kotlin.math.hypot
@@ -265,7 +267,7 @@ class MathWorkspaceFragment : Fragment() {
             holdListener = { held ->
                 if (held) activity.showButtonPopup(
                     this,
-                    "← Calc — returns to the scientific calculator (isolated on project0)."
+                    "← Calc — returns to the scientific calculator (Standalone Mode on the shared engine)."
                 ) else activity.dismissButtonPopup()
             }
         }
@@ -360,6 +362,56 @@ class MathWorkspaceFragment : Fragment() {
         fileManagerDrawerPanel = drawer
         outerFrame.addView(drawer)
 
+        // 4. Dynamic Virtual Keyboard (IME) & System-Bar Inset Handling (fixes edge-to-edge targetSdk 36 keyboard overlap)
+        var lastAppliedImePad = -1
+        fun applyKeyboardInset(imeBottomPx: Int, sysTopPx: Int, sysBottomPx: Int) {
+            val topPad = maxOf(dp(40f), sysTopPx + dp(8f))
+            val effectiveBottom = if (imeBottomPx > sysBottomPx + dp(48f)) {
+                imeBottomPx + dp(6f)
+            } else {
+                maxOf(dp(10f), sysBottomPx + dp(8f))
+            }
+            if (effectiveBottom != lastAppliedImePad || root.paddingTop != topPad) {
+                val wasKeyboardUp = lastAppliedImePad > dp(80f)
+                val isKeyboardUp = effectiveBottom > dp(80f)
+                lastAppliedImePad = effectiveBottom
+                root.setPadding(dp(12f), topPad, dp(12f), effectiveBottom)
+                root.requestLayout()
+                // Also shift any active modal dialog card above the keyboard
+                activeModalOverlay?.setPadding(0, 0, 0, (imeBottomPx / 2).coerceAtLeast(0))
+                if (isKeyboardUp) {
+                    etModuleEditor?.post {
+                        etModuleEditor?.ensureCursorVisible()
+                        if (!wasKeyboardUp && etModuleEditor?.isSuggestionsPopupShowing() == true) {
+                            etModuleEditor?.editableText?.let { etModuleEditor?.updateSuggestionsForCurrentCursor(it) }
+                        }
+                    }
+                }
+            }
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(outerFrame) { _, windowInsets ->
+            val imeInsets = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+            val sysInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+            applyKeyboardInset(imeInsets.bottom, sysInsets.top, sysInsets.bottom)
+            windowInsets
+        }
+
+        outerFrame.viewTreeObserver.addOnGlobalLayoutListener {
+            if (!isAdded || outerFrame.height <= 0) return@addOnGlobalLayoutListener
+            val rect = android.graphics.Rect()
+            outerFrame.getWindowVisibleDisplayFrame(rect)
+            val screenH = outerFrame.rootView.height
+            if (screenH > 0 && rect.bottom > rect.top) {
+                val keypadHeight = (screenH - rect.bottom).coerceAtLeast(0)
+                if (keypadHeight > screenH * 0.15f) {
+                    applyKeyboardInset(keypadHeight, rect.top, 0)
+                } else if (lastAppliedImePad > dp(80f)) {
+                    applyKeyboardInset(0, rect.top, 0)
+                }
+            }
+        }
+
         applyTheme(dark)
         refreshModuleChips()
         loadModuleStateIntoEditor(animate = false)
@@ -446,7 +498,7 @@ class MathWorkspaceFragment : Fragment() {
                 setTextColor(primaryText)
             }
             tvDrawerSubtitle = TextView(ctx).apply {
-                text = "Project [$activeProjectName] • Own engine.so & stdlib.mathc"
+                text = "Project [$activeProjectName] • Shared Recyclable Engine (O(1) Flush)"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
                 setTextColor(secondaryText)
             }
@@ -528,7 +580,7 @@ class MathWorkspaceFragment : Fragment() {
                 holdListener = { held ->
                     if (held) activity.showButtonPopup(
                         this,
-                        "+ Project — creates a new isolated Studio project folder with its own engine.so and stdlib.mathc."
+                        "+ Project — creates a new Studio project folder (recycled on the single shared engine via O(1) module flush)."
                     ) else activity.dismissButtonPopup()
                 }
             }
@@ -548,7 +600,7 @@ class MathWorkspaceFragment : Fragment() {
                 holdListener = { held ->
                     if (held) activity.showButtonPopup(
                         this,
-                        "↺ Engine — resets the active project's stdlib.mathc back to the clean baseline and restarts its isolated engine handle."
+                        "↺ Flush — flushes all user project modules from the shared engine in O(1) time back to the clean stdlib + patches baseline."
                     ) else activity.dismissButtonPopup()
                 }
             }
@@ -818,7 +870,7 @@ class MathWorkspaceFragment : Fragment() {
         tvDrawerTitle?.text = "📦 Project & Module Manager"
         val stdlibKb = (projStatus.stdlibMathcBytes / 1024L).coerceAtLeast(1L)
         val soBadge = if (projStatus.hasEngineSo) "engine.so ✓" else "engine.so (jni)"
-        tvDrawerSubtitle?.text = "[$activeProjectName] • $soBadge • stdlib+patches (${stdlibKb}KB) • Calc=[project0]"
+        tvDrawerSubtitle?.text = "[$activeProjectName] • Shared Engine ✓ • stdlib+patches (${stdlibKb}KB) • O(1) Flush"
         tvDrawerFilesSectionLabel?.text = "MODULES IN [$activeProjectName] (${openModuleFiles.size}/${allModFiles.size})"
 
         drawerProjectListContainer?.let { projContainer ->

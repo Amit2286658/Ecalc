@@ -1,0 +1,729 @@
+# =============================================================================
+# Library/mat.math — Multidimensional Matrices & Tensors (`$mat`)
+# =============================================================================
+# Dedicated module for 1D-4D dense matrices/tensors (`[a, b ; c, d]`),
+# pure MEP matrix arithmetic (`+`, `-`, `*`, scalar `*`/`/`, `transpose`),
+# Hadamard elementwise operators (`.*`, `./`, `.^`), linear system solver
+# (`linsolve`), inverse (`inv`), determinant (`det`), trace, constructors,
+# decompositions (LU, QR, Cholesky, Eigen, SVD), and higher-order tensor pipelines.
+
+[mat]
+<[boot_types]
+<[boot_control]
+<[arith]
+<[vec]
+
+# 1. Shape Queries, Reshaping & Higher-Order Functional Pipelines on `$mat`
+mat_rank(m:mat)                      = @mrank(m)
+mat_len(m:mat)                       = @mlen(m)
+mat_dim(m:mat, axis)                 = @mdim(m, axis)
+mat_rows(m:mat)                      = @mdim(m, 0)
+mat_cols(m:mat)                      = (mat_rank(m) >= 2) ? @mdim(m, 1) : @mdim(m, 0)
+mat_shape(m:mat)          -> vec     = [@mdim(m, i) for i in 0..<mat_rank(m)]
+reshape(m:mat, r, c)      -> mat     = @mreshape(m, r, c)
+reshape(v:vec, r, c)      -> mat     = @mreshape(v, r, c)
+flatten(m:mat)            -> vec     = [x for x in m]
+mat_fill(r, c, v:real, T) -> mat, T  = {
+    if (r <= 0 || c <= 0) { error("Matrix dimensions must be positive") }
+    vec(r * c, v).reshape(r, c)
+}
+mat_zeros(r, c)           -> mat     = mat_fill(r, c, 0)
+mat_ones(r, c)            -> mat     = mat_fill(r, c, 1)
+mat_eye(n)                -> mat     = {
+    if (n <= 0) { error("Identity matrix dimension must be positive") }
+    out := mat_zeros(n, n)
+    (i in 0..<n) { out[i, i] = 1 }
+    out
+}
+
+map(m:mat, f:fn)          -> mat = @mreshape([f(x) for x in m], m, 0)
+filter(m:mat, f:fn)       -> vec = [x for x in m if f(x)]
+reduce(m:mat, f:fn)              = reduce(flatten(m), f)
+reduce(m:mat, init, f:fn)        = reduce(flatten(m), init, f)
+fold(m:mat, init, f:fn)          = reduce(flatten(m), init, f)
+any(m:mat, f:fn)                 = any(flatten(m), f)
+all(m:mat, f:fn)                 = all(flatten(m), f)
+find(m:mat, f:fn)                = find(flatten(m), f)
+count_if(m:mat, f:fn)            = count_if(flatten(m), f)
+take(m:mat, k)            -> vec = take(flatten(m), k)
+drop(m:mat, k)            -> vec = drop(flatten(m), k)
+sort_by(m:mat, key_fn:fn) -> vec = sort_by(flatten(m), key_fn)
+
+mat_zip(a:mat, b:mat, f:fn) -> mat = {
+    if (mat_shape(a) != mat_shape(b)) { error("Matrix shape mismatch") }
+    va := [x for x in a]
+    vb := [x for x in b]
+    vr := [f(x, vb[i]) for i, x in va]
+    @mreshape(vr, a, 0)
+}
+
+# 2. Pure MEP Matrix Arithmetic, Matrix Multiplication, Scaling & Membership Operators
+"-" (m:mat, T)                 :80  -> mat, T = m.map(x => -x)
+(a:mat, T)     "+"  (b:mat, T) :<50 -> mat, T = mat_zip(a, b, (x, y) => x + y)
+(a:mat, T)     "-"  (b:mat, T) :<50 -> mat, T = mat_zip(a, b, (x, y) => x - y)
+(a:mat, T)     into (b:mat, T) :>55 -> mat, T = mat_zip(a, b, (x, y) => x + y)
+
+(a:mat) "*" (b:mat) :<60 -> mat = {
+    ra := mat_rank(a)
+    rb := mat_rank(b)
+    if (ra == 2 && rb == 2) {
+        M  := mat_rows(a)
+        K  := mat_cols(a)
+        Kb := mat_rows(b)
+        N  := mat_cols(b)
+        if (K != Kb) { error("Matrix dimension mismatch in '*'") }
+        u0  := 0 * a[0, 0] * b[0, 0]
+        out := mat_fill(M, N, u0)
+        (r in 0..<M) {
+            (col in 0..<N) {
+                s := u0
+                (k in 0..<K) { s += a[r, k] * b[k, col] }
+                out[r, col] = s
+            }
+        }
+        return out
+    }
+    if (ra == 2 && rb == 1) {
+        M  := mat_rows(a)
+        K  := mat_cols(a)
+        Kb := mat_len(b)
+        if (K != Kb) { error("Matrix-vector dimension mismatch in '*'") }
+        u0 := 0 * a[0, 0] * b[0]
+        vr := vec(M, u0)
+        (r in 0..<M) {
+            s := u0
+            (k in 0..<K) { s += a[r, k] * b[k] }
+            vr[r] = s
+        }
+        return @mreshape(vr, M, 0)
+    }
+    if (ra == 1 && rb == 1 && mat_len(a) == mat_len(b)) {
+        n  := mat_len(a)
+        vr := [a[i] * b[i] for i in 0..<n]
+        return @mreshape(vr, n, 0)
+    }
+    error("Matrix multiplication '*' requires 2D*2D or 2D*1D compatible dimensions")
+    mat_zeros(1, 1)
+}
+
+(m:mat) "*" (s:real) :<60 -> mat = m.map(x => x * s)
+(s:real) "*" (m:mat) :<60 -> mat = m.map(x => s * x)
+(m:mat) "/" (s:real) :<60 -> mat = {
+    if (s == 0) { error("Division by zero in matrix scalar division") }
+    m.map(x => x / s)
+}
+
+(item:real, T) in (m:mat, T) :<42 = {
+    u_it := unit_of(item)
+    (x in m) {
+        if (@eq(unit_of(x), u_it)) {
+            if (x == item) { return 1 }
+        }
+    }
+    0
+}
+
+# 3. Elementwise (Hadamard) Matrix Operators (`.*`, `./`, `.^`)
+(a:mat)  ".*" (b:mat)  :<60 -> mat = mat_zip(a, b, (x, y) => x * y)
+(a:mat)  "./" (b:mat)  :<60 -> mat = mat_zip(a, b, (x, y) => x / y)
+(a:mat)  ".^" (b:real) :>85 -> mat = a.map(x => x ^ b)
+(a:real) ".^" (b:mat)  :>85 -> mat = b.map(x => a ^ x)
+(a:mat)  ".^" (b:mat)  :>85 -> mat = mat_zip(a, b, (x, y) => x ^ y)
+
+# 4. Pure MEP `transpose`, `trace`, `det`, `inv` & `linsolve`
+transpose(m:mat, T) -> mat, T = {
+    r := mat_rank(m)
+    if (r == 1) { return @mreshape(m, mat_len(m), 1) }
+    if (r != 2) { error("transpose() requires a 2D matrix") }
+    rows := mat_rows(m)
+    cols := mat_cols(m)
+    flat := vec(rows * cols)
+    (j in 0..<cols) {
+        (i in 0..<rows) {
+            m[i, j] into flat
+        }
+    }
+    @mreshape(flat, cols, rows)
+}
+
+trace(m:mat, T) -> real, T = {
+    r := mat_rows(m)
+    if (mat_rank(m) != 2 || r != mat_cols(m) || r == 0) { error("trace() requires a non-empty square 2D matrix") }
+    s := 0 * m[0, 0]
+    (i in 0..<r) { s += m[i, i] }
+    s
+}
+
+det(m:mat) = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("det() requires a square 2D matrix") }
+    A := m.map(x => raw_val(x))
+    d := 1
+    (i in 0..<n) {
+        piv := i
+        mx  := @abs(A[i, i])
+        (r in (i + 1)..<n) {
+            v := @abs(A[r, i])
+            if (v > mx) { mx = v ; piv = r }
+        }
+        if (mx <= 1e-14) { return 0 }
+        if (piv != i) {
+            (col in i..<n) {
+                t := A[i, col] ; A[i, col] = A[piv, col] ; A[piv, col] = t
+            }
+            d = -d
+        }
+        diag_v := A[i, i]
+        d *= diag_v
+        (r in (i + 1)..<n) {
+            f := A[r, i] / diag_v
+            (col in (i + 1)..<n) {
+                A[r, col] = A[r, col] - f * A[i, col]
+            }
+        }
+    }
+    (@abs(d) < 1e-14) ? 0 : d
+}
+
+inv(m:mat) -> mat = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("inv() requires a square 2D matrix") }
+    A := m.map(x => raw_val(x))
+    B := mat_eye(n)
+    (i in 0..<n) {
+        piv := i
+        mx  := @abs(A[i, i])
+        (r in (i + 1)..<n) {
+            v := @abs(A[r, i])
+            if (v > mx) { mx = v ; piv = r }
+        }
+        if (mx <= 1e-14) { error("Singular matrix cannot be inverted (det == 0)") }
+        if (piv != i) {
+            (col in 0..<n) {
+                ta := A[i, col] ; A[i, col] = A[piv, col] ; A[piv, col] = ta
+                tb := B[i, col] ; B[i, col] = B[piv, col] ; B[piv, col] = tb
+            }
+        }
+        diag_v := A[i, i]
+        (col in 0..<n) {
+            A[i, col] = A[i, col] / diag_v
+            B[i, col] = B[i, col] / diag_v
+        }
+        (r in 0..<n) {
+            if (r != i) {
+                f := A[r, i]
+                if (@abs(f) > 0) {
+                    (col in 0..<n) {
+                        A[r, col] = A[r, col] - f * A[i, col]
+                        B[r, col] = B[r, col] - f * B[i, col]
+                    }
+                }
+            }
+        }
+    }
+    B.map(x => (@abs(x) < 1e-15) ? 0 : x)
+}
+
+linsolve(a:mat, b:vec) -> vec = {
+    n := mat_rows(a)
+    if (mat_rank(a) != 2 || n != mat_cols(a) || n == 0) { error("linsolve(A, b) requires a square 2D matrix A") }
+    if (b.len() != n) { error("linsolve(A, b) dimension mismatch") }
+    u1  := with_unit(1, b[0] / a[0, 0])
+    A   := a.map(x => raw_val(x))
+    rhs := [raw_val(x) for x in b]
+    (i in 0..<n) {
+        piv := i
+        mx  := @abs(A[i, i])
+        (r in (i + 1)..<n) {
+            v := @abs(A[r, i])
+            if (v > mx) { mx = v ; piv = r }
+        }
+        if (mx <= 1e-14) { error("Singular matrix in linsolve(A, b) (det == 0)") }
+        if (piv != i) {
+            (col in i..<n) {
+                ta := A[i, col] ; A[i, col] = A[piv, col] ; A[piv, col] = ta
+            }
+            tb := rhs[i] ; rhs[i] = rhs[piv] ; rhs[piv] = tb
+        }
+        diag_v := A[i, i]
+        (col in i..<n) { A[i, col] = A[i, col] / diag_v }
+        rhs[i] = rhs[i] / diag_v
+        (r in 0..<n) {
+            if (r != i) {
+                f := A[r, i]
+                if (@abs(f) > 0) {
+                    (col in i..<n) { A[r, col] = A[r, col] - f * A[i, col] }
+                    rhs[r] = rhs[r] - f * rhs[i]
+                }
+            }
+        }
+    }
+    [((@abs(x) < 1e-15) ? 0 : x) * u1 for x in rhs]
+}
+
+linsolve(a:mat, b:mat) -> mat = {
+    n  := mat_rows(a)
+    rb := mat_rank(b)
+    if (rb == 1) {
+        if (mat_len(b) != n) { error("linsolve(A, b) dimension mismatch") }
+        vr := linsolve(a, flatten(b))
+        return @mreshape(vr, n, 0)
+    }
+    if (rb != 2 || mat_rows(b) != n) { error("linsolve(A, b) dimension mismatch") }
+    k   := mat_cols(b)
+    u0  := 0 * (b[0, 0] / a[0, 0])
+    out := mat_fill(n, k, u0)
+    (col in 0..<k) {
+        cv  := [b[r, col] for r in 0..<n]
+        sol := linsolve(a, cv)
+        (r in 0..<n) { out[r, col] = sol[r] }
+    }
+    out
+}
+
+
+# 5. Diagonals, Reductions & Matrix Powers (`A ^ n`)
+
+diag(v:vec) -> mat = {
+    n   := v.len()
+    out := mat_zeros(n, n)
+    (i, x in v) { out[i, i] = x }
+    out
+}
+
+diag(m:mat, T) -> vec = {
+    n := min(mat_rows(m), mat_cols(m))
+    [m[i, i] for i in 0..<n]
+}
+
+mat_sum(m:mat, T)        -> real, T = m.reduce((a, b) => a + b)
+mat_mean(m:mat, T)       -> real, T = mat_sum(m) / mat_len(m)
+mat_min(m:mat, T)        -> real, T = m.reduce((a, b) => a < b ? a : b)
+mat_max(m:mat, T)        -> real, T = m.reduce((a, b) => a > b ? a : b)
+frobenius_norm(m:mat, T) -> real, T = √(m.map(x => x^2).reduce((a, b) => a + b))
+
+mat_pow(m:mat, n:real, none) -> mat = {
+    r := mat_rows(m)
+    if (r != mat_cols(m)) { error("Matrix power requires a square matrix") }
+    if (n != @floor(n)) { error("Matrix power exponent must be an integer") }
+    acc  := mat_eye(r)
+    base := (n < 0) ? inv(m) : m
+    k    := @abs(n)
+    (k > 0) ?? {
+        if (k % 2 == 1) { acc = acc * base }
+        base = base * base
+        k    = @floor(k / 2)
+    }
+    acc
+}
+
+(m:mat) "^" (n:real, none) :>85 -> mat = mat_pow(m, n)
+
+
+# 6. Matrix-Vector Products (`M * v`, `v * M`), Outer/Kronecker Products, Concatenation & Triangular Parts
+(m:mat) "*" (v:vec) :<60 -> vec = {
+    if (mat_rank(m) != 2) { error("mat * vec requires a 2D matrix on the left") }
+    M := mat_rows(m)
+    K := mat_cols(m)
+    if (K != v.len()) { error("mat * vec dimension mismatch") }
+    u0  := 0 * m[0, 0] * v[0]
+    out := vec(M, u0)
+    (r in 0..<M) {
+        s := u0
+        (k in 0..<K) { s += m[r, k] * v[k] }
+        out[r] = s
+    }
+    out
+}
+
+(v:vec) "*" (m:mat) :<60 -> vec = {
+    if (mat_rank(m) != 2) { error("vec * mat requires a 2D matrix on the right") }
+    M := mat_rows(m)
+    N := mat_cols(m)
+    if (v.len() != M) { error("vec * mat dimension mismatch") }
+    u0  := 0 * v[0] * m[0, 0]
+    out := vec(N, u0)
+    (col in 0..<N) {
+        s := u0
+        (r in 0..<M) { s += v[r] * m[r, col] }
+        out[col] = s
+    }
+    out
+}
+
+outer(a:vec, b:vec) -> mat = {
+    na  := a.len()
+    nb  := b.len()
+    out := mat_zeros(na, nb)
+    (i, x in a) {
+        (j, y in b) { out[i, j] = x * y }
+    }
+    out
+}
+
+vstack(a:mat, b:mat) -> mat = {
+    ra := (mat_rank(a) == 1) ? 1 : mat_rows(a)
+    ca := (mat_rank(a) == 1) ? mat_len(a) : mat_cols(a)
+    rb := (mat_rank(b) == 1) ? 1 : mat_rows(b)
+    cb := (mat_rank(b) == 1) ? mat_len(b) : mat_cols(b)
+    if (ca != cb) { error("vstack() requires matching column counts") }
+    fa  := flatten(a)
+    fb  := flatten(b)
+    out := mat_zeros(ra + rb, ca)
+    (i in 0..<ra) { (j in 0..<ca) { out[i, j] = fa[i * ca + j] } }
+    (i in 0..<rb) { (j in 0..<cb) { out[ra + i, j] = fb[i * cb + j] } }
+    out
+}
+
+hstack(a:mat, b:mat) -> mat = {
+    ra := (mat_rank(a) == 1) ? 1 : mat_rows(a)
+    ca := (mat_rank(a) == 1) ? mat_len(a) : mat_cols(a)
+    rb := (mat_rank(b) == 1) ? 1 : mat_rows(b)
+    cb := (mat_rank(b) == 1) ? mat_len(b) : mat_cols(b)
+    if (ra != rb) { error("hstack() requires matching row counts") }
+    fa  := flatten(a)
+    fb  := flatten(b)
+    out := mat_zeros(ra, ca + cb)
+    (i in 0..<ra) {
+        (j in 0..<ca) { out[i, j] = fa[i * ca + j] }
+        (j in 0..<cb) { out[i, ca + j] = fb[i * cb + j] }
+    }
+    out
+}
+
+kron(a:mat, b:mat)   -> mat = {
+    ra  := mat_rows(a)
+    ca  := mat_cols(a)
+    rb  := mat_rows(b)
+    cb  := mat_cols(b)
+    out := mat_zeros(ra * rb, ca * cb)
+    (ia in 0..<ra) {
+        (ja in 0..<ca) {
+            va := a[ia, ja]
+            (ib in 0..<rb) {
+                (jb in 0..<cb) {
+                    out[ia * rb + ib, ja * cb + jb] = va * b[ib, jb]
+                }
+            }
+        }
+    }
+    out
+}
+
+tril(m:mat, k = 0) -> mat = {
+    r   := mat_rows(m)
+    c   := mat_cols(m)
+    out := mat_zeros(r, c)
+    (i in 0..<r) {
+        (j in 0..<c) {
+            if (j - i <= k) { out[i, j] = m[i, j] }
+        }
+    }
+    out
+}
+
+triu(m:mat, k = 0) -> mat = {
+    r   := mat_rows(m)
+    c   := mat_cols(m)
+    out := mat_zeros(r, c)
+    (i in 0..<r) {
+        (j in 0..<c) {
+            if (j - i >= k) { out[i, j] = m[i, j] }
+        }
+    }
+    out
+}
+
+# 7. Matrix Decompositions (LU, QR, Cholesky, Eigenvalues/Vectors, SVD), Pseudoinverse, Least Squares & Norms
+lu_helper(m:mat, mode) -> mat = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("LU decomposition requires a non-empty square 2D matrix") }
+    L := mat_eye(n)
+    U := m.map(x => x)
+    P := mat_eye(n)
+    (k in 0..<n) {
+        piv := k
+        mx  := @abs(U[k, k])
+        (i in (k + 1)..<n) {
+            v := @abs(U[i, k])
+            if (v > mx) { mx = v ; piv = i }
+        }
+        if (piv != k) {
+            (j in 0..<n) {
+                tu := U[k, j] ; U[k, j] = U[piv, j] ; U[piv, j] = tu
+                tp := P[k, j] ; P[k, j] = P[piv, j] ; P[piv, j] = tp
+            }
+            (j in 0..<k) {
+                tl := L[k, j] ; L[k, j] = L[piv, j] ; L[piv, j] = tl
+            }
+        }
+        ukk := U[k, k]
+        if (@abs(ukk) > 1e-15) {
+            (i in (k + 1)..<n) {
+                f := U[i, k] / ukk
+                L[i, k] = f
+                U[i, k] = 0
+                (j in (k + 1)..<n) {
+                    U[i, j] = U[i, j] - f * U[k, j]
+                }
+            }
+        }
+    }
+    (mode == 0) ? L : ((mode == 1) ? U : P)
+}
+
+lu_l(m:mat)             -> mat = lu_helper(m, 0)
+lu_u(m:mat)             -> mat = lu_helper(m, 1)
+lu_p(m:mat)             -> mat = lu_helper(m, 2)
+
+qr_q(m:mat)             -> mat = {
+    r := mat_rows(m)
+    c := mat_cols(m)
+    if (mat_rank(m) != 2 || r < c || c == 0) { error("QR decomposition requires a 2D matrix with rows >= cols") }
+    Q := m.map(x => x)
+    (j in 0..<c) {
+        (i in 0..<j) {
+            rij := 0
+            (k in 0..<r) { rij += Q[k, i] * Q[k, j] }
+            (k in 0..<r) { Q[k, j] = Q[k, j] - rij * Q[k, i] }
+        }
+        nrm := 0
+        (k in 0..<r) { nrm += Q[k, j]^2 }
+        nrm = √nrm
+        if (nrm > 1e-14) {
+            (k in 0..<r) { Q[k, j] = Q[k, j] / nrm }
+        } else {
+            (k in 0..<r) { Q[k, j] = 0 }
+        }
+    }
+    Q
+}
+
+qr_r(m:mat)             -> mat = transpose(qr_q(m)) * m
+
+chol(m:mat)             -> mat = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("chol() requires a non-empty square symmetric positive-definite matrix") }
+    L := mat_zeros(n, n)
+    (i in 0..<n) {
+        (j in 0...i) {
+            s := m[i, j]
+            (k in 0..<j) { s -= L[i, k] * L[j, k] }
+            if (i == j) {
+                if (s <= 0) { error("chol() matrix is not positive-definite") }
+                L[i, j] = √s
+            } else {
+                L[i, j] = s / L[j, j]
+            }
+        }
+    }
+    L
+}
+
+jacobi_helper(m:mat, mode) -> mat = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("eigvals/eigvecs requires a square 2D matrix") }
+    A := m.map(x => raw_val(x))
+    V := mat_eye(n)
+    (sweep in 0..<45) {
+        off_norm := 0
+        (p in 0..<n) {
+            (q in (p + 1)..<n) {
+                off_norm += A[p, q]^2
+            }
+        }
+        if (off_norm < 1e-24) { break }
+        (p in 0..<n) {
+            (q in (p + 1)..<n) {
+                apq := A[p, q]
+                if (@abs(apq) >= 1e-15) {
+                    app := A[p, p]
+                    aqq := A[q, q]
+                    tau := (aqq - app) / (2 * apq)
+                    t   := (tau >= 0) ? (1 / (tau + √(1 + tau^2))) : (-1 / (-tau + √(1 + tau^2)))
+                    c_r := 1 / √(1 + t^2)
+                    s_r := t * c_r
+                    A[p, p] = app - t * apq
+                    A[q, q] = aqq + t * apq
+                    A[p, q] = 0
+                    A[q, p] = 0
+                    (r in 0..<n) {
+                        if (r != p && r != q) {
+                            arp := A[r, p]
+                            arq := A[r, q]
+                            nrp := c_r * arp - s_r * arq
+                            nrq := s_r * arp + c_r * arq
+                            A[r, p] = nrp ; A[p, r] = nrp
+                            A[r, q] = nrq ; A[q, r] = nrq
+                        }
+                        vrp := V[r, p]
+                        vrq := V[r, q]
+                        V[r, p] = c_r * vrp - s_r * vrq
+                        V[r, q] = s_r * vrp + c_r * vrq
+                    }
+                }
+            }
+        }
+    }
+    (i in 0..<n) {
+        best := i
+        (j in (i + 1)..<n) {
+            if (A[j, j] > A[best, best]) { best = j }
+        }
+        if (best != i) {
+            tmp := A[i, i] ; A[i, i] = A[best, best] ; A[best, best] = tmp
+            (r in 0..<n) {
+                tv := V[r, i] ; V[r, i] = V[r, best] ; V[r, best] = tv
+            }
+        }
+    }
+    (mode == 0) ? A : V.map(x => (@abs(x) < 1e-14) ? 0 : x)
+}
+
+eigvals(m:mat) -> vec = {
+    if (mat_rank(m) != 2 || mat_rows(m) != mat_cols(m) || mat_rows(m) == 0) {
+        error("eigvals() requires a square 2D matrix")
+    }
+    n := mat_rows(m)
+    if (n == 2) {
+        a00 := raw_val(m[0, 0])
+        a01 := raw_val(m[0, 1])
+        a10 := raw_val(m[1, 0])
+        a11 := raw_val(m[1, 1])
+        tr  := a00 + a11
+        dt  := a00 * a11 - a01 * a10
+        dsc := tr * tr - 4 * dt
+        if (dsc < -1e-11) { error("eigvals() matrix has complex eigenvalues") }
+        if (dsc < 0) { dsc = 0 }
+        sd  := √dsc
+        e0  := 0.5 * (tr + sd)
+        e1  := 0.5 * (tr - sd)
+        out := vec(2, 0)
+        out[0] = (@abs(e0) < 1e-14) ? 0 : e0
+        out[1] = (@abs(e1) < 1e-14) ? 0 : e1
+        return out
+    }
+    A := jacobi_helper(m, 0)
+    [(@abs(A[i, i]) < 1e-13) ? 0 : A[i, i] for i in 0..<n]
+}
+
+eigvecs(m:mat) -> mat = jacobi_helper(m, 1)
+
+svd_s(m:mat) -> vec = {
+    if (mat_rank(m) != 2) { error("SVD requires a 2D matrix") }
+    M   := mat_rows(m)
+    N   := mat_cols(m)
+    K   := min(M, N)
+    D   := jacobi_helper(transpose(m) * m, 0)
+    [(D[i, i] > 1e-24) ? √D[i, i] : 0 for i in 0..<K]
+}
+
+svd_v(m:mat) -> mat = {
+    if (mat_rank(m) != 2) { error("SVD requires a 2D matrix") }
+    jacobi_helper(transpose(m) * m, 1)
+}
+
+svd_u(m:mat) -> mat = {
+    if (mat_rank(m) != 2) { error("SVD requires a 2D matrix") }
+    M   := mat_rows(m)
+    N   := mat_cols(m)
+    ata := transpose(m) * m
+    D   := jacobi_helper(ata, 0)
+    V   := jacobi_helper(ata, 1)
+    AV  := m * V
+    U   := mat_zeros(M, N)
+    (j in 0..<N) {
+        lam := D[j, j]
+        sj  := (lam > 1e-24) ? √lam : 0
+        if (sj > 1e-12) {
+            (r in 0..<M) {
+                v := AV[r, j] / sj
+                U[r, j] = (@abs(v) < 1e-14) ? 0 : v
+            }
+        }
+    }
+    U
+}
+
+pinv(m:mat)             -> mat = {
+    s    := svd_s(m)
+    u    := svd_u(m)
+    v    := svd_v(m)
+    tol  := 1e-10 * max(1, s[0])
+    sinv := [x > tol ? (1 / x) : 0 for x in s]
+    v * diag(sinv) * transpose(u)
+}
+
+lstsq(a:mat, b:vec)     -> vec = pinv(a) * b
+lstsq(a:mat, b:mat)     -> mat = pinv(a) * b
+
+power_vec(m:mat, steps = 40) -> vec = {
+    n := mat_rows(m)
+    if (n != mat_cols(m) || n == 0) { error("power_vec() requires a non-empty square matrix") }
+    v := vec(n, 1)
+    k := 0
+    (k < steps) ?? {
+        w  := m * v
+        nv := norm(w)
+        if (nv <= 1e-15) { break }
+        v  = [x / nv for x in w]
+        k += 1
+    }
+    v
+}
+
+power_iter(m:mat, steps = 40) = {
+    v := power_vec(m, steps)
+    dot(v, m * v) / dot(v, v)
+}
+
+matrix_rank(m:mat, tol = 1e-9) = {
+    sv := svd_s(m)
+    sv.count_if(s => s > tol)
+}
+
+spectral_norm(m:mat) = {
+    sv := svd_s(m)
+    sv[0]
+}
+
+cond(m:mat) = {
+    sv   := svd_s(m)
+    smin := sv[sv.len() - 1]
+    if (smin <= 1e-15) { error("Matrix is singular or rank-deficient (condition number is infinite)") }
+    sv[0] / smin
+}
+
+mat_norm1(m:mat) = {
+    r    := mat_rows(m)
+    c    := mat_cols(m)
+    best := 0
+    (j in 0..<c) {
+        s := 0
+        (i in 0..<r) { s += @abs(m[i, j]) }
+        if (s > best) { best = s }
+    }
+    best
+}
+
+mat_norm_inf(m:mat) = {
+    r    := mat_rows(m)
+    c    := mat_cols(m)
+    best := 0
+    (i in 0..<r) {
+        s := 0
+        (j in 0..<c) { s += @abs(m[i, j]) }
+        if (s > best) { best = s }
+    }
+    best
+}
+
+(a:mat) "==" (b:mat) :<30 = {
+    if (mat_shape(a) != mat_shape(b)) { return 0 }
+    flatten(a) == flatten(b)
+}
+(a:mat) "!=" (b:mat) :<30 = !(a == b)
+(a:mat) "~"  (b:mat) :<30 = {
+    if (mat_shape(a) != mat_shape(b)) { return 0 }
+    flatten(a) ~ flatten(b)
+}

@@ -1,8 +1,10 @@
 package com.ecalc
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
@@ -19,30 +21,39 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.View.MeasureSpec
-import kotlin.math.max
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.inputmethod.BaseInputConnection
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
+import kotlin.math.max
 
 internal fun MathCodeEditText.extractTypingPrefix(textStr: CharSequence, cursor: Int): Pair<String, IntRange>? {
     if (cursor <= 0 || cursor > textStr.length) return null
     val lineStart = textStr.lastIndexOf('\n', cursor - 1).let { if (it < 0) 0 else it + 1 }
     val lineSlice = textStr.subSequence(lineStart, cursor).toString()
 
-    // Ignore if typing inside a `#` comment
+    // Ignore if typing inside a `#` comment, or inside quotes outside an `{expr}` interpolation block
     var inQuotes = false
+    var interpBraceDepth = 0
     for (i in lineSlice.indices) {
         val c = lineSlice[i]
-        if (c == '"' && (i == 0 || lineSlice[i - 1] != '\\')) inQuotes = !inQuotes
-        else if (c == '#' && !inQuotes) return null
+        if (c == '"' && (i == 0 || lineSlice[i - 1] != '\\')) {
+            inQuotes = !inQuotes
+            if (!inQuotes) interpBraceDepth = 0
+        } else if (inQuotes) {
+            if (c == '{') interpBraceDepth++
+            else if (c == '}' && interpBraceDepth > 0) interpBraceDepth--
+        } else if (c == '#') {
+            return null
+        }
     }
-    if (inQuotes) return null
+    if (inQuotes && interpBraceDepth <= 0) return null
 
     // Check for `<[dep` prefix at start of line
     val depMatch = Regex("^\\s*(<\\[[a-zA-Z0-9_]*)$").find(lineSlice)
@@ -52,7 +63,7 @@ internal fun MathCodeEditText.extractTypingPrefix(textStr: CharSequence, cursor:
         return tok to (startIdx until cursor)
     }
 
-    // Check for `@directive`, `$type`, or identifier prefix before cursor
+    // Check for `@directive`, `$type`, or identifier/operator prefix before cursor
     var start = cursor
     while (start > lineStart) {
         val ch = textStr[start - 1]
@@ -90,8 +101,8 @@ internal fun MathCodeEditText.buildParamBulletsFromSignature(paramsRaw: String, 
     }
 }
 
-internal fun MathCodeEditText.collectLiveBufferSymbols(src: String, excludeRange: IntRange): List<SuggestionItem> {
-    val out = mutableListOf<SuggestionItem>()
+internal fun MathCodeEditText.collectLiveBufferSymbols(src: String, excludeRange: IntRange): List<MathCodeEditText.SuggestionItem> {
+    val out = mutableListOf<MathCodeEditText.SuggestionItem>()
     val seen = HashSet<String>()
     val fnRegex = Regex("(?m)^\\s*(?:(?:pub|priv)\\s+)*(?:\\$?fn\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^()\"]*)\\)\\s*(?:->\\s*([^=:]+)|:\\s*([a-zA-Z0-9_,\\s]+))?(?::=|=)(?![=>])")
     val varRegex = Regex("\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?::\\s*([a-zA-Z_][a-zA-Z0-9_<>,\\s]*))?(?::=|=)(?![=>])")
@@ -105,7 +116,7 @@ internal fun MathCodeEditText.collectLiveBufferSymbols(src: String, excludeRange
             ?: "any"
         if (fn !in MathCodeEditText.KEYWORDS && seen.add(fn)) {
             out.add(
-                SuggestionItem(
+                MathCodeEditText.SuggestionItem(
                     matchKey = fn,
                     displayLabel = "$fn($params)",
                     insertText = "$fn()",
@@ -124,7 +135,7 @@ internal fun MathCodeEditText.collectLiveBufferSymbols(src: String, excludeRange
         val vType = m.groupValues.getOrNull(2)?.trim()?.ifEmpty { null } ?: "real | any"
         if (v !in MathCodeEditText.KEYWORDS && v !in MathCodeEditText.BUILTIN_TYPES && seen.add(v)) {
             out.add(
-                SuggestionItem(
+                MathCodeEditText.SuggestionItem(
                     matchKey = v,
                     displayLabel = v,
                     insertText = v,
@@ -155,10 +166,13 @@ internal fun MathCodeEditText.updateSuggestionsForCurrentCursor(editable: Editab
     val lowerPrefix = prefix.lowercase()
 
     val liveSymbols = collectLiveBufferSymbols(editable.toString(), range)
-    val combined = ArrayList<SuggestionItem>(liveSymbols.size + projectCustomSuggestions.size + MathCodeEditText.STATIC_SUGGESTIONS.size)
+    val liveEngineCatalog = MATH_EDITOR_LIVE_ENGINE_SUGGESTIONS
+    val combined = ArrayList<MathCodeEditText.SuggestionItem>(
+        liveSymbols.size + projectCustomSuggestions.size + MathCodeEditText.STATIC_SUGGESTIONS.size + liveEngineCatalog.size
+    )
     val seenDisplay = HashSet<String>()
 
-    for (srcList in listOf(liveSymbols, projectCustomSuggestions, MathCodeEditText.STATIC_SUGGESTIONS)) {
+    for (srcList in listOf(liveSymbols, projectCustomSuggestions, MathCodeEditText.STATIC_SUGGESTIONS, liveEngineCatalog)) {
         for (item in srcList) {
             val keyLower = item.matchKey.lowercase()
             val matches = if (lowerPrefix.startsWith("<[") || lowerPrefix.startsWith("@") || lowerPrefix.startsWith("$")) {
@@ -166,7 +180,7 @@ internal fun MathCodeEditText.updateSuggestionsForCurrentCursor(editable: Editab
             } else {
                 !keyLower.startsWith("<[") &&
                     (keyLower.startsWith(lowerPrefix) || (lowerPrefix.length >= 2 && keyLower.contains(lowerPrefix))) &&
-                    item.insertText != prefix
+                    !(item.category != "op" && item.insertText == prefix)
             }
             if (matches && seenDisplay.add(item.displayLabel)) {
                 combined.add(item)
@@ -179,35 +193,97 @@ internal fun MathCodeEditText.updateSuggestionsForCurrentCursor(editable: Editab
         return
     }
 
-    // Rank exact prefix matches above substring matches
+    // Rank exact/prefix matches on operators ("into", "in", "by", ...) and keywords at the top
     combined.sortWith(
-        compareBy<SuggestionItem> { !it.matchKey.lowercase().startsWith(lowerPrefix) }
-            .thenBy {
-                when (it.category) {
-                    "entry" -> 0
-                    "fn", "var", "proj" -> 1
-                    "kw", "dir", "mod" -> 2
-                    "type" -> 3
-                    else -> 4
+        compareBy<MathCodeEditText.SuggestionItem> { !it.matchKey.lowercase().startsWith(lowerPrefix) }
+            .thenBy { item ->
+                val isExact = item.matchKey.equals(prefix, ignoreCase = true)
+                when {
+                    isExact && (item.category == "op" || item.category == "kw" || item.category == "unit") -> -2
+                    item.category == "op" && item.matchKey.lowercase().startsWith(lowerPrefix) -> -1
+                    item.category == "entry" -> 0
+                    item.category == "kw" || item.category == "dir" || item.category == "mod" -> 1
+                    item.category == "unit" -> 2
+                    item.category == "fn" || item.category == "var" || item.category == "proj" -> 3
+                    item.category == "type" -> 4
+                    else -> 5
                 }
             }
             .thenBy { it.matchKey.length }
     )
 
     activePrefixRange = range
-    showSuggestionsPopupWindow(combined.take(7), prefix)
+    showSuggestionsPopupWindow(combined.take(10), prefix)
+}
+
+/**
+ * Crops the downscaled [Frost.frozenBackdrop] bitmap of [hostFrame] to the sub-rectangle
+ * `(leftPx, topPx, widthPx, heightPx)` so a floating popup card displays a true frosted-glass
+ * blur of whatever code/UI sits directly behind it.
+ */
+internal fun cropFrostBackdropForPopup(
+    fullFrost: Bitmap?,
+    hostW: Int,
+    hostH: Int,
+    leftPx: Int,
+    topPx: Int,
+    widthPx: Int,
+    heightPx: Int
+): Bitmap? {
+    if (fullFrost == null || fullFrost.width <= 0 || fullFrost.height <= 0 || hostW <= 0 || hostH <= 0) {
+        return null
+    }
+    return try {
+        val bw = fullFrost.width
+        val bh = fullFrost.height
+        val sx = ((leftPx.toFloat() / hostW.toFloat()) * bw).toInt().coerceIn(0, bw - 1)
+        val sy = ((topPx.toFloat() / hostH.toFloat()) * bh).toInt().coerceIn(0, bh - 1)
+        val sw = ((widthPx.toFloat() / hostW.toFloat()) * bw).toInt().coerceIn(1, bw - sx)
+        val sh = ((heightPx.toFloat() / hostH.toFloat()) * bh).toInt().coerceIn(1, bh - sy)
+        Bitmap.createBitmap(fullFrost, sx, sy, sw, sh)
+    } catch (_: Throwable) {
+        fullFrost
+    }
+}
+
+internal fun applyRoundedOutlineClip(view: View, cornerRadiusPx: Float) {
+    view.outlineProvider = object : ViewOutlineProvider() {
+        override fun getOutline(v: View, outline: Outline) {
+            if (v.width > 0 && v.height > 0) {
+                outline.setRoundRect(0, 0, v.width, v.height, cornerRadiusPx)
+            }
+        }
+    }
+    view.clipToOutline = true
 }
 
 internal fun MathCodeEditText.ensureSuggestionPopupCreated(): PopupWindow {
     val dp = { v: Float -> (v * density).toInt() }
     if (suggestionPopupCard == null) {
-        val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+        val cardFrame = FrameLayout(context).apply {
             elevation = dp(24f).toFloat()
             isClickable = true
+            applyRoundedOutlineClip(this, 14f * density)
         }
-        suggestionPopupCard = card
+        val frostImg = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
+            alpha = 0.94f
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        suggestionPopupFrostView = frostImg
+        cardFrame.addView(frostImg)
+
+        val contentWrap = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
 
         val listScroll = ScrollView(context).apply {
             isVerticalScrollBarEnabled = true
@@ -225,11 +301,13 @@ internal fun MathCodeEditText.ensureSuggestionPopupCreated(): PopupWindow {
         }
         suggestionListContainer = listCol
         listScroll.addView(listCol)
-        card.addView(listScroll)
+        contentWrap.addView(listScroll)
+        cardFrame.addView(contentWrap)
+        suggestionPopupCard = cardFrame
     }
 
     suggestionPopup?.let { return it }
-    val popupW = (resources.displayMetrics.widthPixels - dp(40f)).coerceIn(dp(230f), dp(340f))
+    val popupW = (resources.displayMetrics.widthPixels - dp(32f)).coerceIn(dp(240f), dp(360f))
     val pw = PopupWindow(suggestionPopupCard, popupW, ViewGroup.LayoutParams.WRAP_CONTENT, false).apply {
         isFocusable = false
         isTouchable = true
@@ -241,7 +319,7 @@ internal fun MathCodeEditText.ensureSuggestionPopupCreated(): PopupWindow {
     return pw
 }
 
-internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionItem>, currentPrefix: String) {
+internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<MathCodeEditText.SuggestionItem>, currentPrefix: String) {
     if (!isAttachedToWindow || width == 0 || height == 0) return
     ensureSuggestionPopupCreated()
     val card = suggestionPopupCard ?: return
@@ -249,20 +327,23 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
     val dp = { v: Float -> (v * density).toInt() }
 
     val dark = isDarkThemeMode
-    val cardBg = Color.parseColor(if (dark) "#23262B" else "#F7F9FC")
-    val rowBg = Color.parseColor(if (dark) "#2C3037" else "#EDF1F7")
+    // Translucent frosted-glass surface tint so the blurred backdrop shines through
+    val cardTintBg = Color.parseColor(if (dark) "#CC1E2228" else "#D8F7F9FC")
+    val rowBg = Color.parseColor(if (dark) "#B82A2E36" else "#C8EAEFF7")
     val strokeCol = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
     val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#24292F")
-    val secondaryText = Color.parseColor(if (dark) "#9BA4B0" else "#57606A")
+    val secondaryText = Color.parseColor(if (dark) "#B0BAC6" else "#4E5762")
 
-    card.background = GradientDrawable().apply {
+    val contentWrap = (card.getChildAt(1) as? LinearLayout)
+    contentWrap?.background = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = 14f * density
-        setColor(cardBg)
-        setStroke(max(1, dp(1.2f)), strokeCol)
+        setColor(cardTintBg)
+        setStroke(max(1, dp(1.3f)), strokeCol)
     }
 
     container.removeAllViews()
+    dismissSuggestionDocPopup()
 
     // Header bar: [💡 Autocomplete "prefix"] + [✕]
     val hdrRow = LinearLayout(context).apply {
@@ -270,10 +351,8 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(4f), 0, dp(4f), dp(4f))
     }
-    dismissSuggestionDocPopup()
-
     val tvHdr = TextView(context).apply {
-        text = "💡 Suggestions for \"$currentPrefix\" (tap: insert • hold: params & returns)"
+        text = "💡 Suggestions for \"$currentPrefix\" (tap: insert • hold: full args & returns)"
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(strokeCol)
@@ -291,7 +370,7 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
     hdrRow.addView(tvDismiss)
     container.addView(hdrRow)
 
-    val heldRowBg = Color.parseColor(if (dark) "#1D3638" else "#FCEAE6")
+    val heldRowBg = Color.parseColor(if (dark) "#D81D3638" else "#E8FCEAE6")
     val touchSlopPx = dp(10f).toFloat()
 
     items.forEach { item ->
@@ -336,7 +415,7 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
                         downX = event.x
                         downY = event.y
                         v.removeCallbacks(holdDocRunnable)
-                        v.postDelayed(holdDocRunnable, 280L)
+                        v.postDelayed(holdDocRunnable, 250L)
                     }
                     MotionEvent.ACTION_MOVE -> {
                         if (!isHoldingDoc) {
@@ -350,19 +429,7 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
                             return@setOnTouchListener true
                         }
                     }
-                    MotionEvent.ACTION_UP -> {
-                        v.removeCallbacks(holdDocRunnable)
-                        if (isHoldingDoc) {
-                            dismissSuggestionDocPopup()
-                            rowDrawable.setColor(rowBg)
-                            rowDrawable.setStroke(0, Color.TRANSPARENT)
-                            v.parent?.requestDisallowInterceptTouchEvent(false)
-                            isHoldingDoc = false
-                            v.isPressed = false
-                            return@setOnTouchListener true
-                        }
-                    }
-                    MotionEvent.ACTION_CANCEL -> {
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         v.removeCallbacks(holdDocRunnable)
                         if (isHoldingDoc) {
                             dismissSuggestionDocPopup()
@@ -381,9 +448,9 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
 
         val badgeCol = when (item.category) {
             "entry", "dir" -> colIntrinsic
-            "kw" -> colKeyword
+            "op", "kw" -> colKeyword
             "mod" -> colModule
-            "type" -> colType
+            "type", "unit" -> colType
             "fn", "proj" -> colOperator
             else -> colNumber
         }
@@ -406,41 +473,52 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
             ).apply { marginEnd = dp(7f) }
         }
 
+        // Stack signature + multi-line detail cleanly so descriptions never get cut off
+        val textCol = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
         val tvLabel = TextView(context).apply {
             text = item.displayLabel
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.6f)
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             setTextColor(primaryText)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.15f)
+            maxLines = 2
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }
 
+        val retPreview = item.returnBullet.substringBefore("—").trim().let {
+            if (it.isNotEmpty() && it != item.detail) "${item.detail} • returns $it" else item.detail
+        }
         val tvDetail = TextView(context).apply {
-            text = item.detail
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
+            text = retPreview
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.6f)
             setTextColor(secondaryText)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f).apply {
-                marginStart = dp(6f)
-            }
+            maxLines = 2
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }
 
+        textCol.addView(tvLabel)
+        textCol.addView(tvDetail)
         row.addView(tvBadge)
-        row.addView(tvLabel)
-        row.addView(tvDetail)
+        row.addView(textCol)
         container.addView(row)
     }
 
-    val popupW = (resources.displayMetrics.widthPixels - dp(36f)).coerceIn(dp(230f), dp(344f))
-    val maxPopupH = dp(220f)
+    val popupW = (resources.displayMetrics.widthPixels - dp(28f)).coerceIn(dp(244f), dp(364f))
+    val maxPopupH = dp(236f)
     card.measure(
-        MeasureSpec.makeMeasureSpec(popupW, MeasureSpec.EXACTLY),
-        MeasureSpec.makeMeasureSpec(maxPopupH, MeasureSpec.AT_MOST)
+        View.MeasureSpec.makeMeasureSpec(popupW, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(maxPopupH, View.MeasureSpec.AT_MOST)
     )
-    val measuredH = card.measuredHeight.coerceIn(dp(64f), maxPopupH)
+    val measuredH = card.measuredHeight.coerceIn(dp(68f), maxPopupH)
 
     // Compute cursor line coordinates in screen/window space
     val editLoc = IntArray(2)
@@ -489,6 +567,14 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
             else -> belowY.coerceIn(dp(42f), (visibleBottomInHost - measuredH - dp(6f)).coerceAtLeast(dp(42f)))
         }
 
+        // Capture Frosted Glass blur backdrop of hostFrame while popup card is hidden
+        val prevVis = card.visibility
+        card.visibility = View.INVISIBLE
+        val fullFrost = Frost.frozenBackdrop(hostFrame, downscale = 6, radius = 8)
+        val croppedFrost = cropFrostBackdropForPopup(fullFrost, hostW, hostH, leftMargin, topMargin, popupW, measuredH)
+        suggestionPopupFrostView?.setImageBitmap(croppedFrost)
+        card.visibility = prevVis
+
         val lp = FrameLayout.LayoutParams(popupW, measuredH).apply {
             this.leftMargin = leftMargin
             this.topMargin = topMargin
@@ -529,48 +615,66 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<SuggestionI
 }
 
 /**
- * Displays a secondary elevated popup on top of the suggestions popup while a suggestion item
- * is held down, listing its parameters and return value in an ordered bulleted format with a
- * concise single-line summary for each bullet item. Disappears immediately on release.
+ * Displays a frosted-glass secondary elevated popup on top of the suggestions popup while a
+ * suggestion item is held down, listing its full multi-line parameters and return value
+ * descriptions without truncation. Disappears immediately on release.
  */
-internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: SuggestionItem) {
+internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: MathCodeEditText.SuggestionItem) {
     dismissSuggestionDocPopup()
     val dp = { v: Float -> (v * density).toInt() }
     val dark = isDarkThemeMode
 
-    val cardBg = Color.parseColor(if (dark) "#191C20" else "#FFFFFF")
-    val secBg = Color.parseColor(if (dark) "#22262C" else "#F3F6FA")
+    val cardTintBg = Color.parseColor(if (dark) "#D4181B20" else "#DCF8FAFD")
+    val secBg = Color.parseColor(if (dark) "#BC22262C" else "#CCF1F5FA")
     val strokeCol = Color.parseColor(if (dark) "#26C6DA" else "#E58A7B")
     val subStrokeCol = Color.parseColor(if (dark) "#353B45" else "#D8DEE9")
     val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#1F2328")
-    val secondaryText = Color.parseColor(if (dark) "#A5B0C0" else "#57606A")
+    val secondaryText = Color.parseColor(if (dark) "#B4C0D0" else "#4E5762")
 
     val badgeCol = when (item.category) {
         "entry", "dir" -> colIntrinsic
-        "kw" -> colKeyword
+        "op", "kw" -> colKeyword
         "mod" -> colModule
-        "type" -> colType
+        "type", "unit" -> colType
         "fn", "proj" -> colOperator
         else -> colNumber
     }
 
+    val docFrame = FrameLayout(context).apply {
+        elevation = dp(38f).toFloat()
+        applyRoundedOutlineClip(this, 13f * density)
+    }
+    val docFrostImg = ImageView(context).apply {
+        scaleType = ImageView.ScaleType.FIT_XY
+        alpha = 0.95f
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+    }
+    docFrame.addView(docFrostImg)
+
     val docCard = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(11f), dp(9f), dp(11f), dp(9f))
-        elevation = dp(38f).toFloat()
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 13f * density
-            setColor(cardBg)
+            setColor(cardTintBg)
             setStroke(max(1, dp(1.4f)), strokeCol)
         }
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
     }
-    suggestionDocCard = docCard
+    docFrame.addView(docCard)
+    suggestionDocCard = docFrame
 
-    // 1. Top title row: [category badge] + signature + short detail
+    // 1. Top title row: [category badge] + full multi-line signature + detail
     val titleRow = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
+        gravity = Gravity.TOP
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -591,32 +695,46 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Sugg
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { marginEnd = dp(7f) }
+        ).apply { marginEnd = dp(7f); topMargin = dp(1f) }
+    }
+    val titleCol = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
     val tvSig = TextView(context).apply {
         text = item.displayLabel
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         setTextColor(primaryText)
-        isSingleLine = true
-        ellipsize = TextUtils.TruncateAt.END
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        // Multi-line enabled so long signatures never truncate
+        isSingleLine = false
     }
     val tvShort = TextView(context).apply {
         text = item.detail
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
         setTextColor(strokeCol)
-        isSingleLine = true
-        ellipsize = TextUtils.TruncateAt.END
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { marginStart = dp(6f) }
+        isSingleLine = false
     }
+    titleCol.addView(tvSig)
+    titleCol.addView(tvShort)
     titleRow.addView(tvBadge)
-    titleRow.addView(tvSig)
-    titleRow.addView(tvShort)
+    titleRow.addView(titleCol)
     docCard.addView(titleRow)
+
+    val docScroll = ScrollView(context).apply {
+        isVerticalScrollBarEnabled = true
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+    }
+    val docScrollInner = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+    }
 
     fun makeSectionBox(): LinearLayout {
         return LinearLayout(context).apply {
@@ -641,17 +759,17 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Sugg
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.4f)
             typeface = Typeface.MONOSPACE
             setTextColor(if (accentPrefix) primaryText else secondaryText)
-            isSingleLine = true
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(1.5f), 0, dp(1.5f))
+            // Full multi-line wrapping enabled so long parameter & return descriptions never get cut off
+            isSingleLine = false
+            setLineSpacing(dp(1.5f).toFloat(), 1.0f)
+            setPadding(0, dp(2f), 0, dp(2f))
         }
     }
 
     // 2. Ordered Parameters Section
     val paramsBox = makeSectionBox()
     val tvParamsHdr = TextView(context).apply {
-        text = "PARAMETERS (IN ORDER)"
+        text = "PARAMETERS / OPERANDS (IN ORDER)"
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(strokeCol)
@@ -665,7 +783,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Sugg
     effectiveParams.forEachIndexed { idx, pLine ->
         paramsBox.addView(makeBulletLine("${idx + 1}. $pLine", accentPrefix = true))
     }
-    docCard.addView(paramsBox)
+    docScrollInner.addView(paramsBox)
 
     // 3. Returns Section
     val retBox = makeSectionBox().apply {
@@ -683,14 +801,18 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Sugg
         "${item.category} — ${item.detail}"
     }
     retBox.addView(makeBulletLine(effectiveRet, accentPrefix = true))
-    docCard.addView(retBox)
+    docScrollInner.addView(retBox)
 
-    val popupW = (resources.displayMetrics.widthPixels - dp(32f)).coerceIn(dp(244f), dp(356f))
-    docCard.measure(
-        MeasureSpec.makeMeasureSpec(popupW, MeasureSpec.EXACTLY),
-        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+    docScroll.addView(docScrollInner)
+    docCard.addView(docScroll)
+
+    val popupW = (resources.displayMetrics.widthPixels - dp(28f)).coerceIn(dp(250f), dp(368f))
+    val maxDocH = dp(280f)
+    docFrame.measure(
+        View.MeasureSpec.makeMeasureSpec(popupW, View.MeasureSpec.EXACTLY),
+        View.MeasureSpec.makeMeasureSpec(maxDocH, View.MeasureSpec.AT_MOST)
     )
-    val measuredH = docCard.measuredHeight.coerceAtLeast(dp(88f))
+    val measuredH = docFrame.measuredHeight.coerceIn(dp(92f), maxDocH)
 
     val hostFrame = findHostOverlayContainer()
     if (hostFrame != null) {
@@ -716,16 +838,22 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Sugg
                 (hostH - measuredH - dp(10f)).coerceAtLeast(dp(36f))
             )
         }
+
+        // Capture Frosted Glass blur backdrop for the doc popup
+        val fullFrost = Frost.frozenBackdrop(hostFrame, downscale = 6, radius = 8)
+        val croppedFrost = cropFrostBackdropForPopup(fullFrost, hostW, hostH, xPos, yPos, popupW, measuredH)
+        docFrostImg.setImageBitmap(croppedFrost)
+
         val lp = FrameLayout.LayoutParams(popupW, measuredH).apply {
             leftMargin = xPos
             topMargin = yPos
         }
-        hostFrame.addView(docCard, lp)
-        docCard.bringToFront()
+        hostFrame.addView(docFrame, lp)
+        docFrame.bringToFront()
         return
     }
 
-    val docPw = PopupWindow(docCard, popupW, measuredH, false).apply {
+    val docPw = PopupWindow(docFrame, popupW, measuredH, false).apply {
         isFocusable = false
         isTouchable = false
         isOutsideTouchable = false
@@ -751,18 +879,35 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Sugg
     }
 }
 
-internal fun MathCodeEditText.applySuggestionItem(item: SuggestionItem) {
+internal fun MathCodeEditText.applySuggestionItem(item: MathCodeEditText.SuggestionItem) {
     val editable = editableText ?: return
     val range = activePrefixRange ?: return
     val st = range.first.coerceIn(0, editable.length)
     val en = (range.last + 1).coerceIn(st, editable.length)
     dismissSuggestionsPopup()
 
+    // For infix word operators ("into", "in", "by", "and", "or") without parens,
+    // ensure clean single spaces before and after without duplicating existing spaces.
+    val isBareWordOp = (item.category == "op" && !item.insertText.contains('('))
+    val baseInsert = item.insertText.trim()
+    val finalInsert = if (isBareWordOp) {
+        val needLeadSpace = st > 0 && !editable[st - 1].isWhitespace() && editable[st - 1] != '(' && editable[st - 1] != '{' && editable[st - 1] != '['
+        val needTrailSpace = en >= editable.length || (!editable[en].isWhitespace() && editable[en] != ')' && editable[en] != '}')
+        buildString {
+            if (needLeadSpace) append(' ')
+            append(baseInsert)
+            if (needTrailSpace) append(' ')
+        }
+    } else {
+        item.insertText
+    }
+
     isProgrammaticEdit = true
     try {
-        editable.replace(st, en, item.insertText)
-        val newCursor = (st + item.insertText.length - item.cursorBackOffset).coerceIn(0, editable.length)
+        editable.replace(st, en, finalInsert)
+        val newCursor = (st + finalInsert.length - item.cursorBackOffset).coerceIn(0, editable.length)
         setSelection(newCursor)
+        ensureCursorVisible()
     } finally {
         isProgrammaticEdit = false
     }

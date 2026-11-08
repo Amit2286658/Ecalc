@@ -1,18 +1,15 @@
 package com.ecalc
 
-import android.content.Context
-import android.os.Build
 import android.util.Log
 import com.mathengine.MathEngineBridge
-import java.io.File
-import java.util.concurrent.Executors
-import java.util.zip.ZipFile
 
 /**
- * Normalizes `.math` module source code before passing to `nativeCompileExt` or `nativeModuleEval`.
+ * Normalizes `.math` module source code before passing to the C11 Math Engine.
  */
 internal fun MathEngineManager.normalizeExtensionSource(raw: String): String {
-    val cleaned = raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace("\r", "\n")
+    val cleaned = MathPatchDownloader.upgradeLegacyCurrencyPatch(
+        raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace("\r", "\n")
+    )
     val codeLines = mutableListOf<String>()
 
     for (rawLine in cleaned.lines()) {
@@ -21,7 +18,7 @@ internal fun MathEngineManager.normalizeExtensionSource(raw: String): String {
         if (trimmed.isEmpty()) continue
 
         if (trimmed.startsWith("@dim") ||
-                            trimmed.startsWith("@entry") ||
+            trimmed.startsWith("@entry") ||
             typeDeclRegex.containsMatchIn(trimmed) ||
             syntaxBindingRegex.containsMatchIn(trimmed)
         ) {
@@ -81,7 +78,7 @@ internal fun MathEngineManager.normalizeExtensionSource(raw: String): String {
                     !prevStripped.endsWith(";") &&
                     !typeDeclRegex.containsMatchIn(prevStripped) &&
                     !prevStripped.startsWith("@dim") &&
-                                            !prevStripped.startsWith("@entry")
+                    !prevStripped.startsWith("@entry")
                 val curContinues = contStartRegex.containsMatchIn(stripped)
                 if (prevContinues || curContinues) {
                     merged[merged.lastIndex] = "$prev $stripped"
@@ -143,11 +140,12 @@ internal fun MathEngineManager.normalizeExtensionSource(raw: String): String {
 @Synchronized
 internal fun MathEngineManager.compileAndLoadPatchOnHandleSync(handle: Long, mathSource: String): Triple<Boolean, String, ByteArray?> {
     if (handle == 0L) return Triple(false, "Engine not initialized", null)
-    registerHostExternsOnHandle(handle, CALC_PROJECT_NAME)
+    registerHostExternsOnHandle(handle, activeProjectName)
     val trimmed = normalizeExtensionSource(mathSource)
     if (trimmed.isEmpty()) return Triple(false, "Empty .math source", null)
     return try {
-        val mathcBytes = runCatching { MathEngineBridge.nativeApplyPatch(handle, trimmed) }.getOrNull() ?: MathEngineBridge.nativeCompileExt(handle, trimmed)
+        val mathcBytes = runCatching { MathEngineBridge.nativeApplyPatch(handle, trimmed) }.getOrNull()
+            ?: MathEngineBridge.nativeCompileExt(handle, trimmed)
         if (mathcBytes == null || mathcBytes.isEmpty()) {
             val err = MathEngineBridge.nativeLastError(handle) ?: "Compilation failed"
             Triple(false, err, null)
@@ -184,16 +182,14 @@ internal fun MathEngineManager.isDeclarationOrBindingStatement(stmt: String): Bo
     if (noMods.startsWith("(") && opDefPrefixRegex.containsMatchIn(noMods)) {
         return true
     }
-    // Function or method declaration: name(...) = ...
     if (fnDefRegex.containsMatchIn(noMods)) return true
-    // Module variable/constant binding: name := ... or name = ... or name : type = ...
     if (varDefRegex.containsMatchIn(noMods)) return true
     return false
 }
 
 /**
  * Splits a normalized `.math` module source into balanced top-level declarations,
- * headers, and statements so top-to-bottom execution can log every item's result.
+ * headers, and statements.
  */
 internal fun MathEngineManager.splitModuleStatements(rawSource: String): List<String> {
     val normalized = normalizeExtensionSource(rawSource)
@@ -286,17 +282,16 @@ internal fun MathEngineManager.formatModuleVariablesOnHandleSync(handle: Long, m
         .joinToString("\n")
 }
 
-/** Destroy all engines when the process exits. */
+/** Destroys the single shared `Engine*` instance when the process exits. */
 @Synchronized
 fun MathEngineManager.shutdown() {
-    for ((_, st) in projectStates) {
-        if (st.engineHandle != 0L) {
-            runCatching { MathEngineBridge.nativeDestroy(st.engineHandle) }
-            st.engineHandle = 0L
-        }
-        st.studioModuleSourcesByName.clear()
+    if (engineHandle != 0L) {
+        runCatching { MathEngineBridge.nativeDestroy(engineHandle) }
+        engineHandle = 0L
     }
-    projectStates.clear()
+    linkedModuleSourcesByName.clear()
+    linkedProjectName = null
+    isProjectModeActive = false
     MathPatchLoader.resetTracking()
     worker.shutdown()
 }
@@ -387,7 +382,6 @@ internal fun MathEngineManager.rewritePostfixPercent(expr: String): String {
     var idx = 0
     while (idx < cur.length) {
         if (cur[idx] == '%') {
-            // Check if this '%' is binary modulo (followed by a number, identifier, or '(')
             var nextNonSpace = idx + 1
             while (nextNonSpace < cur.length && cur[nextNonSpace].isWhitespace()) nextNonSpace++
             val isBinaryMod = nextNonSpace < cur.length &&
@@ -419,7 +413,6 @@ internal fun MathEngineManager.rewritePostfixPercent(expr: String): String {
                     while (opPos >= 0 && cur[opPos].isWhitespace()) opPos--
                     val opChar = if (opPos >= 0) cur[opPos] else ' '
                     if (opChar == '+' || opChar == '-') {
-                        // Find the start of the left addend inside the current parenthesis scope
                         var startA = opPos - 1
                         var pDepth = 0
                         while (startA >= 0) {
@@ -504,11 +497,11 @@ fun MathEngineManager.toEngineSyntax(
 }
 
 /**
- * Stateless single-shot evaluation via `eng_eval` for the Basic Calculator keypad.
+ * **Path 1 — Standalone Mode (`eng_eval`)** for the Basic/Scientific Calculator keypad.
  *
- * Runs strictly in its own dedicated `project0` (`filesDir/math_projects/project0/`
- * with its own `engine.so` and patched `stdlib.mathc`), completely isolated from
- * `project1` and any other projects in the Freeform `.math` Studio.
+ * Uses the single shared `Engine*` instance ([MathEngineManager.engineHandle]). If user project
+ * modules were previously linked in the Studio, flushes them in O(1) time via [flushUserModulesSync]
+ * so the calculator always evaluates in pure Standalone Mode (`stdlib + patches`).
  */
 fun MathEngineManager.evaluate(
     displayExpr: String,
@@ -526,17 +519,21 @@ fun MathEngineManager.evaluate(
             val engineExpr = toEngineSyntax(displayExpr, isDegreeMode, lastAnswer)
 
             synchronized(this) {
-                val calcHandle = ensureProjectEngineSync(ctx, CALC_PROJECT_NAME, allowCalcProject0 = true)
-                if (calcHandle == 0L) {
-                    onDone(EvalOutcome(false, "0.0", "", "none", "project0 engine init failed"))
+                val handle = if (isProjectModeActive) {
+                    flushUserModulesSync(ctx)
+                } else {
+                    ensureSharedEngineSync(ctx)
+                }
+                if (handle == 0L) {
+                    onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"))
                     return@execute
                 }
 
-                runCatching { MathEngineBridge.nativeClearOutput(calcHandle) }
+                runCatching { MathEngineBridge.nativeClearOutput(handle) }
                 val wire = try {
-                    MathEngineBridge.nativeEval(calcHandle, engineExpr)
+                    MathEngineBridge.nativeEval(handle, engineExpr)
                 } catch (t: Throwable) { null }
-                val stdout = runCatching { MathEngineBridge.nativeGetOutput(calcHandle).orEmpty() }.getOrDefault("")
+                val stdout = runCatching { MathEngineBridge.nativeGetOutput(handle).orEmpty() }.getOrDefault("")
 
                 if (wire == null) {
                     onDone(EvalOutcome(false, "0.0", "", "none", "Engine call failed", stdout = stdout))
@@ -556,7 +553,3 @@ fun MathEngineManager.evaluate(
         }
     }
 }
-
-// =========================================================================
-//  Top-to-Bottom Individual Module Run & Project-Wide `main()` / `@entry` API
-// =========================================================================

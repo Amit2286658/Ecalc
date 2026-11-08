@@ -23,19 +23,21 @@ import kotlin.math.min
 import kotlin.math.pow
 
 /**
- * Interactive 2D Function, Vector & Parametric (`vec<vec2>`) Canvas Plotter View.
+ * Interactive 2D Multi-Curve Function, Vector & Parametric (`vec<vec2>`) Canvas Plotter View.
  *
  * Features:
+ * - Multi-curve overlay (`f(x); g(x); h(x)`) with distinct high-contrast colors and color-coded legend bar.
  * - Pinch-to-zoom & 1-finger pan with auto-formatted gridlines and axes (`x = 0`, `y = 0`).
- * - Automatic detection of roots (`y = 0` zero-crossings) and local extrema (`min` / `max`).
- * - Tap / drag crosshair inspection that snaps to the curve and displays exact `(x, y)` coordinates.
+ * - Automatic detection of roots (`y = 0` zero-crossings), local extrema (`min` / `max`), and curve intersections.
+ * - Tap / drag crosshair inspection that snaps to curves and displays multi-series `(x, y)` coordinates.
  */
 class MathPlotView(context: Context) : View(context) {
 
     data class SpecialMarker(
         val x: Double,
         val y: Double,
-        val kind: String // "ROOT", "MAX", "MIN"
+        val kind: String, // "ROOT", "MAX", "MIN", "INT"
+        val seriesIdx: Int = 0
     )
 
     var isDarkThemeMode: Boolean = true
@@ -47,8 +49,7 @@ class MathPlotView(context: Context) : View(context) {
 
     var onInspectPointChanged: ((x: Double, y: Double, tag: String?) -> Unit)? = null
 
-    private var seriesLabel: String = "f(x)"
-    private var dataPoints: List<Pair<Double, Double>> = emptyList()
+    private var seriesList: List<PlotSeries> = emptyList()
     private var specialMarkers: List<SpecialMarker> = emptyList()
 
     // World viewport bounds [xMin..xMax, yMin..yMax]
@@ -64,9 +65,28 @@ class MathPlotView(context: Context) : View(context) {
 
     private var inspectedPoint: Pair<Double, Double>? = null
     private var inspectedTag: String? = null
+    private var inspectedSeriesIdx: Int = 0
 
     private val density = resources.displayMetrics.density
     private val scaledDensity = resources.displayMetrics.scaledDensity
+
+    private val darkSeriesColors = intArrayOf(
+        Color.parseColor("#26C6DA"),
+        Color.parseColor("#FF7043"),
+        Color.parseColor("#FFCA28"),
+        Color.parseColor("#AB47BC"),
+        Color.parseColor("#66BB6A"),
+        Color.parseColor("#42A5F5")
+    )
+
+    private val lightSeriesColors = intArrayOf(
+        Color.parseColor("#E58A7B"),
+        Color.parseColor("#1E88E5"),
+        Color.parseColor("#43A047"),
+        Color.parseColor("#8E24AA"),
+        Color.parseColor("#FB8C00"),
+        Color.parseColor("#00897B")
+    )
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -115,6 +135,13 @@ class MathPlotView(context: Context) : View(context) {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         textSize = 10.5f * scaledDensity
     }
+    private val legendDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val legendTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        textSize = 9.8f * scaledDensity
+    }
 
     private val curvePath = Path()
     private val fillPath = Path()
@@ -151,6 +178,11 @@ class MathPlotView(context: Context) : View(context) {
         updatePalette()
     }
 
+    private fun seriesColor(index: Int): Int {
+        val palette = if (isDarkThemeMode) darkSeriesColors else lightSeriesColors
+        return palette[index.coerceAtLeast(0) % palette.size]
+    }
+
     private fun updatePalette() {
         if (isDarkThemeMode) {
             bgPaint.color = Color.parseColor("#1B1E23")
@@ -165,6 +197,7 @@ class MathPlotView(context: Context) : View(context) {
             labelPaint.color = Color.parseColor("#90A4AE")
             badgeBgPaint.color = Color.parseColor("#D8263238")
             badgeTextPaint.color = Color.parseColor("#E0F7FA")
+            legendTextPaint.color = Color.parseColor("#ECEFF4")
         } else {
             bgPaint.color = Color.parseColor("#FFFFFF")
             borderPaint.color = Color.parseColor("#D0D7DE")
@@ -178,15 +211,24 @@ class MathPlotView(context: Context) : View(context) {
             labelPaint.color = Color.parseColor("#546E7A")
             badgeBgPaint.color = Color.parseColor("#E8ECEFF1")
             badgeTextPaint.color = Color.parseColor("#263238")
+            legendTextPaint.color = Color.parseColor("#24292F")
         }
     }
 
     fun setSeriesData(label: String, points: List<Pair<Double, Double>>) {
-        seriesLabel = label
-        dataPoints = points
+        if (points.isEmpty()) {
+            setMultiSeriesData(emptyList())
+        } else {
+            setMultiSeriesData(listOf(PlotSeries(label, points)))
+        }
+    }
+
+    fun setMultiSeriesData(series: List<PlotSeries>) {
+        seriesList = series.filter { it.points.isNotEmpty() }
         inspectedPoint = null
         inspectedTag = null
-        computeAutoBoundsAndMarkers(points)
+        inspectedSeriesIdx = 0
+        computeAutoBoundsAndMarkers(seriesList)
         resetViewport()
     }
 
@@ -198,8 +240,8 @@ class MathPlotView(context: Context) : View(context) {
         invalidate()
     }
 
-    private fun computeAutoBoundsAndMarkers(pts: List<Pair<Double, Double>>) {
-        if (pts.isEmpty()) {
+    private fun computeAutoBoundsAndMarkers(allSeries: List<PlotSeries>) {
+        if (allSeries.isEmpty()) {
             defaultXMin = -5.0
             defaultXMax = 5.0
             defaultYMin = -5.0
@@ -212,11 +254,13 @@ class MathPlotView(context: Context) : View(context) {
         var minY = Double.POSITIVE_INFINITY
         var maxY = Double.NEGATIVE_INFINITY
 
-        for ((x, y) in pts) {
-            if (x < minX) minX = x
-            if (x > maxX) maxX = x
-            if (y < minY) minY = y
-            if (y > maxY) maxY = y
+        for (s in allSeries) {
+            for ((x, y) in s.points) {
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
         }
         val spanX = if (maxX - minX < 1e-9) 2.0 else (maxX - minX)
         val spanY = if (maxY - minY < 1e-9) 2.0 else (maxY - minY)
@@ -224,32 +268,56 @@ class MathPlotView(context: Context) : View(context) {
         defaultXMin = if (maxX - minX < 1e-9) minX - 1.0 else minX - 0.04 * spanX
         defaultXMax = if (maxX - minX < 1e-9) maxX + 1.0 else maxX + 0.04 * spanX
         defaultYMin = if (maxY - minY < 1e-9) minY - 1.0 else minY - 0.12 * spanY
-        defaultYMax = if (maxY - minY < 1e-9) maxY + 1.0 else maxY + 0.14 * spanY
+        defaultYMax = if (maxY - minY < 1e-9) maxY + 1.0 else maxY + (if (allSeries.size > 1) 0.22 else 0.14) * spanY
 
         val markers = mutableListOf<SpecialMarker>()
-        // Detect zero crossings (roots) & local extrema
-        for (i in 0 until pts.size - 1) {
-            val (x0, y0) = pts[i]
-            val (x1, y1) = pts[i + 1]
-            if (abs(y0) <= 1e-9) {
-                markers.add(SpecialMarker(x0, 0.0, "ROOT"))
-            } else if ((y0 < 0.0 && y1 > 0.0) || (y0 > 0.0 && y1 < 0.0)) {
-                val t = -y0 / (y1 - y0)
-                val rx = x0 + t * (x1 - x0)
-                markers.add(SpecialMarker(rx, 0.0, "ROOT"))
+        allSeries.forEachIndexed { sIdx, s ->
+            val pts = s.points
+            for (i in 0 until pts.size - 1) {
+                val (x0, y0) = pts[i]
+                val (x1, y1) = pts[i + 1]
+                if (abs(y0) <= 1e-9) {
+                    markers.add(SpecialMarker(x0, 0.0, "ROOT", sIdx))
+                } else if ((y0 < 0.0 && y1 > 0.0) || (y0 > 0.0 && y1 < 0.0)) {
+                    val t = -y0 / (y1 - y0)
+                    val rx = x0 + t * (x1 - x0)
+                    markers.add(SpecialMarker(rx, 0.0, "ROOT", sIdx))
+                }
+            }
+            for (i in 1 until pts.size - 1) {
+                val (_, yPrev) = pts[i - 1]
+                val (xc, yc) = pts[i]
+                val (_, yNext) = pts[i + 1]
+                if (yc > yPrev && yc >= yNext && yc - minY > 0.03 * spanY) {
+                    markers.add(SpecialMarker(xc, yc, "MAX", sIdx))
+                } else if (yc < yPrev && yc <= yNext && maxY - yc > 0.03 * spanY) {
+                    markers.add(SpecialMarker(xc, yc, "MIN", sIdx))
+                }
             }
         }
-        for (i in 1 until pts.size - 1) {
-            val (_, yPrev) = pts[i - 1]
-            val (xc, yc) = pts[i]
-            val (_, yNext) = pts[i + 1]
-            if (yc > yPrev && yc >= yNext && yc - minY > 0.03 * spanY) {
-                markers.add(SpecialMarker(xc, yc, "MAX"))
-            } else if (yc < yPrev && yc <= yNext && maxY - yc > 0.03 * spanY) {
-                markers.add(SpecialMarker(xc, yc, "MIN"))
+        // Detect intersections between curve 0 and curve 1 when 2+ curves share x-grid
+        if (allSeries.size >= 2) {
+            val p0 = allSeries[0].points
+            val p1 = allSeries[1].points
+            val n = min(p0.size, p1.size)
+            for (i in 0 until n - 1) {
+                val (x0, y0a) = p0[i]
+                val (x1, y1a) = p0[i + 1]
+                val (x0b, y0b) = p1[i]
+                val (_, y1b) = p1[i + 1]
+                if (abs(x0 - x0b) < 1e-6) {
+                    val d0 = y0a - y0b
+                    val d1 = y1a - y1b
+                    if ((d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0)) {
+                        val t = -d0 / (d1 - d0)
+                        val ix = x0 + t * (x1 - x0)
+                        val iy = y0a + t * (y1a - y0a)
+                        markers.add(SpecialMarker(ix, iy, "INT", 0))
+                    }
+                }
             }
         }
-        specialMarkers = markers.take(16)
+        specialMarkers = markers.take(24)
     }
 
     private fun plotLeft(): Float = 10f * density
@@ -354,32 +422,47 @@ class MathPlotView(context: Context) : View(context) {
     }
 
     private fun snapInspectToScreen(px: Float, py: Float) {
-        if (dataPoints.isEmpty()) return
-        // First check if tap is close to a special marker (ROOT / MAX / MIN)
+        if (seriesList.isEmpty()) return
+        // First check if tap is close to a special marker (ROOT / MAX / MIN / INT)
         for (m in specialMarkers) {
             val mx = worldToScreenX(m.x)
             val my = worldToScreenY(m.y)
             if (hypot((px - mx).toDouble(), (py - my).toDouble()) <= 18.0 * density) {
                 inspectedPoint = m.x to m.y
-                inspectedTag = m.kind
-                onInspectPointChanged?.invoke(m.x, m.y, m.kind)
+                inspectedSeriesIdx = m.seriesIdx
+                val sLabel = seriesList.getOrNull(m.seriesIdx)?.label
+                val tag = if (seriesList.size > 1 && sLabel != null && m.kind != "INT") "${m.kind} $sLabel" else m.kind
+                inspectedTag = tag
+                onInspectPointChanged?.invoke(m.x, m.y, tag)
                 invalidate()
                 return
             }
         }
         var bestDist = Double.POSITIVE_INFINITY
-        var bestPt = dataPoints.first()
-        for (pt in dataPoints) {
-            val sx = worldToScreenX(pt.first)
-            val d = abs(px - sx).toDouble()
-            if (d < bestDist) {
-                bestDist = d
-                bestPt = pt
+        var bestPt = seriesList.first().points.first()
+        var bestSIdx = 0
+        seriesList.forEachIndexed { sIdx, s ->
+            for (pt in s.points) {
+                val sx = worldToScreenX(pt.first)
+                val sy = worldToScreenY(pt.second)
+                val d = abs(px - sx).toDouble() + 0.22 * abs(py - sy).toDouble()
+                if (d < bestDist) {
+                    bestDist = d
+                    bestPt = pt
+                    bestSIdx = sIdx
+                }
             }
         }
         inspectedPoint = bestPt
-        inspectedTag = null
-        onInspectPointChanged?.invoke(bestPt.first, bestPt.second, null)
+        inspectedSeriesIdx = bestSIdx
+        val multiTag = if (seriesList.size > 1) {
+            seriesList.joinToString(" | ") { s ->
+                val near = s.points.minByOrNull { abs(it.first - bestPt.first) }
+                "${s.label}=${formatCoord(near?.second ?: 0.0)}"
+            }
+        } else null
+        inspectedTag = multiTag
+        onInspectPointChanged?.invoke(bestPt.first, bestPt.second, multiTag)
         invalidate()
     }
 
@@ -425,72 +508,105 @@ class MathPlotView(context: Context) : View(context) {
             canvas.drawLine(plotLeft(), y0, plotRight(), y0, axisPaint)
         }
 
-        // 3. Curve & Soft Gradient Fill to Y=0 (or bottom)
-        if (dataPoints.isNotEmpty()) {
-            curvePath.reset()
-            fillPath.reset()
+        // 3. Curves & Soft Gradient Fill
+        if (seriesList.isNotEmpty()) {
             val baselineY = worldToScreenY(0.0.coerceIn(viewYMin, viewYMax))
 
-            var firstSx = 0f
-            var lastSx = 0f
-            dataPoints.forEachIndexed { idx, (wx, wy) ->
-                val sx = worldToScreenX(wx)
-                val sy = worldToScreenY(wy)
-                if (idx == 0) {
-                    firstSx = sx
-                    curvePath.moveTo(sx, sy)
-                    fillPath.moveTo(sx, baselineY)
-                    fillPath.lineTo(sx, sy)
-                } else {
-                    curvePath.lineTo(sx, sy)
-                    fillPath.lineTo(sx, sy)
+            seriesList.forEachIndexed { sIdx, series ->
+                val pts = series.points
+                if (pts.isEmpty()) return@forEachIndexed
+                val col = seriesColor(sIdx)
+                curvePaint.color = col
+                dotPaint.color = col
+
+                curvePath.reset()
+                fillPath.reset()
+                var lastSx = 0f
+                pts.forEachIndexed { idx, (wx, wy) ->
+                    val sx = worldToScreenX(wx)
+                    val sy = worldToScreenY(wy)
+                    if (idx == 0) {
+                        curvePath.moveTo(sx, sy)
+                        fillPath.moveTo(sx, baselineY)
+                        fillPath.lineTo(sx, sy)
+                    } else {
+                        curvePath.lineTo(sx, sy)
+                        fillPath.lineTo(sx, sy)
+                    }
+                    lastSx = sx
                 }
-                lastSx = sx
-            }
-            fillPath.lineTo(lastSx, baselineY)
-            fillPath.close()
+                fillPath.lineTo(lastSx, baselineY)
+                fillPath.close()
 
-            val topC = if (isDarkThemeMode) Color.parseColor("#4426C6DA") else Color.parseColor("#38E58A7B")
-            val botC = Color.TRANSPARENT
-            fillPaint.shader = LinearGradient(
-                0f, plotTop(), 0f, plotBottom(),
-                topC, botC, Shader.TileMode.CLAMP
-            )
-            if (dataPoints.size >= 2) {
-                canvas.drawPath(fillPath, fillPaint)
-                canvas.drawPath(curvePath, curvePaint)
-            }
+                if (pts.size >= 2) {
+                    if (seriesList.size == 1 || sIdx == 0) {
+                        val topAlpha = if (seriesList.size == 1) 0x44 else 0x22
+                        val topC = (col and 0x00FFFFFF) or (topAlpha shl 24)
+                        fillPaint.shader = LinearGradient(
+                            0f, plotTop(), 0f, plotBottom(),
+                            topC, Color.TRANSPARENT, Shader.TileMode.CLAMP
+                        )
+                        canvas.drawPath(fillPath, fillPaint)
+                    }
+                    canvas.drawPath(curvePath, curvePaint)
+                }
 
-            if (dataPoints.size <= 45) {
-                for ((wx, wy) in dataPoints) {
-                    canvas.drawCircle(worldToScreenX(wx), worldToScreenY(wy), 3.4f * density, dotPaint)
+                if (pts.size <= 45) {
+                    for ((wx, wy) in pts) {
+                        canvas.drawCircle(worldToScreenX(wx), worldToScreenY(wy), 3.4f * density, dotPaint)
+                    }
                 }
             }
 
-            // 4. Special markers (roots & local extrema)
+            // 4. Special markers (roots, local extrema & intersections)
             for (m in specialMarkers) {
                 val mx = worldToScreenX(m.x)
                 val my = worldToScreenY(m.y)
-                val paint = if (m.kind == "ROOT") rootMarkerPaint else extremumMarkerPaint
+                val paint = if (m.kind == "ROOT" || m.kind == "INT") rootMarkerPaint else extremumMarkerPaint
                 canvas.drawCircle(mx, my, 4.5f * density, paint)
             }
 
-            // 5. Inspected crosshair & readout pill
+            // 5. Multi-curve color-coded legend bar (when 2+ curves are active)
+            if (seriesList.size > 1) {
+                var lx = plotLeft() + 8f * density
+                val ly = plotTop() + 14f * density
+                seriesList.forEachIndexed { idx, s ->
+                    val col = seriesColor(idx)
+                    legendDotPaint.color = col
+                    val shortLbl = if (s.label.length > 18) s.label.take(16) + "…" else s.label
+                    val tw = legendTextPaint.measureText(shortLbl)
+                    if (lx + tw + 20f * density <= plotRight()) {
+                        canvas.drawCircle(lx + 4f * density, ly - 3.5f * density, 4f * density, legendDotPaint)
+                        canvas.drawText(shortLbl, lx + 11f * density, ly, legendTextPaint)
+                        lx += tw + 22f * density
+                    }
+                }
+            }
+
+            // 6. Inspected crosshair & readout pill
             inspectedPoint?.let { (ix, iy) ->
                 val sx = worldToScreenX(ix)
                 val sy = worldToScreenY(iy)
                 canvas.drawLine(sx, plotTop(), sx, plotBottom(), crosshairPaint)
                 canvas.drawLine(plotLeft(), sy, plotRight(), sy, crosshairPaint)
-                canvas.drawCircle(sx, sy, 5.5f * density, curvePaint)
-                canvas.drawCircle(sx, sy, 3.0f * density, rootMarkerPaint)
 
-                val tagPrefix = inspectedTag?.let { "[$it] " } ?: ""
-                val text = "${tagPrefix}x=${formatCoord(ix)}, y=${formatCoord(iy)}"
+                // Draw dots on all curves at inspected x
+                seriesList.forEachIndexed { sIdx, s ->
+                    val near = s.points.minByOrNull { abs(it.first - ix) }
+                    if (near != null && abs(near.first - ix) <= (viewXMax - viewXMin) * 0.05) {
+                        val nsy = worldToScreenY(near.second)
+                        curvePaint.color = seriesColor(sIdx)
+                        canvas.drawCircle(sx, nsy, 5.2f * density, curvePaint)
+                        canvas.drawCircle(sx, nsy, 2.6f * density, rootMarkerPaint)
+                    }
+                }
+
+                val text = "x=${formatCoord(ix)}, y=${formatCoord(iy)}"
                 val tw = badgeTextPaint.measureText(text)
                 val padH = 8f * density
                 val padV = 5f * density
                 val bx = min(max(plotLeft() + 6f * density, sx - tw / 2f - padH), plotRight() - tw - 2f * padH - 6f * density)
-                val by = max(plotTop() + 6f * density, sy - 28f * density)
+                val by = max(plotTop() + (if (seriesList.size > 1) 22f else 6f) * density, sy - 28f * density)
                 badgeRect.set(bx, by, bx + tw + 2f * padH, by + 18f * density + padV)
                 canvas.drawRoundRect(badgeRect, 8f * density, 8f * density, badgeBgPaint)
                 canvas.drawText(text, bx + padH, by + 13.5f * density, badgeTextPaint)

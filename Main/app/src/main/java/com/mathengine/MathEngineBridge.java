@@ -97,6 +97,22 @@ public final class MathEngineBridge implements AutoCloseable {
         return nativeModuleReset(requireOpenHandle(), moduleName);
     }
 
+    public synchronized boolean flushUserModules() {
+        return nativeFlushUserModules(requireOpenHandle());
+    }
+
+    public synchronized EvalResult buildAndRun(String[] sources) {
+        return EvalResult.parseWire(nativeBuildAndRun(requireOpenHandle(), sources));
+    }
+
+    public synchronized double[] samplePlot(String modName, String expr, double xMin, double xMax, int samples) {
+        return nativeSamplePlot(requireOpenHandle(), modName, expr, xMin, xMax, samples);
+    }
+
+    public synchronized String exportCatalog() {
+        return nativeExportCatalog(requireOpenHandle());
+    }
+
     public synchronized String formatModuleVars(String moduleName) {
         return nativeModuleFormatVars(requireOpenHandle(), moduleName);
     }
@@ -188,6 +204,10 @@ public final class MathEngineBridge implements AutoCloseable {
     public static native String  nativeLastError(long handle);
     public static native String  nativeModuleEval(long handle, String modName, String expr);
     public static native boolean nativeModuleReset(long handle, String modName);
+    public static native boolean nativeFlushUserModules(long handle);
+    public static native String  nativeBuildAndRun(long handle, String[] sources);
+    public static native double[] nativeSamplePlot(long handle, String modName, String expr, double xMin, double xMax, int samples);
+    public static native String  nativeExportCatalog(long handle);
     public static native String  nativeModuleFormatVars(long handle, String modName);
     public static native String  nativeModuleExportSource(long handle, String modName);
     public static native byte[]  nativeCompileExt(long handle, String mathSource);

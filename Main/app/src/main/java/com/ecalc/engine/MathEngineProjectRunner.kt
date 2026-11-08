@@ -1,124 +1,227 @@
 package com.ecalc
 
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import com.mathengine.MathEngineBridge
-import java.io.File
-import java.util.concurrent.Executors
-import java.util.zip.ZipFile
 
 /**
- * Resolves and loads any `<[dep]` modules from [projectFilesByModName] in topological
- * dependency order on [projectState]'s isolated engine in **declaration-only dependency mode**
- * (binding types, dimensions, functions, operators, and `pub`/`priv` variables/constants while
- * skipping standalone scratch expressions and the dependency's own `main()`).
+ * Unified Compilation, Linking & Execution Pipeline for `.math` Studio Modules and Multi-File Projects.
+ *
+ * Matches the C11 Math Engine's unified architecture (`eng_flush_user_modules` + `eng_build_and_run`)
+ * on the **single recyclable `Engine*` instance** ([MathEngineManager.engineHandle]):
+ * - **Single-Unit Standalone Mode (`unit_count == 1`)**: When running an individual `.math` file
+ *   that has no sibling project `<[dep]` dependencies, flushes user modules in O(1) time and runs
+ *   that single unit through `nativeBuildAndRun(handle, arrayOf(unitSource))`.
+ * - **Multi-Unit Project Mode (`unit_count > 1`)**: When running a multi-file project (or a file
+ *   that imports sibling project modules via `<[dep]`), flushes user modules in O(1) time and passes
+ *   all compilation units to `nativeBuildAndRun(handle, unitSources)`, which runs Kahn's topological
+ *   sort in C, initializes library dependencies (`is_dep_unit = true`), and executes the project's
+ *   single `@entry(fn)` or `main()` entry point (or unique DAG sink).
+ */
+
+/**
+ * Prepares a `.math` file as a compilation unit for `nativeBuildAndRun`, ensuring it starts with
+ * its canonical `[modName]` header so all declarations and module variables land in `[modName]`.
+ */
+internal fun MathEngineManager.prepareCompilationUnit(fileName: String?, rawSource: String): Pair<String, String> {
+    val modName = deriveModuleName(fileName, rawSource)
+    val norm = normalizeExtensionSource(rawSource)
+    if (norm.isEmpty()) return modName to "[$modName]"
+
+    val firstLine = norm.lineSequence().firstOrNull()?.trim().orEmpty()
+    val hasExplicitTopHeader = modHeaderSingleLineRegex.matches(firstLine)
+    val unitSource = if (hasExplicitTopHeader) {
+        norm
+    } else {
+        "[$modName]\n$norm"
+    }
+    return modName to unitSource
+}
+
+/**
+ * Collects the transitive closure of sibling `.math` files in [projectFilesByModName] required by
+ * [rootModName] via `<[dep]` headers.
+ */
+internal fun MathEngineManager.collectTransitiveProjectUnits(
+    rootFileName: String,
+    rootModName: String,
+    rootSource: String,
+    projectFilesByModName: Map<String, Pair<String, String>>
+): List<Pair<String, String>> {
+    val visited = LinkedHashSet<String>()
+    val ordered = mutableListOf<Pair<String, String>>()
+
+    fun visit(modName: String, fileName: String, src: String) {
+        if (!visited.add(modName)) return
+        for (dep in extractModuleDependencies(src)) {
+            val sibling = projectFilesByModName[dep]
+            if (sibling != null && dep != modName) {
+                visit(dep, sibling.first, sibling.second)
+            }
+        }
+        ordered.add(fileName to src)
+    }
+
+    visit(rootModName, rootFileName, rootSource)
+    return ordered
+}
+
+/**
+ * Executes one or more `.math` compilation units on the single shared `Engine*` instance:
+ * 1. Flushes any previously loaded user modules in O(1) time via [flushUserModulesSync].
+ * 2. Sets the sandboxed `import_dir` to [projectName]'s directory.
+ * 3. Calls `MathEngineBridge.nativeBuildAndRun(handle, unitSourcesArray)` (falling back to
+ *    `nativeEval` if an older prebuilt `.so` without `nativeBuildAndRun` is loaded).
  */
 @Synchronized
-internal fun MathEngineManager.ensureProjectDependenciesSync(
-    projectState: ProjectRuntimeState,
+internal fun MathEngineManager.executeUnitsViaEngineSync(
+    ctx: Context,
+    projectName: String,
+    units: List<Pair<String, String>>,
+    targetFileName: String,
     targetModName: String,
-    targetSource: String,
-    projectFilesByModName: Map<String, String>,
-    visited: MutableSet<String>
-): String? {
-    val handle = projectState.engineHandle
-    if (handle == 0L) return "Project engine not initialized"
-    visited.add(targetModName)
-    val deps = extractModuleDependencies(targetSource)
-    for (dep in deps) {
-        if (dep == targetModName) {
-            return "Circular module dependency involving '[$dep]'"
+    targetRawSource: String,
+    entryPoint: MathEngineManager.ProjectEntryPoint? = null
+): Pair<List<Pair<String, MathEngineManager.EvalOutcome>>, String> {
+    val safeProj = sanitizeProjectName(projectName)
+    ensureProjectSetup(ctx, safeProj)
+
+    val handle = flushUserModulesSync(ctx)
+    if (handle == 0L) {
+        return listOf(
+            "(init)" to MathEngineManager.EvalOutcome(
+                false, "0.0", "void", "none", "Shared engine initialization failed"
+            )
+        ) to ""
+    }
+
+    registerHostExternsOnHandle(handle, safeProj)
+
+    val preparedUnits = ArrayList<String>(units.size)
+    val preparedByMod = LinkedHashMap<String, String>()
+    for ((fName, rawSrc) in units) {
+        val (mName, unitSrc) = prepareCompilationUnit(fName, rawSrc)
+        if (unitSrc.isNotBlank()) {
+            preparedUnits.add(unitSrc)
+            preparedByMod[mName] = rawSrc
         }
-        val depSource = projectFilesByModName[dep]
-        if (depSource != null) {
-            if (dep !in visited) {
-                val depErr = ensureProjectDependenciesSync(
-                    projectState,
-                    dep,
-                    depSource,
-                    projectFilesByModName,
-                    visited
+    }
+
+    if (preparedUnits.isEmpty()) {
+        return emptyList<Pair<String, MathEngineManager.EvalOutcome>>() to ""
+    }
+
+    runCatching { MathEngineBridge.nativeClearOutput(handle) }
+
+    val wire = try {
+        MathEngineBridge.nativeBuildAndRun(handle, preparedUnits.toTypedArray())
+    } catch (_: UnsatisfiedLinkError) {
+        // Fallback if a legacy prebuilt .so without nativeBuildAndRun is loaded
+        var lastWire = "OK|void|none|"
+        for (uSrc in preparedUnits) {
+            val w = MathEngineBridge.nativeEval(handle, uSrc) ?: "ERR|Null nativeEval response"
+            lastWire = w
+            if (w.startsWith("ERR|")) break
+        }
+        lastWire
+    } catch (t: Throwable) {
+        "ERR|${t.message ?: "Native buildAndRun exception"}"
+    }
+
+    val stdout = runCatching { MathEngineBridge.nativeGetOutput(handle).orEmpty() }.getOrDefault("")
+    val parsed = MathEngineBridge.EvalResult.parseWire(wire)
+
+    // Activate all compiled project modules for variable & CAS/Plot introspection
+    for ((mName, rawSrc) in preparedByMod) {
+        runCatching { MathEngineBridge.nativeSetModule(handle, mName, true) }
+        linkedModuleSourcesByName[mName] = rawSrc
+    }
+    runCatching { MathEngineBridge.nativeSetModule(handle, targetModName, true) }
+    linkedProjectName = safeProj
+    isProjectModeActive = true
+    refreshLiveAutocompleteCatalogSync(handle)
+
+    val stmtsWithLines = splitModuleStatementsWithLines(targetRawSource)
+    val results = mutableListOf<Pair<String, MathEngineManager.EvalOutcome>>()
+
+    if (parsed.ok) {
+        // Record declared items from the target file for a clear, scannable execution log
+        for ((lineNum, stmt) in stmtsWithLines) {
+            val trimmed = stmt.trim()
+            if (modHeaderSingleLineRegex.matches(trimmed) || depHeaderSingleLineRegex.matches(trimmed)) {
+                continue
+            }
+            if (isDeclarationOrBindingStatement(trimmed)) {
+                results.add(
+                    trimmed to MathEngineManager.EvalOutcome(
+                        ok = true,
+                        value = "void",
+                        type = "void",
+                        unit = "none",
+                        error = null,
+                        stdout = "",
+                        sourceLine = lineNum
+                    )
                 )
-                if (depErr != null) return depErr
-                val prevLoaded = projectState.studioModuleSourcesByName[dep]
-                if (prevLoaded != depSource) {
-                    MathEngineBridge.nativeModuleReset(handle, dep)
-                    val declStmts = splitModuleStatements(depSource).filter { stmt ->
-                        !stmt.trim().startsWith("@entry") && isDeclarationOrBindingStatement(stmt)
-                    }
-                    val declOnlySrc = declStmts.joinToString("\n")
-                    if (declOnlySrc.isNotEmpty()) {
-                        val wire = evalInModuleWithoutAutoMain(handle, dep, declOnlySrc)
-                        val parsed = MathEngineBridge.EvalResult.parseWire(wire)
-                        if (!parsed.ok) {
-                            return "Error in dependency '[$dep]': ${parsed.error}"
-                        }
-                        MathEngineBridge.nativeSetModule(handle, dep, true)
-                        projectState.studioModuleSourcesByName[dep] = depSource
-                    }
-                } else {
-                    MathEngineBridge.nativeSetModule(handle, dep, true)
-                }
-            }
-        } else {
-            val active = MathEngineBridge.nativeIsModuleActive(handle, dep)
-            if (!active && !MathEngineBridge.nativeSetModule(handle, dep, true)) {
-                return "Unresolved module dependency '<[$dep]' required by '[$targetModName]' in project '${projectState.projectName}'"
             }
         }
+
+        val lastExprPair = stmtsWithLines.lastOrNull { (_, s) ->
+            val t = s.trim()
+            !modHeaderSingleLineRegex.matches(t) &&
+                !depHeaderSingleLineRegex.matches(t) &&
+                !isDeclarationOrBindingStatement(t)
+        }
+        val summaryLabel = when {
+            entryPoint != null -> "▶ ${entryPoint.fileName} [${entryPoint.modName}] :: ${entryPoint.entryFn}()"
+            lastExprPair != null -> lastExprPair.second
+            else -> "▶ Linked [$targetModName] (${units.size} unit${if (units.size == 1) "" else "s"})"
+        }
+        val summaryLine = entryPoint?.sourceLine ?: lastExprPair?.first ?: (stmtsWithLines.lastOrNull()?.first ?: 1)
+
+        results.add(
+            summaryLabel to MathEngineManager.EvalOutcome(
+                ok = true,
+                value = parsed.value,
+                type = parsed.type,
+                unit = parsed.unit,
+                error = null,
+                stdout = stdout,
+                sourceLine = summaryLine
+            )
+        )
+    } else {
+        val errMsg = parsed.error ?: "Compilation or execution failed"
+        val extractedLine = errorLineExtractRegex.find(errMsg)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val fallbackLine = extractedLine
+            ?: entryPoint?.sourceLine
+            ?: stmtsWithLines.lastOrNull()?.first
+            ?: 1
+        val errStmt = stmtsWithLines.firstOrNull { it.first == fallbackLine }?.second
+            ?: (if (entryPoint != null) "▶ ${entryPoint.fileName} :: ${entryPoint.entryFn}()" else "[$targetModName]")
+        results.add(
+            errStmt to MathEngineManager.EvalOutcome(
+                ok = false,
+                value = "0.0",
+                type = "void",
+                unit = "none",
+                error = errMsg,
+                stdout = stdout,
+                sourceLine = fallbackLine
+            )
+        )
     }
-    return null
+
+    val varsSummary = formatModuleVariablesOnHandleSync(handle, targetModName)
+    return results to varsSummary
 }
 
 /**
- * Persists the cumulative `.mathc` image (`stdlib.mathc` + global patches + linked modules in [projectState])
- * into `filesDir/math_projects/<projectName>/stdlib.mathc`.
- */
-@Synchronized
-internal fun MathEngineManager.persistProjectStdlibMathcSync(ctx: Context, projectState: ProjectRuntimeState) {
-    val projDir = ensureProjectSetup(ctx, projectState.projectName, allowCalcProject0 = false)
-    val stdlibFile = File(projDir, PROJECT_STDLIB_MATHC_NAME)
-    val baseBytes = runCatching { getUniversalPatchedStdlibBytes(ctx) }.getOrNull() ?: return
-
-    val tempHandle = MathEngineBridge.nativeCreateBlank().takeIf { it != 0L } ?: return
-    try {
-        if (!MathEngineBridge.nativeLoadMathc(tempHandle, baseBytes)) return
-        registerHostExternsOnHandle(tempHandle, projectState.projectName)
-        var latestMathc: ByteArray? = null
-        for ((modName, rawSrc) in projectState.studioModuleSourcesByName) {
-            val declStmts = splitModuleStatements(rawSrc).filter { stmt ->
-                !stmt.trim().startsWith("@entry") && isDeclarationOrBindingStatement(stmt)
-            }
-            val norm = declStmts.joinToString("\n").trim()
-            if (norm.isNotEmpty()) {
-                val withHeader = if (modHeaderMultilineRegex.containsMatchIn(norm)) {
-                    norm
-                } else {
-                    "[$modName]\n$norm"
-                }
-                val bytes = runCatching { MathEngineBridge.nativeCompileExt(tempHandle, withHeader) }.getOrNull()
-                if (bytes != null && bytes.isNotEmpty()) {
-                    latestMathc = bytes
-                }
-            }
-        }
-        if (latestMathc != null && latestMathc.isNotEmpty()) {
-            runCatching { stdlibFile.writeBytes(latestMathc) }
-        }
-    } finally {
-        runCatching { MathEngineBridge.nativeDestroy(tempHandle) }
-    }
-}
-
-/**
- * Executes an individual `.math` module file strictly top-to-bottom on its own inside [projectName]'s
- * isolated engine:
- * - Automatically resolves any `<[dep]` sibling modules in declaration-only dependency mode.
- * - Evaluates every top-level declaration, function definition, variable binding, and standalone
- *   expression in the file strictly from top to bottom.
- * - Does NOT auto-invoke `main()` or `@entry(fn)` (project-level entry functions are run via
- *   [runProject] from the Project Run option).
+ * Runs a `.math` file from the Studio Editor (`▶ Run / Link`) through the unified C engine pipeline:
+ * - If the file has no `<[dep]` dependencies on sibling project files, runs it in **Single-Unit
+ *   Standalone Mode** (`nativeBuildAndRun(handle, arrayOf(unitSource))`).
+ * - If the file imports sibling `.math` modules in the project via `<[dep]`, links those sibling
+ *   units together with the file in **Multi-Unit Project Mode** (`nativeBuildAndRun(handle, units)`).
  */
 fun MathEngineManager.runModuleFile(
     fileName: String?,
@@ -126,17 +229,17 @@ fun MathEngineManager.runModuleFile(
     projectSourcesByFileName: Map<String, String> = emptyMap(),
     resetBeforeRun: Boolean = true,
     projectName: String = activeProjectName,
-    onDone: (modName: String, results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
+    onDone: (modName: String, results: List<Pair<String, MathEngineManager.EvalOutcome>>, varsSummary: String) -> Unit
 ) {
-    val safeProj = sanitizeProjectName(projectName, allowCalcProject0 = false)
+    val safeProj = sanitizeProjectName(projectName)
     worker.execute {
-        val fallbackMod = deriveModuleName(fileName, mathSource)
+        val primaryMod = deriveModuleName(fileName, mathSource)
         try {
             val ctx = appContext
             if (ctx == null) {
                 onDone(
-                    fallbackMod,
-                    listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
+                    primaryMod,
+                    listOf("(init)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
                     ""
                 )
                 return@execute
@@ -144,108 +247,49 @@ fun MathEngineManager.runModuleFile(
 
             synchronized(this) {
                 activeProjectName = safeProj
-                var projHandle = ensureProjectEngineSync(ctx, safeProj, allowCalcProject0 = false)
-                if (projHandle == 0L) {
-                    onDone(
-                        fallbackMod,
-                        listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "Project '$safeProj' engine init failed")),
-                        ""
-                    )
-                    return@execute
-                }
+                val targetFile = fileName ?: "$primaryMod.math"
 
-                val projState = projectStates.getOrPut(safeProj) { ProjectRuntimeState(safeProj, projHandle) }
-                registerHostExternsOnHandle(projHandle, safeProj)
-                val primaryMod = fallbackMod
-
-                val hasTypeDecl = anyTypeOrStructDeclRegex.containsMatchIn(mathSource)
-                if (resetBeforeRun && hasTypeDecl && projState.studioModuleSourcesByName.containsKey(primaryMod)) {
-                    projState.studioModuleSourcesByName.remove(primaryMod)
-                    projHandle = rebuildProjectEngineFromBaselineSync(ctx, safeProj, allowCalcProject0 = false)
-                }
-
-                val projectByMod = LinkedHashMap<String, String>()
+                val projectByMod = LinkedHashMap<String, Pair<String, String>>()
                 for ((fName, fSrc) in projectSourcesByFileName) {
                     val mName = deriveModuleName(fName, fSrc)
-                    projectByMod[mName] = fSrc
+                    projectByMod[mName] = fName to fSrc
                 }
-                projectByMod[primaryMod] = mathSource
+                projectByMod[primaryMod] = targetFile to mathSource
 
-                val depErr = ensureProjectDependenciesSync(
-                    projState,
-                    primaryMod,
-                    mathSource,
-                    projectByMod,
-                    mutableSetOf()
+                val units = collectTransitiveProjectUnits(
+                    rootFileName = targetFile,
+                    rootModName = primaryMod,
+                    rootSource = mathSource,
+                    projectFilesByModName = projectByMod
                 )
-                if (depErr != null) {
-                    onDone(
-                        primaryMod,
-                        listOf("<[dep]" to EvalOutcome(false, "0.0", "void", "none", depErr)),
-                        formatModuleVariablesOnHandleSync(projHandle, primaryMod)
+
+                val (entryFn, isExplicit) = detectModuleEntryPoint(mathSource)
+                val fileEntryPoint = if (entryFn != null) {
+                    MathEngineManager.ProjectEntryPoint(
+                        fileName = targetFile,
+                        modName = primaryMod,
+                        entryFn = entryFn,
+                        isExplicitDirective = isExplicit,
+                        sourceLine = splitModuleStatementsWithLines(mathSource).lastOrNull()?.first ?: 1
                     )
-                    return@execute
-                }
+                } else null
 
-                if (resetBeforeRun) {
-                    runCatching { MathEngineBridge.nativeModuleReset(projHandle, primaryMod) }
-                }
-
-                val statementsWithLines = splitModuleStatementsWithLines(mathSource)
-                val results = mutableListOf<Pair<String, EvalOutcome>>()
-                var curMod = primaryMod
-                var allOk = true
-
-                for ((stmtLine, stmt) in statementsWithLines) {
-                    val trimmedStmt = stmt.trim()
-                    val hdrMatch = modHeaderSingleLineRegex.matchEntire(trimmedStmt)
-                    if (hdrMatch != null) {
-                        curMod = hdrMatch.groupValues[1]
-                        if (resetBeforeRun && curMod != primaryMod) {
-                            runCatching { MathEngineBridge.nativeModuleReset(projHandle, curMod) }
-                        }
-                        MathEngineBridge.nativeSetModule(projHandle, curMod, true)
-                        continue
-                    }
-
-                    val entryMatch = explicitEntryRegex.matchEntire(trimmedStmt)
-                    if (entryMatch != null) {
-                        results.add(trimmedStmt to EvalOutcome(true, "void", "void", "none", null, sourceLine = stmtLine))
-                        continue
-                    }
-
-                    runCatching { MathEngineBridge.nativeClearOutput(projHandle) }
-                    val wire = try {
-                        evalInModuleWithoutAutoMain(projHandle, curMod, stmt)
-                    } catch (t: Throwable) {
-                        "ERR|${t.message ?: "Native exception"}"
-                    }
-                    val stdout = runCatching { MathEngineBridge.nativeGetOutput(projHandle).orEmpty() }.getOrDefault("")
-
-                    val parsed = MathEngineBridge.EvalResult.parseWire(wire)
-                    val outcome = if (parsed.ok) {
-                        EvalOutcome(true, parsed.value, parsed.type, parsed.unit, null, stdout = stdout, sourceLine = stmtLine)
-                    } else {
-                        allOk = false
-                        EvalOutcome(false, "0.0", "void", "none", parsed.error, stdout = stdout, sourceLine = stmtLine)
-                    }
-                    results.add(stmt to outcome)
-                    if (!parsed.ok) break
-                }
-
-                MathEngineBridge.nativeSetModule(projHandle, curMod, true)
-                if (allOk) {
-                    projState.studioModuleSourcesByName[primaryMod] = mathSource
-                    persistProjectStdlibMathcSync(ctx, projState)
-                }
-                val varsSummary = formatModuleVariablesOnHandleSync(projHandle, curMod)
-                onDone(curMod, results, varsSummary)
+                val (results, varsSummary) = executeUnitsViaEngineSync(
+                    ctx = ctx,
+                    projectName = safeProj,
+                    units = units,
+                    targetFileName = targetFile,
+                    targetModName = primaryMod,
+                    targetRawSource = mathSource,
+                    entryPoint = fileEntryPoint
+                )
+                onDone(primaryMod, results, varsSummary)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "runModuleFile failed for '$fileName'", t)
             onDone(
-                fallbackMod,
-                listOf("(error)" to EvalOutcome(false, "0.0", "void", "none", t.message ?: "Module execution failed")),
+                primaryMod,
+                listOf("(error)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", t.message ?: "Module execution failed")),
                 ""
             )
         }
@@ -253,30 +297,24 @@ fun MathEngineManager.runModuleFile(
 }
 
 /**
- * Runs the project-level `main()` or `@entry(fn)` function located anywhere in any `.math` file
- * of [projectName].
- *
- * Behavior:
- * - Scans all `.math` files in the project using [findProjectEntryPoint].
- * - If no `main()` or `@entry(fn)` function exists in any file of the project, the project itself
- *   cannot run and [onDone] is invoked with `entryPoint = null` and a descriptive error outcome.
- * - Otherwise links all sibling modules in declaration-only mode, evaluates the entry module's
- *   declarations/bindings, and invokes `${entryPoint.entryFn}()` in `${entryPoint.modName}`.
+ * **Path 2 — Projects Mode (`eng_flush_user_modules` + `eng_build_and_run`)**:
+ * Flushes previous user modules on the single shared `Engine*` instance, links the project's
+ * `.math` modules in topological `<[dep]` order, and executes `@entry(fn)` or `main()`.
  */
 fun MathEngineManager.runProject(
     projectName: String = activeProjectName,
     projectSourcesByFileName: Map<String, String> = emptyMap(),
     preferredActiveFile: String? = null,
-    onDone: (entryPoint: ProjectEntryPoint?, results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
+    onDone: (entryPoint: MathEngineManager.ProjectEntryPoint?, results: List<Pair<String, MathEngineManager.EvalOutcome>>, varsSummary: String) -> Unit
 ) {
-    val safeProj = sanitizeProjectName(projectName, allowCalcProject0 = false)
+    val safeProj = sanitizeProjectName(projectName)
     worker.execute {
         try {
             val ctx = appContext
             if (ctx == null) {
                 onDone(
                     null,
-                    listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
+                    listOf("(init)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
                     ""
                 )
                 return@execute
@@ -285,7 +323,7 @@ fun MathEngineManager.runProject(
             synchronized(this) {
                 activeProjectName = safeProj
                 val mergedSources = LinkedHashMap<String, String>()
-                val projDir = ensureProjectSetup(ctx, safeProj, allowCalcProject0 = false)
+                val projDir = ensureProjectSetup(ctx, safeProj)
                 projDir.listFiles { f ->
                     f.isFile && f.name.endsWith(".math", ignoreCase = true) && !f.name.startsWith(".")
                 }?.sortedBy { it.name.lowercase() }?.forEach { file ->
@@ -299,15 +337,38 @@ fun MathEngineManager.runProject(
 
                 val entryPoint = findProjectEntryPoint(mergedSources, preferredActiveFile = preferredActiveFile)
                 if (entryPoint == null) {
+                    // If the project has only 1 .math file, run it directly as a single-unit standalone project
+                    if (mergedSources.size == 1) {
+                        val (singleFile, singleSrc) = mergedSources.entries.first()
+                        val singleMod = deriveModuleName(singleFile, singleSrc)
+                        val synthEntry = MathEngineManager.ProjectEntryPoint(
+                            fileName = singleFile,
+                            modName = singleMod,
+                            entryFn = "script",
+                            isExplicitDirective = false,
+                            sourceLine = 1
+                        )
+                        val (results, varsSummary) = executeUnitsViaEngineSync(
+                            ctx = ctx,
+                            projectName = safeProj,
+                            units = listOf(singleFile to singleSrc),
+                            targetFileName = singleFile,
+                            targetModName = singleMod,
+                            targetRawSource = singleSrc,
+                            entryPoint = null
+                        )
+                        onDone(synthEntry, results, varsSummary)
+                        return@execute
+                    }
                     onDone(
                         null,
                         listOf(
-                            "(project)" to EvalOutcome(
+                            "(project)" to MathEngineManager.EvalOutcome(
                                 false,
                                 "0.0",
                                 "void",
                                 "none",
-                                "Project '$safeProj' cannot run: no main() or @entry function found in any file. Individual module files can still run top-to-bottom on their own."
+                                "Project '$safeProj' has multiple files but no main() or @entry function. Add pub main() or @entry(fn), or run individual standalone files via '▶ Run / Link'."
                             )
                         ),
                         ""
@@ -315,183 +376,50 @@ fun MathEngineManager.runProject(
                     return@execute
                 }
 
-                var projHandle = ensureProjectEngineSync(ctx, safeProj, allowCalcProject0 = false)
-                if (projHandle == 0L) {
-                    onDone(
-                        entryPoint,
-                        listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "Project '$safeProj' engine init failed")),
-                        ""
-                    )
-                    return@execute
-                }
-
-                val projState = projectStates.getOrPut(safeProj) { ProjectRuntimeState(safeProj, projHandle) }
-                registerHostExternsOnHandle(projHandle, safeProj)
-
                 val entrySource = mergedSources[entryPoint.fileName] ?: ""
-                val projectByMod = LinkedHashMap<String, String>()
+                val projectByMod = LinkedHashMap<String, Pair<String, String>>()
                 for ((fName, fSrc) in mergedSources) {
                     val mName = deriveModuleName(fName, fSrc)
-                    projectByMod[mName] = fSrc
+                    projectByMod[mName] = fName to fSrc
                 }
 
-                // If any project module redeclares a custom type, rebuild cleanly from baseline
-                val anyRedeclaredType = projectByMod.any { (mName, mSrc) ->
-                    anyTypeOrStructDeclRegex.containsMatchIn(mSrc) && projState.studioModuleSourcesByName.containsKey(mName)
-                }
-                if (anyRedeclaredType) {
-                    projState.studioModuleSourcesByName.clear()
-                    projHandle = rebuildProjectEngineFromBaselineSync(ctx, safeProj, allowCalcProject0 = false)
-                }
-
-                // Load all sibling modules in declaration-only mode first (respecting dependencies)
-                for ((modName, modSrc) in projectByMod) {
-                    if (modName == entryPoint.modName) continue
-                    val depErr = ensureProjectDependenciesSync(
-                        projState,
-                        modName,
-                        modSrc,
-                        projectByMod,
-                        mutableSetOf()
-                    )
-                    if (depErr != null) {
-                        onDone(
-                            entryPoint,
-                            listOf("<[dep]" to EvalOutcome(false, "0.0", "void", "none", depErr)),
-                            ""
-                        )
-                        return@execute
-                    }
-                    if (projState.studioModuleSourcesByName[modName] != modSrc) {
-                        MathEngineBridge.nativeModuleReset(projHandle, modName)
-                        val declStmts = splitModuleStatements(modSrc).filter { stmt ->
-                            !stmt.trim().startsWith("@entry") && isDeclarationOrBindingStatement(stmt)
-                        }
-                        val declOnlySrc = declStmts.joinToString("\n")
-                        if (declOnlySrc.isNotEmpty()) {
-                            val wire = evalInModuleWithoutAutoMain(projHandle, modName, declOnlySrc)
-                            val parsed = MathEngineBridge.EvalResult.parseWire(wire)
-                            if (!parsed.ok) {
-                                onDone(
-                                    entryPoint,
-                                    listOf("[$modName]" to EvalOutcome(false, "0.0", "void", "none", "Error in module '[$modName]': ${parsed.error}")),
-                                    ""
-                                )
-                                return@execute
-                            }
-                            MathEngineBridge.nativeSetModule(projHandle, modName, true)
-                            projState.studioModuleSourcesByName[modName] = modSrc
-                        }
-                    } else {
-                        MathEngineBridge.nativeSetModule(projHandle, modName, true)
-                    }
-                }
-
-                // Ensure dependencies of the entry module itself
-                val entryDepErr = ensureProjectDependenciesSync(
-                    projState,
-                    entryPoint.modName,
-                    entrySource,
-                    projectByMod,
-                    mutableSetOf()
+                // Collect the entry module and all its transitive <[dep] project modules
+                val units = collectTransitiveProjectUnits(
+                    rootFileName = entryPoint.fileName,
+                    rootModName = entryPoint.modName,
+                    rootSource = entrySource,
+                    projectFilesByModName = projectByMod
                 )
-                if (entryDepErr != null) {
-                    onDone(
-                        entryPoint,
-                        listOf("<[dep]" to EvalOutcome(false, "0.0", "void", "none", entryDepErr)),
-                        formatModuleVariablesOnHandleSync(projHandle, entryPoint.modName)
-                    )
-                    return@execute
-                }
 
-                runCatching { MathEngineBridge.nativeModuleReset(projHandle, entryPoint.modName) }
-
-                // Evaluate all declarations and bindings in the entry file so functions/constants/vars are ready
-                val statementsWithLines = splitModuleStatementsWithLines(entrySource)
-                val results = mutableListOf<Pair<String, EvalOutcome>>()
-                var curMod = deriveModuleName(entryPoint.fileName, entrySource)
-                var allOk = true
-
-                for ((stmtLine, stmt) in statementsWithLines) {
-                    val trimmedStmt = stmt.trim()
-                    val hdrMatch = modHeaderSingleLineRegex.matchEntire(trimmedStmt)
-                    if (hdrMatch != null) {
-                        curMod = hdrMatch.groupValues[1]
-                        MathEngineBridge.nativeSetModule(projHandle, curMod, true)
-                        continue
-                    }
-                    if (explicitEntryRegex.matches(trimmedStmt)) {
-                        continue
-                    }
-                    // During project run, load all declarations/bindings in the entry file before invoking entryFn()
-                    if (!isDeclarationOrBindingStatement(trimmedStmt)) {
-                        continue
-                    }
-
-                    runCatching { MathEngineBridge.nativeClearOutput(projHandle) }
-                    val wire = try {
-                        evalInModuleWithoutAutoMain(projHandle, curMod, stmt)
-                    } catch (t: Throwable) {
-                        "ERR|${t.message ?: "Native exception"}"
-                    }
-                    val stdout = runCatching { MathEngineBridge.nativeGetOutput(projHandle).orEmpty() }.getOrDefault("")
-                    val parsed = MathEngineBridge.EvalResult.parseWire(wire)
-                    val outcome = if (parsed.ok) {
-                        EvalOutcome(true, parsed.value, parsed.type, parsed.unit, null, stdout = stdout, sourceLine = stmtLine)
-                    } else {
-                        allOk = false
-                        EvalOutcome(false, "0.0", "void", "none", parsed.error, stdout = stdout, sourceLine = stmtLine)
-                    }
-                    results.add(stmt to outcome)
-                    if (!parsed.ok) break
-                }
-
-                if (allOk) {
-                    runCatching { MathEngineBridge.nativeClearOutput(projHandle) }
-                    val entryCall = "${entryPoint.entryFn}()"
-                    val wire = try {
-                        evalInModuleWithoutAutoMain(projHandle, entryPoint.modName, entryCall)
-                    } catch (t: Throwable) {
-                        "ERR|${t.message ?: "Native exception"}"
-                    }
-                    val stdout = runCatching { MathEngineBridge.nativeGetOutput(projHandle).orEmpty() }.getOrDefault("")
-                    val parsed = MathEngineBridge.EvalResult.parseWire(wire)
-                    val entryOutcome = if (parsed.ok) {
-                        EvalOutcome(true, parsed.value, parsed.type, parsed.unit, null, stdout = stdout, sourceLine = entryPoint.sourceLine)
-                    } else {
-                        allOk = false
-                        EvalOutcome(false, "0.0", "void", "none", parsed.error, stdout = stdout, sourceLine = entryPoint.sourceLine)
-                    }
-                    val label = "▶ ${entryPoint.fileName} [${entryPoint.modName}] :: $entryCall"
-                    results.add(label to entryOutcome)
-                }
-
-                MathEngineBridge.nativeSetModule(projHandle, entryPoint.modName, true)
-                if (allOk) {
-                    projState.studioModuleSourcesByName[entryPoint.modName] = entrySource
-                    persistProjectStdlibMathcSync(ctx, projState)
-                }
-                val varsSummary = formatModuleVariablesOnHandleSync(projHandle, entryPoint.modName)
+                val (results, varsSummary) = executeUnitsViaEngineSync(
+                    ctx = ctx,
+                    projectName = safeProj,
+                    units = units,
+                    targetFileName = entryPoint.fileName,
+                    targetModName = entryPoint.modName,
+                    targetRawSource = entrySource,
+                    entryPoint = entryPoint
+                )
                 onDone(entryPoint, results, varsSummary)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "runProject failed for '$safeProj'", t)
             onDone(
                 null,
-                listOf("(error)" to EvalOutcome(false, "0.0", "void", "none", t.message ?: "Project execution failed")),
+                listOf("(error)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", t.message ?: "Project execution failed")),
                 ""
             )
         }
     }
 }
 
-/** Resets all runtime variables, constants, and overloads in [modName] inside [projectName]. */
+/** Resets runtime variables and overloads in [modName] (or flushes user modules on the shared engine). */
 fun MathEngineManager.resetModule(
     modName: String,
     projectName: String = activeProjectName,
     onDone: (ok: Boolean) -> Unit
 ) {
-    val safeProj = sanitizeProjectName(projectName, allowCalcProject0 = false)
+    val safeProj = sanitizeProjectName(projectName)
     worker.execute {
         try {
             val ctx = appContext
@@ -500,19 +428,14 @@ fun MathEngineManager.resetModule(
                 return@execute
             }
             val ok = synchronized(this) {
-                val handle = ensureProjectEngineSync(ctx, safeProj, allowCalcProject0 = false)
+                val handle = ensureSharedEngineSync(ctx, safeProj)
                 if (handle == 0L) {
                     false
                 } else {
-                    val st = projectStates[safeProj]
-                    st?.studioModuleSourcesByName?.remove(modName)
-                    val r = runCatching {
+                    linkedModuleSourcesByName.remove(modName)
+                    runCatching {
                         MathEngineBridge.nativeModuleReset(handle, modName)
                     }.getOrDefault(false)
-                    if (st != null) {
-                        persistProjectStdlibMathcSync(ctx, st)
-                    }
-                    r
                 }
             }
             onDone(ok)
@@ -523,13 +446,13 @@ fun MathEngineManager.resetModule(
     }
 }
 
-/** Inspects all variables and constants currently bound in [modName] inside [projectName]. */
+/** Inspects all variables and constants currently bound in [modName] on the shared engine. */
 fun MathEngineManager.inspectModuleVariables(
     modName: String,
     projectName: String = activeProjectName,
     onDone: (summary: String) -> Unit
 ) {
-    val safeProj = sanitizeProjectName(projectName, allowCalcProject0 = false)
+    val safeProj = sanitizeProjectName(projectName)
     worker.execute {
         try {
             val ctx = appContext
@@ -538,8 +461,13 @@ fun MathEngineManager.inspectModuleVariables(
                 return@execute
             }
             synchronized(this) {
-                val handle = ensureProjectEngineSync(ctx, safeProj, allowCalcProject0 = false)
-                onDone(formatModuleVariablesOnHandleSync(handle, modName))
+                val handle = ensureSharedEngineSync(ctx, safeProj)
+                val summary = if (linkedProjectName == safeProj) {
+                    formatModuleVariablesOnHandleSync(handle, modName)
+                } else {
+                    ""
+                }
+                onDone(summary)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "inspectModuleVariables failed", t)
@@ -548,13 +476,13 @@ fun MathEngineManager.inspectModuleVariables(
     }
 }
 
-/** Exports [modName]'s current variables and constants in [projectName] as reproducible `.math` module source. */
+/** Exports [modName]'s current variables and constants as reproducible `.math` module source. */
 fun MathEngineManager.exportModuleSource(
     modName: String,
     projectName: String = activeProjectName,
     onDone: (source: String) -> Unit
 ) {
-    val safeProj = sanitizeProjectName(projectName, allowCalcProject0 = false)
+    val safeProj = sanitizeProjectName(projectName)
     worker.execute {
         try {
             val ctx = appContext
@@ -563,7 +491,7 @@ fun MathEngineManager.exportModuleSource(
                 return@execute
             }
             val src = synchronized(this) {
-                val handle = ensureProjectEngineSync(ctx, safeProj, allowCalcProject0 = false)
+                val handle = ensureSharedEngineSync(ctx, safeProj)
                 if (handle == 0L) ""
                 else runCatching {
                     MathEngineBridge.nativeModuleExportSource(handle, modName) ?: ""
@@ -587,7 +515,7 @@ internal fun MathEngineManager.splitModuleStatementsWithLines(rawSource: String)
         val trimmed = codePart.trim()
         if (trimmed.isEmpty()) continue
         if (trimmed.startsWith("@dim") ||
-                            trimmed.startsWith("@entry") ||
+            trimmed.startsWith("@entry") ||
             typeDeclRegex.containsMatchIn(trimmed) ||
             syntaxBindingRegex.containsMatchIn(trimmed)
         ) {
@@ -648,7 +576,7 @@ internal fun MathEngineManager.splitModuleStatementsWithLines(rawSource: String)
                     !prevStripped.endsWith(";") &&
                     !typeDeclRegex.containsMatchIn(prevStripped) &&
                     !prevStripped.startsWith("@dim") &&
-                                            !prevStripped.startsWith("@entry")
+                    !prevStripped.startsWith("@entry")
                 val curContinues = contStartRegex.containsMatchIn(stripped)
                 if (prevContinues || curContinues) {
                     merged[merged.lastIndex] = prevLineNum to "$prev $stripped"
@@ -726,36 +654,43 @@ internal fun MathEngineManager.splitModuleStatementsWithLines(rawSource: String)
 }
 
 /**
- * Ensures that [modName]'s declarations (and any `<[dep]` dependencies) are linked on [handle]
- * when the user opens the 2D Plotter or Bytecode Disassembler before running the module manually.
+ * Ensures that [modName] (and any `<[dep]` sibling modules in [projectSourcesByFileName]) are
+ * linked on the shared engine when the user opens the 2D Plotter or Symbolic CAS Inspector.
  */
 @Synchronized
 internal fun MathEngineManager.ensureModuleDeclarationsLinkedSync(
-    projState: ProjectRuntimeState,
+    ctx: Context,
+    projectName: String,
     modName: String,
     moduleSource: String?,
     projectSourcesByFileName: Map<String, String>
 ) {
-    val handle = projState.engineHandle
+    val handle = ensureSharedEngineSync(ctx, projectName)
     if (handle == 0L || moduleSource.isNullOrBlank()) return
-    if (projState.studioModuleSourcesByName[modName] == moduleSource) {
+    val safeProj = sanitizeProjectName(projectName)
+    if (linkedProjectName == safeProj && linkedModuleSourcesByName[modName] == moduleSource) {
         MathEngineBridge.nativeSetModule(handle, modName, true)
         return
     }
-    val projectByMod = LinkedHashMap<String, String>()
+    val projectByMod = LinkedHashMap<String, Pair<String, String>>()
     for ((fName, fSrc) in projectSourcesByFileName) {
-        projectByMod[deriveModuleName(fName, fSrc)] = fSrc
+        projectByMod[deriveModuleName(fName, fSrc)] = fName to fSrc
     }
-    projectByMod[modName] = moduleSource
-    ensureProjectDependenciesSync(projState, modName, moduleSource, projectByMod, mutableSetOf())
+    projectByMod[modName] = "$modName.math" to moduleSource
 
-    val declStmts = splitModuleStatements(moduleSource).filter { stmt ->
-        !stmt.trim().startsWith("@entry") && isDeclarationOrBindingStatement(stmt)
-    }
-    val declOnlySrc = declStmts.joinToString("\n")
-    if (declOnlySrc.isNotEmpty()) {
-        runCatching { evalInModuleWithoutAutoMain(handle, modName, declOnlySrc) }
-        runCatching { MathEngineBridge.nativeSetModule(handle, modName, true) }
-        projState.studioModuleSourcesByName[modName] = moduleSource
-    }
+    val units = collectTransitiveProjectUnits(
+        rootFileName = "$modName.math",
+        rootModName = modName,
+        rootSource = moduleSource,
+        projectFilesByModName = projectByMod
+    )
+    executeUnitsViaEngineSync(
+        ctx = ctx,
+        projectName = safeProj,
+        units = units,
+        targetFileName = "$modName.math",
+        targetModName = modName,
+        targetRawSource = moduleSource,
+        entryPoint = null
+    )
 }

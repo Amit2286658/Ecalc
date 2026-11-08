@@ -37,7 +37,7 @@ object MathPatchLoader {
      */
     private val loadedPatchSignatures = mutableSetOf<String>()
     private val loadedPatchShaByFileName = mutableMapOf<String, String>()
-    private const val CACHE_SCHEMA_VERSION = "v2"
+    private const val CACHE_SCHEMA_VERSION = "v3"
     private val unreportedCompiledFiles = linkedSetOf<String>()
     private val unreportedCachedFiles = linkedSetOf<String>()
     private val unreportedFailedFiles = linkedMapOf<String, String>()
@@ -341,7 +341,7 @@ object MathPatchLoader {
             while (iter.hasNext()) {
                 val (file, sig) = iter.next()
                 try {
-                    val rawSource = file.readText(Charsets.UTF_8)
+                    val rawSource = MathPatchDownloader.upgradeLegacyCurrencyPatch(file.readText(Charsets.UTF_8))
                     val (ok, msg, mathcBytes) = compilerLinker(rawSource)
                     if (ok) {
                         loadedPatchSignatures.add(sig)

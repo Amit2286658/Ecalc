@@ -1,0 +1,55 @@
+# =============================================================================
+# Library/trig.math — Trigonometric, Hyperbolic & Transcendental Functions
+# =============================================================================
+
+[trig]
+<[arith]
+
+# 1. Circular Trigonometric Functions (radians)
+sin(x) = @sin(x)
+cos(x) = @cos(x)
+tan(x) = @tan(x)
+sec(x) = 1 / @cos(x)
+csc(x)   = 1 / @sin(x)
+cosec(x) = csc(x)
+cot(x) = @cos(x) / @sin(x)
+
+# 2. Inverse Circular Trigonometric Functions
+asin(x)     = @asin(x)
+acos(x)     = @acos(x)
+atan(x)     = @atan(x)
+atan2(y, x) = @atan2(y, x)
+asec(x)     = acos(1 / x)
+acsc(x)     = asin(1 / x)
+acosec(x)   = asin(1 / x)
+acot(x)     = atan(1 / x)
+
+# 3. Hyperbolic & Inverse Hyperbolic Functions (Pure MEP over `@exp` & `@ln`)
+sinh(x)  = 0.5 * (@exp(x) - @exp(-x))
+cosh(x)  = 0.5 * (@exp(x) + @exp(-x))
+tanh(x)  = (@exp(x) - @exp(-x)) / (@exp(x) + @exp(-x))
+asinh(x) = @ln(x + √(x^2 + 1))
+acosh(x) = @ln(x + √(x^2 - 1))
+atanh(x) = 0.5 * @ln((1 + x) / (1 - x))
+
+# 4. Exponential, Logarithmic & Root Functions
+ln(x)         = @ln(x)
+log10(x)      = @ln(x) / @ln(10)
+log2(x)       = @ln(x) / @ln(2)
+logb(x, base) = @ln(x) / @ln(base)
+exp(x)        = @exp(x)
+sqrt(x)       = @sqrt(x)
+cbrt(x)       = @cbrt(x)
+root(x, n)    = x ^ (1 / n)
+nthroot(x, n) = root(x, n)
+hypot(a, b)   = √(a^2 + b^2)
+sigmoid(x)    = 1 / (1 + @exp(-x))
+
+# 5. Error Functions, Gamma/Beta Special Functions & Normal Distribution
+erf(x)        = @erf(x)
+erfc(x)       = 1 - @erf(x)
+gamma(x)      = @gamma(x)
+lgamma(x)     = @lgamma(x)
+beta_fn(a, b) = @exp(@lgamma(a) + @lgamma(b) - @lgamma(a + b))
+norm_pdf(x, mu = 0, s = 1) = (1 / (s * √(2π))) * @exp(-0.5 * (((x - mu) / s) ^ 2))
+norm_cdf(x, mu = 0, s = 1) = 0.5 * (1 + @erf((x - mu) / (s * √2)))

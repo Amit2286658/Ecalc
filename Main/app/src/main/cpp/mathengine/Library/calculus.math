@@ -1,0 +1,613 @@
+# =============================================================================
+# Library/calculus.math — High School Differential & Integral Calculus Suite
+# =============================================================================
+# All numerical differentiation (`diff`, `diff2`, `diff_n`), Simpson quadrature
+# (`integrate`, `ntg`), Richardson limits (`lim`, `lim_left`, `lim_right`),
+# discrete series (`sigma`, `prod`), Newton-secant root solving (`solve`),
+# golden-section extrema (`fmin`, `fmax`), and 4th-order Runge-Kutta ODE solvers
+# (`ode_rk4`, `ode_rk4_vec`, `ode_coupled2`, `ode_coupled3`, `ode_rk4_sys`,
+# `ode_rk4_sys_traj`) are implemented in pure `.math` using lazy bound-variable
+# parameters (`var_x`, `var_t`, `var_y`, ...) and preserve physical units.
+
+[calculus]
+<[arith]
+<[trig]
+<[vec]
+<[mat]
+<[string]
+<[geom_ext]
+<[algebra]
+
+# 0. Unit-Preserving Noise Snapping & Core Lazy Calculus Constructs
+calc_snap(res, tol) = {
+    r := raw_val(res)
+    n := @floor(r + 0.5)
+    s := (@abs(r - n) < tol) ? n : ((@abs(r) < tol * 0.1) ? 0 : r)
+    with_unit(s, res)
+}
+
+diff(var_x, expr, x0) = {
+    scale := (@abs(raw_val(x0)) > 1) ? @abs(raw_val(x0)) : 1
+    h     := with_unit(1e-5 * scale, x0)
+    fp2   := expr(x0 + 2 * h)
+    fp1   := expr(x0 + h)
+    fm1   := expr(x0 - h)
+    fm2   := expr(x0 - 2 * h)
+    calc_snap((-fp2 + 8 * fp1 - 8 * fm1 + fm2) / (12 * h), 1e-9)
+}
+
+diff2(var_x, expr, x0) = {
+    scale := (@abs(raw_val(x0)) > 1) ? @abs(raw_val(x0)) : 1
+    h     := with_unit(1e-4 * scale, x0)
+    fp2   := expr(x0 + 2 * h)
+    fp1   := expr(x0 + h)
+    f0    := expr(x0)
+    fm1   := expr(x0 - h)
+    fm2   := expr(x0 - 2 * h)
+    calc_snap((-fp2 + 16 * fp1 - 30 * f0 + 16 * fm1 - fm2) / (12 * h * h), 1e-7)
+}
+
+diff_n(var_x, expr, x0, order) = {
+    scale := (@abs(raw_val(x0)) > 1) ? @abs(raw_val(x0)) : 1
+    if (order <= 0) {
+        expr(x0)
+    } or (order == 1) {
+        h := with_unit(1e-5 * scale, x0)
+        calc_snap((-expr(x0 + 2 * h) + 8 * expr(x0 + h) - 8 * expr(x0 - h) + expr(x0 - 2 * h)) / (12 * h), 1e-9)
+    } or (order == 2) {
+        h := with_unit(1e-4 * scale, x0)
+        calc_snap((-expr(x0 + 2 * h) + 16 * expr(x0 + h) - 30 * expr(x0) + 16 * expr(x0 - h) - expr(x0 - 2 * h)) / (12 * h * h), 1e-7)
+    } or (order == 3) {
+        h := with_unit(1e-3 * scale, x0)
+        calc_snap((expr(x0 + 2 * h) - 2 * expr(x0 + h) + 2 * expr(x0 - h) - expr(x0 - 2 * h)) / (2 * h * h * h), 1e-5)
+    } else {
+        h := with_unit(2e-3 * scale, x0)
+        calc_snap((expr(x0 + 2 * h) - 4 * expr(x0 + h) + 6 * expr(x0) - 4 * expr(x0 - h) + expr(x0 - 2 * h)) / (h * h * h * h), 1e-4)
+    }
+}
+
+calc_integ_fn(f:fn, a, b, steps = 200) = {
+    n := @floor(steps)
+    if (n < 2) { n = 2 }
+    if (n % 2 != 0) { n += 1 }
+    if (n > 10000) { n = 10000 }
+    h   := (b - a) / n
+    a_u := a + 0 * h
+    b_u := b + 0 * h
+    acc := f(a_u) + f(b_u)
+    (k in 1..<n) {
+        xk  := a_u + k * h
+        w   := (k % 2 == 1) ? 4 : 2
+        acc += w * f(xk)
+    }
+    calc_snap((h / 3) * acc, 1e-9)
+}
+
+integrate(var_x, expr, a, b, steps = 200) = calc_integ_fn(expr, a, b, steps)
+ntg(var_x, expr, a, b)                    = calc_integ_fn(expr, a, b, 200)
+
+lim_right(var_x, expr, x0) = {
+    scale := (@abs(raw_val(x0)) > 1) ? @abs(raw_val(x0)) : 1
+    h1    := with_unit(1e-6 * scale, x0)
+    h2    := with_unit(1e-7 * scale, x0)
+    r1    := expr(x0 + h1)
+    r2    := expr(x0 + h2)
+    calc_snap((10 * r2 - r1) / 9, 1e-8)
+}
+
+lim_left(var_x, expr, x0) = {
+    scale := (@abs(raw_val(x0)) > 1) ? @abs(raw_val(x0)) : 1
+    h1    := with_unit(1e-6 * scale, x0)
+    h2    := with_unit(1e-7 * scale, x0)
+    l1    := expr(x0 - h1)
+    l2    := expr(x0 - h2)
+    calc_snap((10 * l2 - l1) / 9, 1e-8)
+}
+
+lim(var_x, expr, x0) = {
+    scale := (@abs(raw_val(x0)) > 1) ? @abs(raw_val(x0)) : 1
+    h1    := with_unit(1e-6 * scale, x0)
+    h2    := with_unit(1e-7 * scale, x0)
+    r1    := expr(x0 + h1)
+    r2    := expr(x0 + h2)
+    l1    := expr(x0 - h1)
+    l2    := expr(x0 - h2)
+    lim_r := (10 * r2 - r1) / 9
+    lim_l := (10 * l2 - l1) / 9
+    tol   := 1e-4 * (1 + @abs(raw_val(lim_r)) + @abs(raw_val(lim_l)))
+    if (@abs(raw_val(lim_r) - raw_val(lim_l)) > tol) {
+        error("Two-sided limit does not exist")
+    }
+    calc_snap(0.5 * (lim_l + lim_r), 1e-8)
+}
+
+sigma(var_k, expr, lo, hi) = {
+    k_lo := @floor(lo + 0.5)
+    k_hi := @floor(hi + 0.5)
+    if (k_lo > k_hi) {
+        0
+    } else {
+        acc := expr(k_lo)
+        k   := k_lo + 1
+        (k <= k_hi) ?? {
+            acc = acc + expr(k)
+            k  += 1
+        }
+        acc
+    }
+}
+
+prod(var_k, expr, lo, hi) = {
+    k_lo := @floor(lo + 0.5)
+    k_hi := @floor(hi + 0.5)
+    if (k_lo > k_hi) {
+        1
+    } else {
+        acc := expr(k_lo)
+        k   := k_lo + 1
+        (k <= k_hi) ?? {
+            acc = acc * expr(k)
+            k  += 1
+        }
+        acc
+    }
+}
+
+solve_impl(f:fn, x_init) = {
+    xr   := raw_val(x_init)
+    iter := 0
+    (iter < 80) ?? {
+        fx := raw_val(f(with_unit(xr, x_init)))
+        if (@abs(fx) <= 1e-12) { break }
+        scale := (@abs(xr) > 1) ? @abs(xr) : 1
+        h     := 1e-6 * scale
+        fp    := raw_val(f(with_unit(xr + h, x_init)))
+        fm    := raw_val(f(with_unit(xr - h, x_init)))
+        dfx   := (fp - fm) / (2 * h)
+        if (@abs(dfx) <= 1e-12) {
+            xr += (xr >= 0) ? 0.25 : -0.25
+        } else {
+            step := fx / dfx
+            if (step > 100)  { step = 100 }
+            if (step < -100) { step = -100 }
+            xr -= step
+        }
+        iter += 1
+    }
+    fx_end := raw_val(f(with_unit(xr, x_init)))
+    if (!(@abs(xr) < 1e300) || !(@abs(fx_end) <= 1e-4)) {
+        error("solve() failed to converge to a real root")
+    }
+    with_unit(calc_snap(xr, 1e-8), x_init)
+}
+
+solve(var_x, eq, guess = 1) = solve_impl(eq, guess)
+solve(var_x, eq, a, b)      = solve_impl(eq, 0.5 * (a + b))
+
+calc_extremum(f:fn, a_in, b_in, is_min) = {
+    u_x := b_in - a_in
+    a   := raw_val(a_in)
+    b   := raw_val(b_in)
+    if (a > b) { tmp := a ; a = b ; b = tmp }
+    invphi := 0.6180339887498948482
+    c  := b - invphi * (b - a)
+    d  := a + invphi * (b - a)
+    fc := raw_val(f(with_unit(c, u_x)))
+    fd := raw_val(f(with_unit(d, u_x)))
+    iter := 0
+    (iter < 75) ?? {
+        pick_left := is_min ? (fc < fd) : (fc > fd)
+        if (pick_left) {
+            b  = d
+            d  = c
+            fd = fc
+            c  = b - invphi * (b - a)
+            fc = raw_val(f(with_unit(c, u_x)))
+        } else {
+            a  = c
+            c  = d
+            fc = fd
+            d  = a + invphi * (b - a)
+            fd = raw_val(f(with_unit(d, u_x)))
+        }
+        iter += 1
+    }
+    with_unit(calc_snap(0.5 * (a + b), 1e-6), u_x)
+}
+
+fmin(var_x, expr, a, b) = calc_extremum(expr, a, b, 1)
+fmax(var_x, expr, a, b) = calc_extremum(expr, a, b, 0)
+
+ode_rk4(var_t, var_y, expr, t0, y0, t1, steps = 100) = {
+    n := @floor(steps)
+    if (n < 1) { n = 1 }
+    if (n > 4096) { n = 4096 }
+    h     := (t1 - t0) / n
+    hr    := raw_val(h)
+    t_cur := t0 + 0 * h
+    y_cur := raw_val(y0)
+    i     := 0
+    (i < n) ?? {
+        k1 := raw_val(expr(t_cur, with_unit(y_cur, y0)))
+        k2 := raw_val(expr(t_cur + 0.5 * h, with_unit(y_cur + 0.5 * hr * k1, y0)))
+        k3 := raw_val(expr(t_cur + 0.5 * h, with_unit(y_cur + 0.5 * hr * k2, y0)))
+        k4 := raw_val(expr(t_cur + h, with_unit(y_cur + hr * k3, y0)))
+        y_cur += (hr / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+        t_cur += h
+        i     += 1
+    }
+    with_unit(calc_snap(y_cur, 1e-9), y0)
+}
+
+ode_rk4_vec(var_t, var_y, expr, t0, y0, t1, steps = 10) -> vec = {
+    n := @floor(steps)
+    if (n < 1) { n = 1 }
+    if (n > 4096) { n = 4096 }
+    h     := (t1 - t0) / n
+    hr    := raw_val(h)
+    t_cur := t0 + 0 * h
+    y_cur := raw_val(y0)
+    traj  := vec()
+    with_unit(calc_snap(y_cur, 1e-9), y0) into traj
+    i := 0
+    (i < n) ?? {
+        k1 := raw_val(expr(t_cur, with_unit(y_cur, y0)))
+        k2 := raw_val(expr(t_cur + 0.5 * h, with_unit(y_cur + 0.5 * hr * k1, y0)))
+        k3 := raw_val(expr(t_cur + 0.5 * h, with_unit(y_cur + 0.5 * hr * k2, y0)))
+        k4 := raw_val(expr(t_cur + h, with_unit(y_cur + hr * k3, y0)))
+        y_cur += (hr / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+        t_cur += h
+        with_unit(calc_snap(y_cur, 1e-9), y0) into traj
+        i += 1
+    }
+    traj
+}
+
+ode_coupled2(var_t, var_x, var_y, dx, dy, t0, x0, y0, t1, steps = 100) -> vec = {
+    n := @floor(steps)
+    if (n < 1) { n = 1 }
+    if (n > 4096) { n = 4096 }
+    h  := (t1 - t0) / n
+    tc := t0
+    xc := x0
+    yc := y0
+    s  := 0
+    (s < n) ?? {
+        k1x := dx(tc, xc, yc)
+        k1y := dy(tc, xc, yc)
+        k2x := dx(tc + 0.5 * h, xc + 0.5 * h * k1x, yc + 0.5 * h * k1y)
+        k2y := dy(tc + 0.5 * h, xc + 0.5 * h * k1x, yc + 0.5 * h * k1y)
+        k3x := dx(tc + 0.5 * h, xc + 0.5 * h * k2x, yc + 0.5 * h * k2y)
+        k3y := dy(tc + 0.5 * h, xc + 0.5 * h * k2x, yc + 0.5 * h * k2y)
+        k4x := dx(tc + h, xc + h * k3x, yc + h * k3y)
+        k4y := dy(tc + h, xc + h * k3x, yc + h * k3y)
+        xc  += (h / 6) * (k1x + 2 * k2x + 2 * k3x + k4x)
+        yc  += (h / 6) * (k1y + 2 * k2y + 2 * k3y + k4y)
+        tc  += h
+        s   += 1
+    }
+    list(calc_snap(xc, 1e-9), calc_snap(yc, 1e-9))
+}
+
+ode_coupled3(var_t, var_x, var_y, var_z, dx, dy, dz, t0, x0, y0, z0, t1, steps = 100) -> vec = {
+    n := @floor(steps)
+    if (n < 1) { n = 1 }
+    if (n > 4096) { n = 4096 }
+    h  := (t1 - t0) / n
+    tc := t0
+    xc := x0
+    yc := y0
+    zc := z0
+    s  := 0
+    (s < n) ?? {
+        k1x := dx(tc, xc, yc, zc)
+        k1y := dy(tc, xc, yc, zc)
+        k1z := dz(tc, xc, yc, zc)
+        k2x := dx(tc + 0.5 * h, xc + 0.5 * h * k1x, yc + 0.5 * h * k1y, zc + 0.5 * h * k1z)
+        k2y := dy(tc + 0.5 * h, xc + 0.5 * h * k1x, yc + 0.5 * h * k1y, zc + 0.5 * h * k1z)
+        k2z := dz(tc + 0.5 * h, xc + 0.5 * h * k1x, yc + 0.5 * h * k1y, zc + 0.5 * h * k1z)
+        k3x := dx(tc + 0.5 * h, xc + 0.5 * h * k2x, yc + 0.5 * h * k2y, zc + 0.5 * h * k2z)
+        k3y := dy(tc + 0.5 * h, xc + 0.5 * h * k2x, yc + 0.5 * h * k2y, zc + 0.5 * h * k2z)
+        k3z := dz(tc + 0.5 * h, xc + 0.5 * h * k2x, yc + 0.5 * h * k2y, zc + 0.5 * h * k2z)
+        k4x := dx(tc + h, xc + h * k3x, yc + h * k3y, zc + h * k3z)
+        k4y := dy(tc + h, xc + h * k3x, yc + h * k3y, zc + h * k3z)
+        k4z := dz(tc + h, xc + h * k3x, yc + h * k3y, zc + h * k3z)
+        xc  += (h / 6) * (k1x + 2 * k2x + 2 * k3x + k4x)
+        yc  += (h / 6) * (k1y + 2 * k2y + 2 * k3y + k4y)
+        zc  += (h / 6) * (k1z + 2 * k2z + 2 * k3z + k4z)
+        tc  += h
+        s   += 1
+    }
+    list(calc_snap(xc, 1e-9), calc_snap(yc, 1e-9), calc_snap(zc, 1e-9))
+}
+
+# 1. Symbolic Polynomial Evaluation, Differentiation & Integration
+#    Polynomial `c` is a `$vec` of ascending coefficients: `c[0] + c[1]*x + c[2]*x^2 + ...`
+poly_eval(c:vec, x) = {
+    n   := c.len()
+    acc := 0
+    k   := n - 1
+    (k >= 0) ?? {
+        acc = acc * x + c[k]
+        k  -= 1
+    }
+    acc
+}
+
+# Symbolic derivative coefficient vector: d/dx (c0 + c1*x + c2*x^2 + ...) = [c1, 2*c2, 3*c3, ...]
+poly_diff(c:vec) -> vec = {
+    n   := c.len()
+    out := vec<real>()
+    if (n <= 1) {
+        0 into out
+    } else {
+        k := 1
+        (k < n) ?? {
+            (k * c[k]) into out
+            k += 1
+        }
+    }
+    out
+}
+
+poly_diff_at(c:vec, x0) = {
+    dc := poly_diff(c)
+    poly_eval(dc, x0)
+}
+
+poly_diff2_at(c:vec, x0) = {
+    d2c := poly_diff(poly_diff(c))
+    poly_eval(d2c, x0)
+}
+
+# Exact definite integral of polynomial `c` over [a, b] via Fundamental Theorem of Calculus
+poly_def_integ(c:vec, a, b) = {
+    ic := poly_integ(c, 0)
+    poly_eval(ic, b) - poly_eval(ic, a)
+}
+
+# 2. Tangent Lines, Normal Lines, Curvature & Critical Points
+tangent_slope(c:vec, x0) = poly_diff_at(c, x0)
+normal_slope(c:vec, x0)  = -1 / poly_diff_at(c, x0)
+
+tangent_y(c:vec, x0, x) =
+    poly_eval(c, x0) + poly_diff_at(c, x0) * (x - x0)
+
+normal_y(c:vec, x0, x) =
+    poly_eval(c, x0) + (-1 / poly_diff_at(c, x0)) * (x - x0)
+
+poly_curvature(c:vec, x0) = {
+    dy  := poly_diff_at(c, x0)
+    d2y := poly_diff2_at(c, x0)
+    @abs(d2y) / ((1 + dy^2) ^ 1.5)
+}
+
+# Stationary / vertex point x* = -b/(2a) and extremum value of quadratic a*x^2 + b*x + c
+quad_critical_x(a, b, c_term = 0) = -b / (2a) + 0 * c_term
+quad_extremum_y(a, b, c_term)     = c_term - (b^2) / (4a)
+
+# Newton-Raphson root solver on polynomial `c` starting from `x_init`
+poly_newton_root(c:vec, x_init) = {
+    xr   := x_init
+    iter := 0
+    (iter < 35) ?? {
+        fx  := poly_eval(c, xr)
+        dfx := poly_diff_at(c, xr)
+        if (@abs(fx) <= (10 ^ -12)) { break }
+        xr   -= fx / dfx
+        iter += 1
+    }
+    xr
+}
+
+# 3. Integral Calculus Applications (Mean Value, Arc Length, Solids of Revolution)
+poly_avg_val(c:vec, a, b) =
+    poly_def_integ(c, a, b) / (b - a)
+
+poly_arc_length(c:vec, a, b) =
+    integrate(t_var, √(1 + (poly_diff_at(c, t_var) ^ 2)), a, b)
+
+# Volume of solid of revolution around x-axis (Disk Method: V = pi * int_a^b [f(x)]^2 dx)
+poly_vol_disk(c:vec, a, b) =
+    π * integrate(t_var, poly_eval(c, t_var) ^ 2, a, b)
+
+# Volume of solid of revolution around y-axis (Shell Method: V = 2*pi * int_a^b x*|f(x)| dx)
+poly_vol_shell(c:vec, a, b) =
+    2π * integrate(t_var, t_var * @abs(poly_eval(c, t_var)), a, b)
+
+# 4. Numerical Quadrature on Tabulated Data Vectors (`trapz_vec`, `simpson_vec`)
+trapz_vec(y:vec, dx) = {
+    n   := y.len()
+    acc := 0.5 * (y[0] + y[n - 1])
+    k   := 1
+    (k < n - 1) ?? {
+        acc += y[k]
+        k   += 1
+    }
+    acc * dx
+}
+
+simpson_vec(y:vec, dx) = {
+    n   := y.len()
+    acc := y[0] + y[n - 1]
+    k   := 1
+    (k < n - 1) ?? {
+        w   := (k % 2 == 1) ? 4 : 2
+        acc += w * y[k]
+        k   += 1
+    }
+    (dx / 3) * acc
+}
+
+# 5. Maclaurin / Taylor Series Partial Sums (`taylor_exp`, `taylor_sin`, `taylor_cos`)
+taylor_exp(x, n_terms = 12) =
+    sigma(k_idx, (x ^ k_idx) / (k_idx!), 0, n_terms - 1)
+
+taylor_sin(x, n_terms = 10) =
+    sigma(k_idx, ((-1) ^ k_idx) * (x ^ (2k_idx + 1)) / ((2k_idx + 1)!), 0, n_terms - 1)
+
+taylor_cos(x, n_terms = 10) =
+    sigma(k_idx, ((-1) ^ k_idx) * (x ^ (2k_idx)) / ((2k_idx)!), 0, n_terms - 1)
+
+# 6. Multivariate Calculus: Partial Derivatives, Gradients, Laplacian, Hessian & Gradient Descent
+pdiff_x(f:fn, x0, y0) = {
+    h := 1e-5 * (1 + @abs(x0))
+    (-f(x0 + 2h, y0) + 8 * f(x0 + h, y0) - 8 * f(x0 - h, y0) + f(x0 - 2h, y0)) / (12h)
+}
+
+pdiff_y(f:fn, x0, y0) = {
+    h := 1e-5 * (1 + @abs(y0))
+    (-f(x0, y0 + 2h) + 8 * f(x0, y0 + h) - 8 * f(x0, y0 - h) + f(x0, y0 - 2h)) / (12h)
+}
+
+grad2(f:fn, x0, y0) -> vec2 = vec2(pdiff_x(f, x0, y0), pdiff_y(f, x0, y0))
+
+grad3(f:fn, x0, y0, z0) -> vec3 = {
+    hx := 1e-5 * (1 + @abs(x0))
+    hy := 1e-5 * (1 + @abs(y0))
+    hz := 1e-5 * (1 + @abs(z0))
+    gx := (-f(x0 + 2hx, y0, z0) + 8 * f(x0 + hx, y0, z0) - 8 * f(x0 - hx, y0, z0) + f(x0 - 2hx, y0, z0)) / (12hx)
+    gy := (-f(x0, y0 + 2hy, z0) + 8 * f(x0, y0 + hy, z0) - 8 * f(x0, y0 - hy, z0) + f(x0, y0 - 2hy, z0)) / (12hy)
+    gz := (-f(x0, y0, z0 + 2hz) + 8 * f(x0, y0, z0 + hz) - 8 * f(x0, y0, z0 - hz) + f(x0, y0, z0 - 2hz)) / (12hz)
+    vec3(gx, gy, gz)
+}
+
+grad3(f:fn, p:vec3) -> vec3 = {
+    hx := 1e-5 * (1 + @abs(p.x))
+    hy := 1e-5 * (1 + @abs(p.y))
+    hz := 1e-5 * (1 + @abs(p.z))
+    gx := (-f(vec3(p.x + 2hx, p.y, p.z)) + 8 * f(vec3(p.x + hx, p.y, p.z)) - 8 * f(vec3(p.x - hx, p.y, p.z)) + f(vec3(p.x - 2hx, p.y, p.z))) / (12hx)
+    gy := (-f(vec3(p.x, p.y + 2hy, p.z)) + 8 * f(vec3(p.x, p.y + hy, p.z)) - 8 * f(vec3(p.x, p.y - hy, p.z)) + f(vec3(p.x, p.y - 2hy, p.z))) / (12hy)
+    gz := (-f(vec3(p.x, p.y, p.z + 2hz)) + 8 * f(vec3(p.x, p.y, p.z + hz)) - 8 * f(vec3(p.x, p.y, p.z - hz)) + f(vec3(p.x, p.y, p.z - 2hz))) / (12hz)
+    vec3(gx, gy, gz)
+}
+
+laplacian2(f:fn, x0, y0) = {
+    hx  := 1e-4 * (1 + @abs(x0))
+    hy  := 1e-4 * (1 + @abs(y0))
+    f0  := f(x0, y0)
+    dxx := (-f(x0 + 2hx, y0) + 16 * f(x0 + hx, y0) - 30 * f0 + 16 * f(x0 - hx, y0) - f(x0 - 2hx, y0)) / (12 * (hx^2))
+    dyy := (-f(x0, y0 + 2hy) + 16 * f(x0, y0 + hy) - 30 * f0 + 16 * f(x0, y0 - hy) - f(x0, y0 - 2hy)) / (12 * (hy^2))
+    dxx + dyy
+}
+
+hessian2(f:fn, x0, y0) -> mat2 = {
+    hx  := 1e-4 * (1 + @abs(x0))
+    hy  := 1e-4 * (1 + @abs(y0))
+    f0  := f(x0, y0)
+    dxx := (-f(x0 + 2hx, y0) + 16 * f(x0 + hx, y0) - 30 * f0 + 16 * f(x0 - hx, y0) - f(x0 - 2hx, y0)) / (12 * (hx^2))
+    dyy := (-f(x0, y0 + 2hy) + 16 * f(x0, y0 + hy) - 30 * f0 + 16 * f(x0, y0 - hy) - f(x0, y0 - 2hy)) / (12 * (hy^2))
+    dxy := (f(x0 + hx, y0 + hy) - f(x0 + hx, y0 - hy) - f(x0 - hx, y0 + hy) + f(x0 - hx, y0 - hy)) / (4 * hx * hy)
+    mat2(dxx, dxy, dxy, dyy)
+}
+
+dir_deriv2(f:fn, x0, y0, u:vec2) = {
+    g := grad2(f, x0, y0)
+    dot(g, u) / vec2_mag(u)
+}
+
+grad_descent_1d(f:fn, x0, lr = 0.1, steps = 100) = {
+    x := x0
+    k := 0
+    (k < steps) ?? {
+        h  := 1e-5 * (1 + @abs(x))
+        dx := (f(x + h) - f(x - h)) / (2h)
+        x  -= lr * dx
+        k  += 1
+    }
+    x
+}
+
+grad_descent_2d(f:fn, p0:vec2, lr = 0.1, steps = 100) -> vec2 = {
+    p := p0
+    k := 0
+    (k < steps) ?? {
+        g := grad2(f, p.x, p.y)
+        p  = p - lr * g
+        k += 1
+    }
+    p
+}
+
+# 7. First-Class Closure & Lazy System ODE Solvers (`ode_rk4_sys`, `ode_rk4_sys_traj`)
+ode_rk4_sys(f:fn, t0, y0:T, t1, steps = 100) -> vec = {
+    if (steps <= 0) { error("ode_rk4_sys() steps must be positive") }
+    h    := (t1 - t0) / steps
+    t    := t0
+    y    := [x for x in y0]
+    n    := y.len()
+    step := 0
+    (step < steps) ?? {
+        k1 := [x for x in f(t, y)]
+        if (k1.len() != n) { error("ode_rk4_sys() RHS dimension mismatch") }
+        y2 := [y[i] + 0.5 * h * k1[i] for i in 0..<n]
+        k2 := [x for x in f(t + 0.5 * h, y2)]
+        y3 := [y[i] + 0.5 * h * k2[i] for i in 0..<n]
+        k3 := [x for x in f(t + 0.5 * h, y3)]
+        y4 := [y[i] + h * k3[i] for i in 0..<n]
+        k4 := [x for x in f(t + h, y4)]
+        y   = [y[i] + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]) for i in 0..<n]
+        t  += h
+        step += 1
+    }
+    [calc_snap(x, 1e-9) for x in y]
+}
+
+ode_rk4_sys(var_t, var_y, rhs_vec, t0, y0:T, t1, steps = 100) -> vec =
+    ode_rk4_sys(rhs_vec, t0, y0, t1, steps)
+
+ode_rk4_sys_traj(var_t, var_y, rhs_vec, t0, y0:T, t1, steps = 20) -> mat = {
+    st := @floor(steps)
+    if (st < 1) { st = 1 }
+    h   := (t1 - t0) / st
+    tc  := t0
+    y   := [x for x in y0]
+    n   := y.len()
+    out := mat_zeros(st + 1, n)
+    d   := 0
+    (d < n) ?? {
+        out[0, d] = calc_snap(y[d], 1e-9)
+        d += 1
+    }
+    s := 0
+    (s < st) ?? {
+        k1 := [x for x in rhs_vec(tc, y)]
+        y2 := [y[i] + 0.5 * h * k1[i] for i in 0..<n]
+        k2 := [x for x in rhs_vec(tc + 0.5 * h, y2)]
+        y3 := [y[i] + 0.5 * h * k2[i] for i in 0..<n]
+        k3 := [x for x in rhs_vec(tc + 0.5 * h, y3)]
+        y4 := [y[i] + h * k3[i] for i in 0..<n]
+        k4 := [x for x in rhs_vec(tc + h, y4)]
+        y   = [y[i] + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]) for i in 0..<n]
+        tc += h
+        s  += 1
+        d   = 0
+        (d < n) ?? {
+            out[s, d] = calc_snap(y[d], 1e-9)
+            d += 1
+        }
+    }
+    out
+}
+
+# 8. Pure MEP Symbolic Taylor / Maclaurin Polynomial Expansion (`sym_taylor`)
+sym_taylor(var_x, expr, x0, order) -> str = {
+    vname := sym_diff(var_x, expr, -1)
+    d_str := sym_diff(var_x, expr, 0)
+    base  := (@abs(x0) <= 1e-12) ? vname : ("(" + vname + " - " + (x0_) + ")")
+    poly  := "0"
+    fact  := 1
+    (k in 0...order) {
+        if (k > 0) { fact *= k }
+        fk := sym_eval(d_str, vname, x0)
+        ck := calc_snap(fk / fact, 1e-12)
+        if (@abs(ck) > 1e-12) {
+            term := (k == 0) ? (ck_) : ((k == 1) ? ((ck_) + " * " + base) : ((ck_) + " * " + base + " ^ " + (k_)))
+            poly = poly + " + " + term
+        }
+        if (k < order) {
+            d_str = sym_diff(vname, d_str, 1)
+        }
+    }
+    sym_simplify(poly)
+}

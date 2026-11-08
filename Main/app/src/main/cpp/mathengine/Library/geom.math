@@ -1,0 +1,95 @@
+# =============================================================================
+# Library/geom.math — 2D/3D Vectors (`$vec2`, `$vec3`) & Geometric Shapes
+# =============================================================================
+
+[geom_ext]
+<[arith]
+<[trig]
+<[vec]
+
+# 1. Flat C-Style Structs (`$vec2`, `$vec3`, Nested `$circle`)
+$vec2(x, y)
+$vec3(x, y, z)
+$circle(center:vec2, radius)
+
+# 2. 2D Vector Operations & `into` Composition/Sum
+"-" (v:vec2)             :80  -> vec2 = vec2(-v.x, -v.y)
+(a:vec2) "+"  (b:vec2) :<50 -> vec2 = vec2(a.x + b.x, a.y + b.y)
+(a:vec2) "-"  (b:vec2) :<50 -> vec2 = vec2(a.x - b.x, a.y - b.y)
+(a:vec2) into (b:vec2) :>55 -> vec2 = vec2(a.x + b.x, a.y + b.y)
+(s)      "*"  (v:vec2) :<60 -> vec2 = vec2(s * v.x, s * v.y)
+(v:vec2) "*"  (s)      :<60 -> vec2 = vec2(v.x * s, v.y * s)
+(v:vec2) "/"  (s)      :<60 -> vec2 = vec2(v.x / s, v.y / s)
+(a:vec2) "==" (b:vec2) :<30         = (a.x == b.x) && (a.y == b.y)
+(a:vec2) "!=" (b:vec2) :<30         = (a.x != b.x) || (a.y != b.y)
+(a:vec2) "~"  (b:vec2) :<30         = (a.x ~ b.x) && (a.y ~ b.y)
+
+# Cross-entity `into` promotes `vec2` + `real` -> `vec3`
+(z:real, T) into (v:vec2, T) :>55 -> vec3, T = vec3(v.x, v.y, z)
+(v:vec2, T) into (z:real, T) :>55 -> vec3, T = vec3(v.x, v.y, z)
+
+dot(a:vec2, b:vec2)       = a.x * b.x + a.y * b.y
+cross2(a:vec2, b:vec2)    = a.x * b.y - a.y * b.x
+vec2_mag(v:vec2)          = hypot(v.x, v.y)
+vec2_dist(a:vec2, b:vec2) = hypot(b.x - a.x, b.y - a.y)
+
+# 3. 3D Vector Operations & `**` Dot Product Operator
+"-" (v:vec3)             :80  -> vec3 = vec3(-v.x, -v.y, -v.z)
+(a:vec3) "+"  (b:vec3) :<50 -> vec3 = vec3(a.x + b.x, a.y + b.y, a.z + b.z)
+(a:vec3) "-"  (b:vec3) :<50 -> vec3 = vec3(a.x - b.x, a.y - b.y, a.z - b.z)
+(a:vec3) into (b:vec3) :>55 -> vec3 = vec3(a.x + b.x, a.y + b.y, a.z + b.z)
+(s)      "*"  (v:vec3) :<60 -> vec3 = vec3(s * v.x, s * v.y, s * v.z)
+(v:vec3) "*"  (s)      :<60 -> vec3 = vec3(v.x * s, v.y * s, v.z * s)
+(v:vec3) "/"  (s)      :<60 -> vec3 = vec3(v.x / s, v.y / s, v.z / s)
+(a:vec3) "**" (b:vec3) :<20         = a.x * b.x + a.y * b.y + a.z * b.z
+(a:vec3) "==" (b:vec3) :<30         = (a.x == b.x) && (a.y == b.y) && (a.z == b.z)
+(a:vec3) "!=" (b:vec3) :<30         = (a.x != b.x) || (a.y != b.y) || (a.z != b.z)
+(a:vec3) "~"  (b:vec3) :<30         = (a.x ~ b.x) && (a.y ~ b.y) && (a.z ~ b.z)
+
+dot3(a:vec3, b:vec3)   = a ** b
+cross3(a:vec3, b:vec3) -> vec3 =
+    vec3(a.y * b.z - a.z * b.y,
+         a.z * b.x - a.x * b.z,
+         a.x * b.y - a.y * b.x)
+vec3_mag(v:vec3)          = hypot(hypot(v.x, v.y), v.z)
+vec3_dist(a:vec3, b:vec3) = vec3_mag(b - a)
+lerp(a, b, t)             = a + (b - a) * t
+
+# Total 3D trajectory path length across a dynamic `vec<vec3>` of waypoints
+vec3_path_len(pts:vec) = {
+    total := 0
+    n     := pts.len()
+    if (n > 1) {
+        (idx in 1..<n) {
+            total += vec3_dist(pts[idx - 1], pts[idx])
+        }
+    }
+    total
+}
+
+# 4. Circle & Sphere Geometry
+move_circle(c:circle, dx, dy) -> circle = {
+    c.center.x += dx
+    c.center.y += dy
+    c
+}
+
+circle_area(c:circle)   = π * c.radius^2
+circle_circum(c:circle) = 2π * c.radius
+sphere_vol(r)           = (4 / 3) * π * (r ^ 3)
+sphere_area(r)          = 4π * (r ^ 2)
+
+# 5. Qualified Struct Methods (`Type::method(self, ...)`)
+vec2::mag(self)                = hypot(self.x, self.y)
+vec2::norm2(self)              = self.x^2 + self.y^2
+vec2::unit(self)       -> vec2 = self / hypot(self.x, self.y)
+vec2::dist(self, b:vec2)       = hypot(b.x - self.x, b.y - self.y)
+
+vec3::mag(self)                = vec3_mag(self)
+vec3::norm2(self)              = self.x^2 + self.y^2 + self.z^2
+vec3::unit(self)       -> vec3 = self / vec3_mag(self)
+vec3::dist(self, b:vec3)       = vec3_dist(self, b)
+
+circle::area(self)             = π * self.radius^2
+circle::circum(self)           = 2π * self.radius
+circle::contains_pt(self, pt:vec2) = (vec2_dist(self.center, pt) <= self.radius)

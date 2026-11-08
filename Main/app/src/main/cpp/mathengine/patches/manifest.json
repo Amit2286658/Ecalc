@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "patches": [
+    {
+      "file": "currency.math",
+      "sha256": "4bafa2a7c441b277047da82ba60a8ea62614e79f912e434b4ab00af382543cbc",
+      "description": "Currency conversion foundation ([currency]) with into operator and case-insensitive currency codes"
+    }
+  ]
+}

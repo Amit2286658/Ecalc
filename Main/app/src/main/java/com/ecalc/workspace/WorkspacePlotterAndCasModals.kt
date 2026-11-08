@@ -38,7 +38,6 @@ import kotlin.math.hypot
 /**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
  * with Left-Drawer Project & File Manager.
- */
 
 internal fun MathWorkspaceFragment.extractModuleFunctionAndVectorCandidates(code: String): List<String> {
     val out = LinkedHashSet<String>()
@@ -56,6 +55,7 @@ internal fun MathWorkspaceFragment.extractModuleFunctionAndVectorCandidates(code
         val name = m.groupValues[1]
         out.add(name)
     }
+    out.add("sin(x); cos(x)")
     out.add("sin(x) * cos(2*x)")
     out.add("x^2 - 2*x - 3")
     return out.take(10).toList()
@@ -211,7 +211,7 @@ internal fun MathWorkspaceFragment.showFrostedPlotterModal(initialExpr: String? 
 
     val etExpr = EditText(ctx).apply {
         setText(defaultTarget)
-        hint = "f(x) or vec"
+        hint = "f(x); g(x) or vec"
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.5f).apply {
             marginEnd = dp(4f)
         }
@@ -280,22 +280,27 @@ internal fun MathWorkspaceFragment.showFrostedPlotterModal(initialExpr: String? 
         val xMin = etXMin.text?.toString()?.toDoubleOrNull() ?: -5.0
         val xMax = etXMax.text?.toString()?.toDoubleOrNull() ?: 5.0
         tvReadout.text = "⏳ Sampling '$target' in [$modId]..."
-        MathEngineManager.samplePlotPoints(
+        MathEngineManager.sampleMultiPlotSeries(
             modName = modId,
-            exprOrFn = target,
+            exprOrFnList = target,
             xMin = xMin,
             xMax = xMax,
             samples = 180,
             projectName = activeProjectName,
             moduleSource = code,
             projectSourcesByFileName = projectSources
-        ) { ok, label, pts, err ->
+        ) { ok, seriesList, err ->
             activity.runOnUiThread {
-                if (ok && pts.isNotEmpty()) {
-                    plotView.setSeriesData(label, pts)
-                    tvReadout.text = "✅ Plotted $label (${pts.size} pts). Tap curve to inspect."
+                if (ok && seriesList.isNotEmpty()) {
+                    plotView.setMultiSeriesData(seriesList)
+                    val summary = if (seriesList.size == 1) {
+                        "${seriesList[0].label} (${seriesList[0].points.size} pts)"
+                    } else {
+                        "${seriesList.size} curves: " + seriesList.joinToString(", ") { it.label }
+                    }
+                    tvReadout.text = "✅ Plotted $summary. Tap curve to inspect."
                 } else {
-                    plotView.setSeriesData(label, emptyList())
+                    plotView.setMultiSeriesData(emptyList())
                     tvReadout.text = "⚠ ${err ?: "Could not plot '$target'"}"
                 }
             }

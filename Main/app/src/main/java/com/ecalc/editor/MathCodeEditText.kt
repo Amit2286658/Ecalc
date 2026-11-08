@@ -40,17 +40,18 @@ import kotlin.math.max
  *    `.math` keywords, `pub main()` / `@entry`, `<[dep]` modules, `stdlib` + global patch functions,
  *    and user-defined functions/variables/types from the active project without stealing IME focus.
  */
-internal data class SuggestionItem(
-    val matchKey: String,
-    val displayLabel: String,
-    val insertText: String,
-    val cursorBackOffset: Int = 0,
-    val category: String,
-    val detail: String,
-    val paramBullets: List<String> = emptyList(),
-    val returnBullet: String = ""
-)
 class MathCodeEditText(context: Context) : EditText(context) {
+
+    data class SuggestionItem(
+        val matchKey: String,
+        val displayLabel: String,
+        val insertText: String,
+        val cursorBackOffset: Int = 0,
+        val category: String,
+        val detail: String,
+        val paramBullets: List<String> = emptyList(),
+        val returnBullet: String = ""
+    )
 
     internal class SyntaxColorSpan(color: Int) : ForegroundColorSpan(color)
     internal class SyntaxStyleSpan(style: Int) : StyleSpan(style)
@@ -77,9 +78,10 @@ class MathCodeEditText(context: Context) : EditText(context) {
     // Live Autocomplete Popup Window, Hold-to-Inspect Signature Popup & Project Symbol Context
     internal var suggestionPopup: PopupWindow? = null
     internal var suggestionListContainer: LinearLayout? = null
-    internal var suggestionPopupCard: LinearLayout? = null
+    internal var suggestionPopupCard: FrameLayout? = null
+    internal var suggestionPopupFrostView: android.widget.ImageView? = null
     internal var suggestionDocPopup: PopupWindow? = null
-    internal var suggestionDocCard: LinearLayout? = null
+    internal var suggestionDocCard: FrameLayout? = null
     internal val projectCustomSuggestions = mutableListOf<SuggestionItem>()
     internal var activePrefixRange: IntRange? = null
 
@@ -191,10 +193,32 @@ class MathCodeEditText(context: Context) : EditText(context) {
                 updateGutterPadding(lineCount.coerceAtLeast(1))
                 applySyntaxHighlighting(s)
                 if (wasUserCharChange && !isProgrammaticEdit && !isHandlingAutoIndent && hasFocus()) {
+                    ensureCursorVisible()
                     updateSuggestionsForCurrentCursor(s)
                 }
             }
         })
+    }
+
+    /**
+     * Scrolls the editor vertically when needed so the active cursor line (plus a 1-line margin)
+     * stays visible above the bottom of the editor viewport (especially when the soft keyboard is up).
+     */
+    fun ensureCursorVisible() {
+        val textLayout = layout ?: return
+        if (height <= 0) return
+        val cur = selectionStart.coerceIn(0, text?.length ?: 0)
+        val line = textLayout.getLineForOffset(cur)
+        val lineTop = textLayout.getLineTop(line)
+        val lineBottom = textLayout.getLineBottom(line)
+        val visibleContentHeight = (height - paddingTop - paddingBottom).coerceAtLeast(1)
+        val extraMargin = (lineBottom - lineTop).coerceAtLeast((18f * density).toInt())
+        if (lineBottom + extraMargin > scrollY + visibleContentHeight) {
+            val targetScrollY = (lineBottom + extraMargin - visibleContentHeight).coerceAtLeast(0)
+            scrollTo(scrollX, targetScrollY)
+        } else if (lineTop < scrollY) {
+            scrollTo(scrollX, lineTop.coerceAtLeast(0))
+        }
     }
 
     /**
