@@ -201,9 +201,7 @@ internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionIte
         "bool — 1 if a and b have the same truth value, otherwise 0"
     ),
     MathCodeEditText.SuggestionItem(
-        "for", "(i in 1...10) { ... }", "(i in 1...10) {
-    
-}", 2, "kw", "For-in range/vector loop",
+        "for", "(i in 1...10) { ... }", "(i in 1...10) {\n    \n}", 2, "kw", "For-in range/vector loop",
         listOf(
             "i: ident — Loop iteration variable bound on each step",
             "iter: range | vec — Range (1...10, 0..<n) or vector to iterate over"
@@ -211,9 +209,7 @@ internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionIte
         "any — Evaluates the loop body for each element and returns the final iteration value"
     ),
     MathCodeEditText.SuggestionItem(
-        "while", "(cond) ?? { ... }", "() ?? {
-    
-}", 8, "kw", "While loop (cond ?? body)",
+        "while", "(cond) ?? { ... }", "() ?? {\n    \n}", 8, "kw", "While loop (cond ?? body)",
         listOf(
             "cond: bool — Loop continuation condition tested before each iteration",
             "body: { ... } — Block executed while cond evaluates to non-zero"
@@ -221,9 +217,7 @@ internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionIte
         "any — Value of the last executed loop iteration"
     ),
     MathCodeEditText.SuggestionItem(
-        "do", "{ ... } ?? (cond)", "{
-    
-} ?? ()", 1, "kw", "Do-while loop (body ?? cond)",
+        "do", "{ ... } ?? (cond)", "{\n    \n} ?? ()", 1, "kw", "Do-while loop (body ?? cond)",
         listOf(
             "body: { ... } — Block executed at least once before testing condition",
             "cond: bool — Continuation condition tested after each pass"
@@ -239,25 +233,23 @@ internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionIte
         "any — Value returned for the matching switch arm"
     ),
     MathCodeEditText.SuggestionItem(
-        "catch", "catch (e) { ... }", "catch (e) {
-    e
-}", 2, "kw", "Catch error block",
+        "catch", "catch (e) { ... }", "catch (e) {\n    e\n}", 2, "kw", "Catch error block",
         listOf("e: str — Variable receiving the thrown or runtime error message"),
         "any — Recovery value returned when the preceding try block fails"
     ),
     MathCodeEditText.SuggestionItem(
-        "throw", "throw("message")", "throw("")", 2, "kw", "Raise exception",
+        "throw", "throw(\"message\")", "throw(\"\")", 2, "kw", "Raise exception",
         listOf("msg: str | any — Error message or value to raise"),
         "void — Transfers control to the nearest enclosing try/catch handler or halts evaluation"
     ),
     MathCodeEditText.SuggestionItem(
-        "println", "println("{expr}")", "println("")", 2, "kw", "Print line with interpolation",
-        listOf("args: any... — Values or interpolated strings (e.g. "{25$ into RS}") to print with newline"),
+        "println", "println(\"{expr}\")", "println(\"\")", 2, "kw", "Print line with interpolation",
+        listOf("args: any... — Values or interpolated strings (e.g. \"{25$ into RS}\") to print with newline"),
         "any — Appends formatted output + newline to Console Stream and returns the last argument"
     ),
     MathCodeEditText.SuggestionItem(
-        "print", "print("{expr}")", "print("")", 2, "kw", "Print without newline",
-        listOf("args: any... — Values or interpolated strings (e.g. "{2km into m}") to print"),
+        "print", "print(\"{expr}\")", "print(\"\")", 2, "kw", "Print without newline",
+        listOf("args: any... — Values or interpolated strings (e.g. \"{2km into m}\") to print"),
         "any — Appends formatted output to Console Stream and returns the last argument"
     ),
     MathCodeEditText.SuggestionItem(
