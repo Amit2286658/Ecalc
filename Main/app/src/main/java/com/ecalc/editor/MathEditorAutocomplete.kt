@@ -1,5 +1,6 @@
 package com.ecalc
 
+import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -839,9 +840,16 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
             )
         }
 
-        // Capture Frosted Glass blur backdrop for the doc popup
+        // Capture Frosted Glass blur backdrop for the doc popup.
+        // Hide the suggestion list card for the snapshot (same technique the
+        // list popup itself uses) — otherwise the blurred "backdrop" is just
+        // the flat popup card and the doc shows no visible frost texture.
+        val listCard = suggestionPopupCard
+        val prevVis = listCard?.visibility
+        listCard?.visibility = View.INVISIBLE
         val fullFrost = Frost.frozenBackdrop(hostFrame, downscale = 6, radius = 8)
         val croppedFrost = cropFrostBackdropForPopup(fullFrost, hostW, hostH, xPos, yPos, popupW, measuredH)
+        listCard?.visibility = prevVis
         docFrostImg.setImageBitmap(croppedFrost)
 
         val lp = FrameLayout.LayoutParams(popupW, measuredH).apply {
@@ -872,6 +880,28 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         candidateAboveY
     } else {
         rowLoc[1] + anchorRow.height + dp(6f)
+    }
+
+    // PopupWindow fallback (no overlay host): capture the activity's content
+    // root for the frost backdrop, cropped to the popup's screen rect. Same
+    // hide-the-list-card trick as the host path so the blur shows editor
+    // content instead of the flat suggestion card.
+    val contentRoot = (context as? Activity)?.findViewById<View>(android.R.id.content)
+    if (contentRoot != null) {
+        val rootLoc = IntArray(2)
+        contentRoot.getLocationOnScreen(rootLoc)
+        val rootW = if (contentRoot.width > 0) contentRoot.width else resources.displayMetrics.widthPixels
+        val rootH = if (contentRoot.height > 0) contentRoot.height else resources.displayMetrics.heightPixels
+        val listCard = suggestionPopupCard
+        val prevVis = listCard?.visibility
+        listCard?.visibility = View.INVISIBLE
+        val fullFrost = Frost.frozenBackdrop(contentRoot, downscale = 6, radius = 8)
+        val croppedFrost = cropFrostBackdropForPopup(
+            fullFrost, rootW, rootH,
+            xPos - rootLoc[0], yPos - rootLoc[1], popupW, measuredH
+        )
+        listCard?.visibility = prevVis
+        docFrostImg.setImageBitmap(croppedFrost)
     }
 
     runCatching {
