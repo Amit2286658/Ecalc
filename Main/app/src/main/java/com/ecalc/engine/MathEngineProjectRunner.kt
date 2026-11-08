@@ -81,15 +81,15 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
     targetFileName: String,
     targetModName: String,
     targetRawSource: String,
-    entryPoint: MathEngineManager.ProjectEntryPoint? = null
-): Pair<List<Pair<String, MathEngineManager.EvalOutcome>>, String> {
+    entryPoint: ProjectEntryPoint? = null
+): Pair<List<Pair<String, EvalOutcome>>, String> {
     val safeProj = sanitizeProjectName(projectName)
     ensureProjectSetup(ctx, safeProj)
 
     val handle = flushUserModulesSync(ctx)
     if (handle == 0L) {
         return listOf(
-            "(init)" to MathEngineManager.EvalOutcome(
+            "(init)" to EvalOutcome(
                 false, "0.0", "void", "none", "Shared engine initialization failed"
             )
         ) to ""
@@ -108,7 +108,7 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
     }
 
     if (preparedUnits.isEmpty()) {
-        return emptyList<Pair<String, MathEngineManager.EvalOutcome>>() to ""
+        return emptyList<Pair<String, EvalOutcome>>() to ""
     }
 
     runCatching { MathEngineBridge.nativeClearOutput(handle) }
@@ -142,7 +142,7 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
     refreshLiveAutocompleteCatalogSync(handle)
 
     val stmtsWithLines = splitModuleStatementsWithLines(targetRawSource)
-    val results = mutableListOf<Pair<String, MathEngineManager.EvalOutcome>>()
+    val results = mutableListOf<Pair<String, EvalOutcome>>()
 
     if (parsed.ok) {
         // Record declared items from the target file for a clear, scannable execution log
@@ -153,7 +153,7 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
             }
             if (isDeclarationOrBindingStatement(trimmed)) {
                 results.add(
-                    trimmed to MathEngineManager.EvalOutcome(
+                    trimmed to EvalOutcome(
                         ok = true,
                         value = "void",
                         type = "void",
@@ -180,7 +180,7 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
         val summaryLine = entryPoint?.sourceLine ?: lastExprPair?.first ?: (stmtsWithLines.lastOrNull()?.first ?: 1)
 
         results.add(
-            summaryLabel to MathEngineManager.EvalOutcome(
+            summaryLabel to EvalOutcome(
                 ok = true,
                 value = parsed.value,
                 type = parsed.type,
@@ -200,7 +200,7 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
         val errStmt = stmtsWithLines.firstOrNull { it.first == fallbackLine }?.second
             ?: (if (entryPoint != null) "▶ ${entryPoint.fileName} :: ${entryPoint.entryFn}()" else "[$targetModName]")
         results.add(
-            errStmt to MathEngineManager.EvalOutcome(
+            errStmt to EvalOutcome(
                 ok = false,
                 value = "0.0",
                 type = "void",
@@ -229,7 +229,7 @@ fun MathEngineManager.runModuleFile(
     projectSourcesByFileName: Map<String, String> = emptyMap(),
     resetBeforeRun: Boolean = true,
     projectName: String = activeProjectName,
-    onDone: (modName: String, results: List<Pair<String, MathEngineManager.EvalOutcome>>, varsSummary: String) -> Unit
+    onDone: (modName: String, results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
 ) {
     val safeProj = sanitizeProjectName(projectName)
     worker.execute {
@@ -239,7 +239,7 @@ fun MathEngineManager.runModuleFile(
             if (ctx == null) {
                 onDone(
                     primaryMod,
-                    listOf("(init)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
+                    listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
                     ""
                 )
                 return@execute
@@ -265,7 +265,7 @@ fun MathEngineManager.runModuleFile(
 
                 val (entryFn, isExplicit) = detectModuleEntryPoint(mathSource)
                 val fileEntryPoint = if (entryFn != null) {
-                    MathEngineManager.ProjectEntryPoint(
+                    ProjectEntryPoint(
                         fileName = targetFile,
                         modName = primaryMod,
                         entryFn = entryFn,
@@ -289,7 +289,7 @@ fun MathEngineManager.runModuleFile(
             Log.e(TAG, "runModuleFile failed for '$fileName'", t)
             onDone(
                 primaryMod,
-                listOf("(error)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", t.message ?: "Module execution failed")),
+                listOf("(error)" to EvalOutcome(false, "0.0", "void", "none", t.message ?: "Module execution failed")),
                 ""
             )
         }
@@ -305,7 +305,7 @@ fun MathEngineManager.runProject(
     projectName: String = activeProjectName,
     projectSourcesByFileName: Map<String, String> = emptyMap(),
     preferredActiveFile: String? = null,
-    onDone: (entryPoint: MathEngineManager.ProjectEntryPoint?, results: List<Pair<String, MathEngineManager.EvalOutcome>>, varsSummary: String) -> Unit
+    onDone: (entryPoint: ProjectEntryPoint?, results: List<Pair<String, EvalOutcome>>, varsSummary: String) -> Unit
 ) {
     val safeProj = sanitizeProjectName(projectName)
     worker.execute {
@@ -314,7 +314,7 @@ fun MathEngineManager.runProject(
             if (ctx == null) {
                 onDone(
                     null,
-                    listOf("(init)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
+                    listOf("(init)" to EvalOutcome(false, "0.0", "void", "none", "App context not initialized")),
                     ""
                 )
                 return@execute
@@ -341,7 +341,7 @@ fun MathEngineManager.runProject(
                     if (mergedSources.size == 1) {
                         val (singleFile, singleSrc) = mergedSources.entries.first()
                         val singleMod = deriveModuleName(singleFile, singleSrc)
-                        val synthEntry = MathEngineManager.ProjectEntryPoint(
+                        val synthEntry = ProjectEntryPoint(
                             fileName = singleFile,
                             modName = singleMod,
                             entryFn = "script",
@@ -363,7 +363,7 @@ fun MathEngineManager.runProject(
                     onDone(
                         null,
                         listOf(
-                            "(project)" to MathEngineManager.EvalOutcome(
+                            "(project)" to EvalOutcome(
                                 false,
                                 "0.0",
                                 "void",
@@ -406,7 +406,7 @@ fun MathEngineManager.runProject(
             Log.e(TAG, "runProject failed for '$safeProj'", t)
             onDone(
                 null,
-                listOf("(error)" to MathEngineManager.EvalOutcome(false, "0.0", "void", "none", t.message ?: "Project execution failed")),
+                listOf("(error)" to EvalOutcome(false, "0.0", "void", "none", t.message ?: "Project execution failed")),
                 ""
             )
         }
