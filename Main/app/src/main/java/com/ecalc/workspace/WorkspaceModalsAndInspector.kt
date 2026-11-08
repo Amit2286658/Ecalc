@@ -38,6 +38,7 @@ import kotlin.math.hypot
 /**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
  * with Left-Drawer Project & File Manager.
+ */
 
 internal fun MathWorkspaceFragment.updateModuleSubTabVisibility(animate: Boolean) {
     if (!isModuleEditorSubTab) {

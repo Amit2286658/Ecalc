@@ -335,17 +335,17 @@ internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionIte
     ),
     MathCodeEditText.SuggestionItem(
         "hex", "hex (base-16 str)", "hex", 0, "unit", "Hexadecimal conversion target",
-        listOf("n: int — Integer to format in base 16 (e.g. 255 into hex -> "0xff")"),
+        listOf("n: int — Integer to format in base 16 (e.g. 255 into hex -> \"0xff\")"),
         "str — Hexadecimal string representation with 0x prefix"
     ),
     MathCodeEditText.SuggestionItem(
         "bin", "bin (base-2 str)", "bin", 0, "unit", "Binary conversion target",
-        listOf("n: int — Integer to format in base 2 (e.g. 42 into bin -> "0b101010")"),
+        listOf("n: int — Integer to format in base 2 (e.g. 42 into bin -> \"0b101010\")"),
         "str — Binary string representation with 0b prefix"
     ),
     MathCodeEditText.SuggestionItem(
         "oct", "oct (base-8 str)", "oct", 0, "unit", "Octal conversion target",
-        listOf("n: int — Integer to format in base 8 (e.g. 64 into oct -> "0o100")"),
+        listOf("n: int — Integer to format in base 8 (e.g. 64 into oct -> \"0o100\")"),
         "str — Octal string representation with 0o prefix"
     ),
 

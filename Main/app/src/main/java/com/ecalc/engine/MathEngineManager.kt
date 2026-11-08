@@ -27,18 +27,27 @@ import java.util.concurrent.Executors
  *      `import_dir`, and compiles, topologically links (`<[dep]`), and executes the project's
  *      `@entry(fn)` or `main()` entry point via `MathEngineBridge.nativeBuildAndRun`.
  */
-object MathEngineManager {
+/** Result of an evaluation, mirroring the engine's wire format. */
+data class EvalOutcome(
+    val ok: Boolean,
+    val value: String,
+    val type: String,
+    val unit: String,
+    val error: String?,
+    val stdout: String = "",
+    val sourceLine: Int = 1
+)
 
-    /** Result of an evaluation, mirroring the engine's wire format. */
-    data class EvalOutcome(
-        val ok: Boolean,
-        val value: String,
-        val type: String,
-        val unit: String,
-        val error: String?,
-        val stdout: String = "",
-        val sourceLine: Int = 1
-    )
+/** Describes a project-level `main()` or `@entry(fn)` entry point located in any `.math` file of a project. */
+data class ProjectEntryPoint(
+    val fileName: String,
+    val modName: String,
+    val entryFn: String,
+    val isExplicitDirective: Boolean,
+    val sourceLine: Int = 1
+)
+
+object MathEngineManager {
 
     /** Engine & project status for UI inspection in the Project Drawer. */
     data class ProjectBinaryStatus(
@@ -48,15 +57,6 @@ object MathEngineManager {
         val hasStdlibMathc: Boolean,
         val stdlibMathcBytes: Long,
         val linkedModulesCount: Int
-    )
-
-    /** Describes a project-level `main()` or `@entry(fn)` entry point located in any `.math` file of a project. */
-    data class ProjectEntryPoint(
-        val fileName: String,
-        val modName: String,
-        val entryFn: String,
-        val isExplicitDirective: Boolean,
-        val sourceLine: Int = 1
     )
 
     internal const val TAG = "MathEngineManager"
