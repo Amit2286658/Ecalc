@@ -845,7 +845,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         // list popup itself uses) — otherwise the blurred "backdrop" is just
         // the flat popup card and the doc shows no visible frost texture.
         val listCard = suggestionPopupCard
-        val prevVis = listCard?.visibility
+        val prevVis = listCard?.visibility ?: View.VISIBLE
         listCard?.visibility = View.INVISIBLE
         val fullFrost = Frost.frozenBackdrop(hostFrame, downscale = 6, radius = 8)
         val croppedFrost = cropFrostBackdropForPopup(fullFrost, hostW, hostH, xPos, yPos, popupW, measuredH)
@@ -893,7 +893,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         val rootW = if (contentRoot.width > 0) contentRoot.width else resources.displayMetrics.widthPixels
         val rootH = if (contentRoot.height > 0) contentRoot.height else resources.displayMetrics.heightPixels
         val listCard = suggestionPopupCard
-        val prevVis = listCard?.visibility
+        val prevVis = listCard?.visibility ?: View.VISIBLE
         listCard?.visibility = View.INVISIBLE
         val fullFrost = Frost.frozenBackdrop(contentRoot, downscale = 6, radius = 8)
         val croppedFrost = cropFrostBackdropForPopup(
