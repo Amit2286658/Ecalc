@@ -2,6 +2,7 @@ package com.ecalc
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -886,7 +887,12 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
     // root for the frost backdrop, cropped to the popup's screen rect. Same
     // hide-the-list-card trick as the host path so the blur shows editor
     // content instead of the flat suggestion card.
-    val contentRoot = (context as? Activity)?.findViewById<View>(android.R.id.content)
+    val activityCtx = run {
+        var c: Context? = context
+        while (c != null && c !is Activity) c = (c as? ContextWrapper)?.baseContext
+        c
+    }
+    val contentRoot = activityCtx?.findViewById<View>(android.R.id.content)
     if (contentRoot != null) {
         val rootLoc = IntArray(2)
         contentRoot.getLocationOnScreen(rootLoc)
