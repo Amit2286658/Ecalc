@@ -40,7 +40,13 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug -PusePrebuiltMepSo --console=plain
+          ok=0
+          for i in 1 2 3 4 5; do
+            if ./gradlew assembleDebug -PusePrebuiltMepSo --console=plain; then ok=1; break; fi
+            echo "gradlew attempt $i failed — most likely the gradle-distributions CDN hiccup; retrying in 90s"
+            sleep 90
+          done
+          [ "$ok" = 1 ]
 
       - uses: actions/upload-artifact@v4
         with:
