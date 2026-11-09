@@ -1,10 +1,40 @@
 {
-  "version": 2,
-  "patches": [
-    {
-      "file": "currency.math",
-      "sha256": "4bafa2a7c441b277047da82ba60a8ea62614e79f912e434b4ab00af382543cbc",
-      "description": "Currency conversion foundation ([currency]) with into operator and case-insensitive currency codes"
-    }
-  ]
+ "version": 2,
+ "patches": [
+  {
+   "file": "currency.math",
+   "sha256": "af569acb14f8516a9c596c69baba9459829a3789f7d7b9a82e368930052a6d21",
+   "description": "Currency base: 13 core currencies with symbol + code spellings; full 13x13 into-matrix; converts via @currency_convert host extern"
+  },
+  {
+   "file": "currency_pairs_1.math",
+   "sha256": "2ddda751cf5dc3cec39fe7a82ea941e80b604f7a8c92406f1fe14f5fac4a97cc",
+   "description": "Currency into-matrix 1/6 (SEK NOK DKK MXN BRL ZAR RUB) \u2014 generated"
+  },
+  {
+   "file": "currency_pairs_2.math",
+   "sha256": "5c2e8522896221368b2a1c9147fb7e1d2f19902f8fb4e878b3e54fc74cf1044c",
+   "description": "Currency into-matrix 2/6 (TRY SAR AED THB MYR IDR PHP) \u2014 generated"
+  },
+  {
+   "file": "currency_pairs_3.math",
+   "sha256": "8941a02a37ed55dd3cdeb2804df3fea1d429d188826b2e7e88873870c5946eb7",
+   "description": "Currency into-matrix 3/6 (PLN TWD VND EGP PKR BDT LKR) \u2014 generated"
+  },
+  {
+   "file": "currency_pairs_4.math",
+   "sha256": "1b074b58b8159cd5611243e6bc3c2ecb8b9cfeb6517b60d38c5ac54fb459cbdf",
+   "description": "Currency into-matrix 4/6 (NPR NGN KES GHS ARS CLP COP) \u2014 generated"
+  },
+  {
+   "file": "currency_pairs_5.math",
+   "sha256": "63acf420c5a33c80abe61de2ce8ec9f376dd3e3b60159ede55941d74921b625e",
+   "description": "Currency into-matrix 5/6 (PEN ILS QAR KWD BHD OMR CZK) \u2014 generated"
+  },
+  {
+   "file": "currency_pairs_6.math",
+   "sha256": "70bb648d13544fefd10f4a909cf45fff1ef93470368e17b6a845eab36195db13",
+   "description": "Currency into-matrix 6/6 (HUF RON BGN ISK UAH KZT MAD) \u2014 generated"
+  }
+ ]
 }

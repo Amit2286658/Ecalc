@@ -80,13 +80,20 @@ object MathPatchDownloader {
     }
 
     /**
-     * Immediately seeds `filesDir/math_patches/currency.math` from bundled `assets/patches/`
-     * if missing or if an older on-disk version still used `"in"` or lacked `"RS"`, ensuring
-     * patches are ready before the very first expression evaluation even when offline.
+     * Immediately seeds `filesDir/math_patches/` from the bundled `assets/patches/` set:
+     * - `currency.math` is seeded/upgraded when missing or when an older on-disk
+     *   version still used `"in"` or lacked `"RS"`;
+     * - every other bundled `.math` (the generated `currency_pairs_N.math` matrix
+     *   files) is seeded exactly when missing — content upgrades for those flow
+     *   through the CDN manifest (SHA-256 verified) so an APK refresh never
+     *   fights a newer remote patch.
+     * Ensures patches are ready before the very first expression evaluation even
+     * when offline.
      */
     @Synchronized
     fun ensureBundledPatchesSeeded(context: Context): File {
         val dir = File(context.filesDir, PATCHES_FOLDER_NAME).apply { mkdirs() }
+        var seededAny = false
         runCatching {
             val ccyFile = File(dir, "currency.math")
             val existing = if (ccyFile.isFile && ccyFile.canRead()) ccyFile.readText(Charsets.UTF_8) else ""
@@ -100,6 +107,25 @@ object MathPatchDownloader {
                     invalidateCompiledCache(dir)
                 }
             }
+            runCatching {
+                val bundledOther = context.assets.list("patches")
+                    ?.filter { it.endsWith(".math") && it != "currency.math" }
+                    ?.sorted()
+                    ?: emptyList()
+                for (name in bundledOther) {
+                    val target = File(dir, name)
+                    if (target.isFile && target.canRead()) continue
+                    val text = runCatching {
+                        context.assets.open("patches/$name").bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    }.getOrNull()
+                    if (!text.isNullOrBlank()) {
+                        target.writeText(text, Charsets.UTF_8)
+                        seededAny = true
+                        Log.i(TAG, "Seeded bundled patch '$name'")
+                    }
+                }
+            }
+            if (seededAny) invalidateCompiledCache(dir)
         }
         return dir
     }
