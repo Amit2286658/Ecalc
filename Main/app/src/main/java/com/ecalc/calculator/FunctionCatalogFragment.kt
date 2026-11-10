@@ -3,6 +3,7 @@ package com.ecalc
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -23,6 +24,7 @@ import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.ecalc.editor.richPopupText
 import kotlin.math.hypot
 
 /**
@@ -315,10 +317,19 @@ class FunctionCatalogFragment : Fragment() {
             )
         }
         panel.addView(
-            makeKey("=", true, 114f) {
-                act.onKeyClicked("=")
-                dismissHelperPad()
-            }
+            LinearLayout(act).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                addView(makeKey("⌫", false, 54f) { act.onKeyClicked("⌫") })
+                addView(makeKey("=", true, 54f) {
+                    act.onKeyClicked("=")
+                    dismissHelperPad()
+                })
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         )
 
         val overlay = FrameLayout(act).apply {
@@ -343,6 +354,46 @@ class FunctionCatalogFragment : Fragment() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             )
+        }
+        // Keep the expression + answer display clearly readable while everything else is frosted:
+        // a full-resolution raw snapshot of the root is taken BEFORE blurring, the exact display
+        // region is cropped out of it and pinned back on top of the frost at its true position.
+        var sharpView: ImageView? = null
+        if (rootFrame.isShown) {
+            runCatching {
+                val rawBmp = Frost.rawBackdrop(rootFrame)
+                if (rawBmp != null) {
+                    val dispPri = act.binding.tvPrimaryDisplay
+                    val dispSec = act.binding.tvSecondaryDisplay
+                    val priLoc = IntArray(2)
+                    dispPri.getLocationInWindow(priLoc)
+                    val secLoc = IntArray(2)
+                    dispSec.getLocationInWindow(secLoc)
+                    val rootWin = IntArray(2)
+                    rootFrame.getLocationInWindow(rootWin)
+                    val leftB = (minOf(priLoc[0], secLoc[0]) - rootWin[0]) - dp(8f)
+                    val topB = (minOf(priLoc[1], secLoc[1]) - rootWin[1]) - dp(4f)
+                    val rightB = (maxOf(priLoc[0] + dispPri.width, secLoc[0] + dispSec.width) - rootWin[0]) + dp(8f)
+                    val bottomB = (maxOf(priLoc[1] + dispPri.height, secLoc[1] + dispSec.height) - rootWin[1]) + dp(4f)
+                    val cropL = leftB.coerceIn(0, rawBmp.width - 1)
+                    val cropT = topB.coerceIn(0, rawBmp.height - 1)
+                    val cropW = (rightB - leftB).coerceIn(1, rawBmp.width - cropL)
+                    val cropH = (bottomB - topB).coerceIn(1, rawBmp.height - cropT)
+                    val sharp = Bitmap.createBitmap(rawBmp, cropL, cropT, cropW, cropH)
+                    sharpView = ImageView(act).apply {
+                        setImageBitmap(sharp)
+                        scaleType = ImageView.ScaleType.FIT_XY
+                        alpha = 0f
+                    }
+                    overlay.addView(
+                        sharpView,
+                        FrameLayout.LayoutParams(cropW, cropH).apply {
+                            leftMargin = cropL
+                            topMargin = cropT
+                        }
+                    )
+                }
+            }
         }
         overlay.addView(
             panel,
@@ -406,6 +457,7 @@ class FunctionCatalogFragment : Fragment() {
                     panel.alpha = (f / 0.22f).coerceIn(0f, 1f)
                     panel.translationY = (if (showAbove) 12f * density else -12f * density) * (1f - f)
                     frostView?.alpha = 0.92f * (f / 0.3f).coerceIn(0f, 1f)
+                    sharpView?.alpha = (f / 0.3f).coerceIn(0f, 1f)
                 }
                 start()
                 padAnimators.add(this)
@@ -424,8 +476,9 @@ class FunctionCatalogFragment : Fragment() {
         padAnimators.clear()
         helperPadOverlay?.let { overlay ->
             helperPadOverlay = null
-            if (overlay.childCount > 1) {
-                overlay.getChildAt(0).animate().alpha(0f).setDuration(170L).start()
+            // Fade every backdrop layer (frost + sharp display crop); the panel is the LAST child.
+            for (i in 0 until overlay.childCount - 1) {
+                overlay.getChildAt(i).animate().alpha(0f).setDuration(170L).start()
             }
             val panel = overlay.getChildAt(overlay.childCount - 1)
             if (panel != null) {
@@ -588,7 +641,7 @@ class FunctionCatalogFragment : Fragment() {
                 val item = holder.boundItem ?: return@setOnLongClickListener false
                 holder.isHoldActive = true
                 rowCard.parent?.requestDisallowInterceptTouchEvent(true)
-                (activity as? MainActivity)?.showButtonPopup(rowCard, item.toPopupInfoText())
+                (activity as? MainActivity)?.showButtonPopup(rowCard, item.richPopupText())
                 true
             }
 

@@ -100,6 +100,27 @@ object Frost {
     }
 
     /**
+     * Un-blurred full-resolution snapshot of [sourceView] (same render pipeline as
+     * [frozenBackdrop], but without the blur pass, `downscale = 1`). Callers crop a sharp
+     * region out of it — for example the calculator's expression/answer display — and pin
+     * that crop on top of a frosted overlay so that region stays clearly readable while
+     * everything else is blurred.
+     */
+    fun rawBackdrop(sourceView: View): Bitmap? {
+        val w = sourceView.width
+        val h = sourceView.height
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            sourceView.draw(canvas)
+            bmp
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
      * LIVE frosted blur for Android 12+ (API 31): applies a GPU
      * [RenderEffect] blur to [target] so everything behind the overlay stays
      * live-animating through the frost. Returns `false` on older versions

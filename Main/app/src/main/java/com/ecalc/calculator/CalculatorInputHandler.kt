@@ -240,9 +240,12 @@ internal fun MainActivity.onSmartBracketClicked() {
 internal fun MainActivity.evaluateCurrent() {
     val fullDisplay = if (currentPrimaryInput == "0.0") exprStatement
                       else exprStatement + currentPrimaryInput
-    if (fullDisplay.isBlank()) return
+    // "=" with nothing typed still runs the full engine round-trip on a zero expression so the
+    // spring + result reveal always fire, instead of silently early-returning.
+    val evalExpr = fullDisplay.ifBlank { "0" }
+    val blankEval = fullDisplay.isBlank()
 
-    binding.tvSecondaryDisplay.text = "$fullDisplay ="
+    binding.tvSecondaryDisplay.text = "$evalExpr ="
 
     // Spring feedback fires at the '=' click itself (expression line + current answer preview),
     // independent of the engine round-trip below — the damped-spring kick the user sees on every
@@ -250,16 +253,19 @@ internal fun MainActivity.evaluateCurrent() {
     displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
     displaySpringPulse(binding.tvSecondaryDisplay, 0.04f)
 
-    MathEngineManager.evaluate(fullDisplay, isDegreeMode, lastAnswer) { outcome ->
+    MathEngineManager.evaluate(evalExpr, isDegreeMode, lastAnswer) { outcome ->
         runOnUiThread {
             if (outcome.ok) {
                 lastAnswer = outcome.value
                 currentPrimaryInput = outcome.value
                 exprStatement = ""
                 val unitTag = if (outcome.unit != "none") " [${outcome.unit}]" else ""
-                val resultLine = "$fullDisplay = ${outcome.value}$unitTag"
-                calculationHistory.add(0, resultLine)
-                refreshHistoryUI()
+                val resultLine = "$evalExpr = ${outcome.value}$unitTag"
+                // Do not litter History with "0 = 0.0" rows from empty "=" presses.
+                if (!blankEval) {
+                    calculationHistory.add(0, resultLine)
+                    refreshHistoryUI()
+                }
                 currentSecondaryFormula = resultLine
                 binding.tvPrimaryDisplay.text = outcome.value
                 binding.tvSecondaryDisplay.text = resultLine
