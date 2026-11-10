@@ -79,7 +79,6 @@ class MathCodeEditText(context: Context) : EditText(context) {
     internal var suggestionPopup: PopupWindow? = null
     internal var suggestionListContainer: LinearLayout? = null
     internal var suggestionPopupCard: FrameLayout? = null
-    internal var suggestionPopupFrostView: android.widget.ImageView? = null
     internal var suggestionDocPopup: PopupWindow? = null
     internal var suggestionDocCard: FrameLayout? = null
     internal val projectCustomSuggestions = mutableListOf<SuggestionItem>()
@@ -343,6 +342,9 @@ class MathCodeEditText(context: Context) : EditText(context) {
     fun dismissSuggestionDocPopup() {
         runCatching {
             suggestionDocCard?.let { card ->
+                if (card.childCount > 0) {
+                    Frost.clearLiveBlur(card.getChildAt(0))
+                }
                 (card.parent as? ViewGroup)?.removeView(card)
             }
             suggestionDocCard = null

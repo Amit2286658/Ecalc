@@ -854,6 +854,59 @@ internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionIte
 @Volatile
 internal var MATH_EDITOR_LIVE_ENGINE_SUGGESTIONS: List<MathCodeEditText.SuggestionItem> = emptyList()
 
+internal val CORE_STDLIB_MODULES = setOf(
+    "default", "bootstrap", "boot_types", "boot_control", "units",
+    "arith", "trig", "algebra", "calculus", "complex",
+    "vec", "mat", "string", "physics", "chemistry", "biology", "geom", "conversions"
+)
+
+/**
+ * Rich catalog item representing a callable function, operator (including operator overloads),
+ * or module constant from `stdlib + patches + project1` displayed in the Basic Calculator's
+ * Functions Tab.
+ */
+data class CalculatorCatalogItem(
+    val name: String,
+    val signature: String,
+    val insertText: String,
+    val originGroup: String,       // "project1", "patch", or "stdlib"
+    val moduleName: String,        // e.g. "custom_ops", "physics_sim", "currency", "trig"
+    val kind: String,              // "fn", "op", or "const"
+    val shortDescription: String,
+    val paramBullets: List<String>,
+    val returnBullet: String,
+    val sourceFile: String? = null
+) {
+    /** Formatted text for the frosted hold-popup info window. */
+    fun toPopupInfoText(): String {
+        val originLabel = when (originGroup) {
+            "project1" -> "project1 • [$moduleName]" + (sourceFile?.let { " ($it)" } ?: "")
+            "patch" -> "patch • [$moduleName]" + (sourceFile?.let { " ($it)" } ?: "")
+            else -> "stdlib • [$moduleName]"
+        }
+        val kindLabel = when (kind) {
+            "op" -> "Operator / Overload"
+            "const" -> "Constant / Variable"
+            else -> "Function"
+        }
+        val paramsBlock = if (paramBullets.isEmpty()) {
+            "  • None — Takes no parameters"
+        } else {
+            paramBullets.mapIndexed { idx, line -> "  ${idx + 1}. $line" }.joinToString("\n")
+        }
+        return buildString {
+            append(signature).append("\n")
+            append("Source: ").append(originLabel).append(" • ").append(kindLabel).append("\n")
+            if (shortDescription.isNotBlank()) {
+                append(shortDescription).append("\n")
+            }
+            append("\nParameters / Operands:\n")
+            append(paramsBlock).append("\n\n")
+            append("Returns:\n  • ").append(returnBullet.ifBlank { "real | any" })
+        }
+    }
+}
+
 internal fun mergeLiveEngineCatalog(rawCatalog: String) {
     if (rawCatalog.isBlank()) return
     val staticKeys = MATH_EDITOR_STATIC_SUGGESTIONS.mapTo(HashSet()) { "${it.category}:${it.matchKey}" }
@@ -872,10 +925,11 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
         val retUnit = parts[4].trim().ifEmpty { "none" }
         val modName = parts[5].trim().ifEmpty { "default" }
 
-        if (name.isEmpty() || name.startsWith("_")) continue
-        val dedupKey = "$kind:$name:$sig"
+        if (name.isEmpty() || name.startsWith("__mep_base_")) continue
+        val dedupKey = "$kind:$modName:$name:$sig"
         if (!seen.add(dedupKey)) continue
 
+        val isCoreStdlib = modName in CORE_STDLIB_MODULES
         val retBadge = if (retUnit != "none" && retUnit.isNotEmpty()) "$retType [$retUnit]" else retType
 
         when (kind) {
@@ -897,7 +951,7 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
             }
             "fn" -> {
                 if (!name[0].isLetter() && name[0] != '_') continue
-                if ("fn:$name" in staticKeys || "std:$name" in staticKeys) continue
+                if (isCoreStdlib && ("fn:$name" in staticKeys || "std:$name" in staticKeys)) continue
                 val hasArgs = !sig.contains("$name()")
                 val paramsInside = sig.substringAfter("(", "").substringBeforeLast(")", "").trim()
                 val paramBullets = if (paramsInside.isEmpty()) {
@@ -913,7 +967,7 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
                         displayLabel = sig,
                         insertText = "$name()",
                         cursorBackOffset = if (hasArgs) 1 else 0,
-                        category = if (modName in setOf("arith", "trig", "calculus", "algebra", "vec", "mat", "physics", "chemistry", "biology", "string")) "std" else "fn",
+                        category = if (isCoreStdlib) "std" else "fn",
                         detail = "[$modName] function",
                         paramBullets = paramBullets,
                         returnBullet = "$retBadge — Result from [$modName]::$name"
@@ -921,13 +975,12 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
                 )
             }
             "op" -> {
-                if (!name[0].isLetter() && name[0] != '_') continue
-                if ("op:$name" in staticKeys) continue
+                if (isCoreStdlib && "op:$name" in staticKeys) continue
                 items.add(
                     MathCodeEditText.SuggestionItem(
                         matchKey = name,
                         displayLabel = sig,
-                        insertText = name,
+                        insertText = if (name[0].isLetterOrDigit()) " $name " else name,
                         cursorBackOffset = 0,
                         category = "op",
                         detail = "[$modName] operator",
@@ -953,7 +1006,7 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
                 )
             }
             "type" -> {
-                if ("type:$name" in staticKeys || "type:$$name" in staticKeys) continue
+                if ("type:$name" in staticKeys || "type:\$$name" in staticKeys) continue
                 val isStruct = sig.startsWith("struct ")
                 items.add(
                     MathCodeEditText.SuggestionItem(
@@ -970,7 +1023,7 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
             }
             "const" -> {
                 if (!name[0].isLetter() && name[0] != '_') continue
-                if ("const:$name" in staticKeys || "var:$name" in staticKeys) continue
+                if (isCoreStdlib && ("const:$name" in staticKeys || "var:$name" in staticKeys)) continue
                 items.add(
                     MathCodeEditText.SuggestionItem(
                         matchKey = name,
@@ -987,4 +1040,419 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
         }
     }
     MATH_EDITOR_LIVE_ENGINE_SUGGESTIONS = items
+}
+
+private val catalogFnDeclRegex = Regex(
+    "^\\s*(?:(pub|priv)\\s+)*(?:\\\$?fn\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^()\\\"]*)\\)\\s*(?:->\\s*([^=:]+)|:\\s*([a-zA-Z0-9_,\\s<>]+))?\\s*(?::=|=)(?![=>])\\s*(.+)\\$",
+    setOf(RegexOption.DOT_MATCHES_ALL)
+)
+
+private val catalogInfixOpDeclRegex = Regex(
+    "^\\s*(?:(pub|priv)\\s+)*\\(\\s*([^()]+)\\s*\\)\\s*(\\\"[^\\\"]+\\\"|[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(\\s*([^()]+)\\s*\\)\\s*(:[<>]?\\d+)\\s*(?:->\\s*([^=]+))?\\s*=\\s*(.+)\\$",
+    setOf(RegexOption.DOT_MATCHES_ALL)
+)
+
+private val catalogPrefixOpDeclRegex = Regex(
+    "^\\s*(?:(pub|priv)\\s+)*(\\\"[^\\\"]+\\\"|[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(\\s*([^()]+)\\s*\\)\\s*(:\\d+)\\s*(?:->\\s*([^=]+))?\\s*=\\s*(.+)\\$",
+    setOf(RegexOption.DOT_MATCHES_ALL)
+)
+
+private val catalogPostfixOpDeclRegex = Regex(
+    "^\\s*(?:(pub|priv)\\s+)*\\(\\s*([^()]+)\\s*\\)\\s*(\\\"[^\\\"]+\\\"|[a-zA-Z_][a-zA-Z0-9_]*)\\s*(:\\d+)\\s*(?:->\\s*([^=]+))?\\s*=\\s*(.+)\\$",
+    setOf(RegexOption.DOT_MATCHES_ALL)
+)
+
+private val catalogVarDeclRegex = Regex(
+    "^\\s*(?:(pub|priv|const|mut)\\s+)+([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?::\\s*([^=:]+))?\\s*(?::=|=)(?![=>])\\s*(.+)\\$",
+    setOf(RegexOption.DOT_MATCHES_ALL)
+)
+
+/**
+ * Extracts functions, operator overloads (infix, prefix, postfix), and public constants/variables
+ * from a `.math` source file with full parameter names, doc comments, and formula previews.
+ */
+internal fun extractCatalogItemsFromMathSource(
+    rawSource: String,
+    originGroup: String,
+    fileName: String? = null
+): List<CalculatorCatalogItem> {
+    val out = ArrayList<CalculatorCatalogItem>()
+    val modName = MathEngineManager.deriveModuleName(fileName, rawSource)
+    val lines = rawSource.replace("\r\n", "\n").replace("\r", "\n").lines()
+
+    // Collect preceding `#` doc comments by 1-based line number
+    val docCommentByLine = HashMap<Int, String>()
+    var pendingDoc = ""
+    for ((idx, rawLine) in lines.withIndex()) {
+        val trimmed = rawLine.trim()
+        if (trimmed.startsWith("#")) {
+            val commentText = trimmed.removePrefix("#").trim()
+            if (!commentText.startsWith("===") && !commentText.startsWith("---")) {
+                pendingDoc = commentText
+            }
+        } else if (trimmed.isNotEmpty()) {
+            if (pendingDoc.isNotEmpty()) {
+                docCommentByLine[idx + 1] = pendingDoc
+                pendingDoc = ""
+            }
+        } else {
+            pendingDoc = ""
+        }
+    }
+
+    var seenCurrencyInto = false
+    val stmtsWithLines = MathEngineManager.splitModuleStatementsWithLines(rawSource)
+    for ((lineNum, rawStmt) in stmtsWithLines) {
+        for (stmt in rawStmt.lineSequence()) {
+            val trimmed = stmt.trim()
+            if (trimmed.isEmpty()) continue
+            val docHint = docCommentByLine[lineNum].orEmpty()
+
+            // 1. Infix operator declaration `(a: T1) "op" (b: T2) :<prec = rhs`
+            val infixMatch = catalogInfixOpDeclRegex.matchEntire(trimmed)
+            if (infixMatch != null) {
+                val vis = infixMatch.groupValues[1]
+                if (vis == "priv") continue
+                val p1Raw = infixMatch.groupValues[2].trim()
+                val opRaw = infixMatch.groupValues[3].trim().removeSurrounding("\"")
+                val p2Raw = infixMatch.groupValues[4].trim()
+                val precRaw = infixMatch.groupValues[5].trim()
+                val retRaw = infixMatch.groupValues[6].trim().ifEmpty { "real" }
+                val rhsRaw = infixMatch.groupValues[7].trim().replace(Regex("\\s+"), " ").take(72)
+
+                if (opRaw.startsWith("__mep_base_")) continue
+
+                // Consolidate generated currency `into` pair matrix rows into one clean catalog entry
+                if (originGroup == "patch" && opRaw == "into" && rhsRaw.contains("currency_convert")) {
+                    if (seenCurrencyInto) continue
+                    seenCurrencyInto = true
+                    out.add(
+                        CalculatorCatalogItem(
+                            name = "into",
+                            signature = "(amount CURRENCY) into TARGET_CURRENCY",
+                            insertText = " into ",
+                            originGroup = "patch",
+                            moduleName = modName,
+                            kind = "op",
+                            shortDescription = "Live currency conversion operator (e.g. 100 USD into INR, 25$ into EUR)",
+                            paramBullets = listOf(
+                                "lhs: real [currency] — Source monetary amount with currency unit (USD, EUR, GBP, INR, JPY, ...)",
+                                "rhs: currency — Target currency code or symbol (INR, Rs, EUR, $, £, ¥, ...)",
+                                "Precedence: $precRaw"
+                            ),
+                            returnBullet = "real [currency] — Converted amount in the target currency",
+                            sourceFile = fileName
+                        )
+                    )
+                    continue
+                }
+
+                val isStandardOverload = opRaw in setOf("+", "-", "*", "/", "%", "^", "==", "!=", "<", "<=", ">", ">=")
+                val desc = when {
+                    docHint.isNotEmpty() -> docHint
+                    isStandardOverload -> "Overloaded '$opRaw' operator in $originGroup [$modName]: $rhsRaw"
+                    else -> "Custom infix operator '$opRaw' in $originGroup [$modName]: $rhsRaw"
+                }
+                val ins = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) " $opRaw " else opRaw
+                out.add(
+                    CalculatorCatalogItem(
+                        name = opRaw,
+                        signature = "($p1Raw) $opRaw ($p2Raw) $precRaw",
+                        insertText = ins,
+                        originGroup = originGroup,
+                        moduleName = modName,
+                        kind = "op",
+                        shortDescription = desc,
+                        paramBullets = listOf(
+                            "$p1Raw — Left-hand operand",
+                            "$p2Raw — Right-hand operand",
+                            "Associativity & Precedence: $precRaw"
+                        ),
+                        returnBullet = "$retRaw — Evaluated via ($p1Raw) $opRaw ($p2Raw) = $rhsRaw",
+                        sourceFile = fileName
+                    )
+                )
+                continue
+            }
+
+            // 2. Prefix operator declaration `"op" (x: T) :prec = rhs`
+            val prefixMatch = catalogPrefixOpDeclRegex.matchEntire(trimmed)
+            if (prefixMatch != null) {
+                val vis = prefixMatch.groupValues[1]
+                if (vis == "priv") continue
+                val opRaw = prefixMatch.groupValues[2].trim().removeSurrounding("\"")
+                val p1Raw = prefixMatch.groupValues[3].trim()
+                val precRaw = prefixMatch.groupValues[4].trim()
+                val retRaw = prefixMatch.groupValues[5].trim().ifEmpty { "real" }
+                val rhsRaw = prefixMatch.groupValues[6].trim().replace(Regex("\\s+"), " ").take(72)
+                if (opRaw !in MathCodeEditText.KEYWORDS) {
+                    out.add(
+                        CalculatorCatalogItem(
+                            name = opRaw,
+                            signature = "$opRaw ($p1Raw) $precRaw",
+                            insertText = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) "$opRaw " else opRaw,
+                            originGroup = originGroup,
+                            moduleName = modName,
+                            kind = "op",
+                            shortDescription = docHint.ifEmpty { "Prefix operator '$opRaw' in $originGroup [$modName]: $rhsRaw" },
+                            paramBullets = listOf(
+                                "$p1Raw — Prefix operand",
+                                "Precedence: $precRaw"
+                            ),
+                            returnBullet = "$retRaw — Evaluated via $opRaw($p1Raw) = $rhsRaw",
+                            sourceFile = fileName
+                        )
+                    )
+                    continue
+                }
+            }
+
+            // 3. Postfix operator declaration `(x: T) "op" :prec = rhs`
+            val postfixMatch = catalogPostfixOpDeclRegex.matchEntire(trimmed)
+            if (postfixMatch != null) {
+                val vis = postfixMatch.groupValues[1]
+                if (vis == "priv") continue
+                val p1Raw = postfixMatch.groupValues[2].trim()
+                val opRaw = postfixMatch.groupValues[3].trim().removeSurrounding("\"")
+                val precRaw = postfixMatch.groupValues[4].trim()
+                val retRaw = postfixMatch.groupValues[5].trim().ifEmpty { "real" }
+                val rhsRaw = postfixMatch.groupValues[6].trim().replace(Regex("\\s+"), " ").take(72)
+                // Skip unit marker definitions `(x) USD :95 -> real, usd = x` in currency.math
+                if (originGroup == "patch" && rhsRaw == "x" && precRaw == ":95") continue
+                out.add(
+                    CalculatorCatalogItem(
+                        name = opRaw,
+                        signature = "($p1Raw) $opRaw $precRaw",
+                        insertText = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) " $opRaw" else opRaw,
+                        originGroup = originGroup,
+                        moduleName = modName,
+                        kind = "op",
+                        shortDescription = docHint.ifEmpty { "Postfix operator '$opRaw' in $originGroup [$modName]: $rhsRaw" },
+                        paramBullets = listOf(
+                            "$p1Raw — Postfix operand",
+                            "Precedence: $precRaw"
+                        ),
+                        returnBullet = "$retRaw — Evaluated via ($p1Raw) $opRaw = $rhsRaw",
+                        sourceFile = fileName
+                    )
+                )
+                continue
+            }
+
+            // 4. Function declaration `pub fn_name(p1: T1, ...) = rhs`
+            val fnMatch = catalogFnDeclRegex.matchEntire(trimmed)
+            if (fnMatch != null) {
+                val vis = fnMatch.groupValues[1]
+                if (vis == "priv") continue
+                val fnName = fnMatch.groupValues[2].trim()
+                if (fnName in MathCodeEditText.KEYWORDS && fnName != "main") continue
+                val paramsRaw = fnMatch.groupValues[3].trim()
+                val retRaw = fnMatch.groupValues[4].trim().ifEmpty {
+                    fnMatch.groupValues[5].trim().ifEmpty { "real" }
+                }
+                val rhsRaw = fnMatch.groupValues[6].trim().replace(Regex("\\s+"), " ").take(76)
+                val paramBullets = if (paramsRaw.isEmpty()) {
+                    listOf("None — Zero-argument function in [$modName]")
+                } else {
+                    paramsRaw.split(',').mapIndexed { idx, p ->
+                        val pTrim = p.trim()
+                        if (pTrim.contains(':')) {
+                            "$pTrim — Argument #${idx + 1} of $fnName"
+                        } else {
+                            "$pTrim: real — Argument #${idx + 1} of $fnName"
+                        }
+                    }
+                }
+                val desc = docHint.ifEmpty {
+                    "Function in $originGroup [$modName] = $rhsRaw"
+                }
+                out.add(
+                    CalculatorCatalogItem(
+                        name = fnName,
+                        signature = "$fnName($paramsRaw)",
+                        insertText = if (paramsRaw.isEmpty()) "$fnName()" else "$fnName(",
+                        originGroup = originGroup,
+                        moduleName = modName,
+                        kind = "fn",
+                        shortDescription = desc,
+                        paramBullets = paramBullets,
+                        returnBullet = "$retRaw — Computed by $fnName($paramsRaw) = $rhsRaw",
+                        sourceFile = fileName
+                    )
+                )
+                continue
+            }
+
+            // 5. Public module constants & variables in project1 (`pub const G_STD = 9.80665`, `pub v0 := 25.0`)
+            if (originGroup == "project1") {
+                val varMatch = catalogVarDeclRegex.matchEntire(trimmed)
+                if (varMatch != null && !trimmed.startsWith("priv ")) {
+                    val vName = varMatch.groupValues[2].trim()
+                    val vType = varMatch.groupValues[3].trim().ifEmpty { "real" }
+                    val rhsRaw = varMatch.groupValues[4].trim().replace(Regex("\\s+"), " ").take(64)
+                    if (vName !in MathCodeEditText.KEYWORDS && vName !in MathCodeEditText.BUILTIN_TYPES) {
+                        out.add(
+                            CalculatorCatalogItem(
+                                name = vName,
+                                signature = "$vName : $vType",
+                                insertText = vName,
+                                originGroup = "project1",
+                                moduleName = modName,
+                                kind = "const",
+                                shortDescription = docHint.ifEmpty { "Bound in project1 [$modName] = $rhsRaw" },
+                                paramBullets = listOf("None — Public constant/variable in project1 [$modName]"),
+                                returnBullet = "$vType — Value of $vName ($rhsRaw)",
+                                sourceFile = fileName
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+    return out
+}
+
+/**
+ * Collects the complete, deduplicated list of functions, operators (including operator overloads),
+ * and `project1` constants from `project1` + `patches` + `stdlib` for the Basic Calculator's
+ * Functions Tab.
+ */
+@Synchronized
+fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<CalculatorCatalogItem> {
+    val handle = ensureProject1LinkedForCalculatorSync(ctx)
+    if (handle != 0L) {
+        refreshLiveAutocompleteCatalogSync(handle)
+    }
+
+    val result = ArrayList<CalculatorCatalogItem>(256)
+    val seenKeys = HashSet<String>()
+
+    // 1. Collect all functions, operator overloads, and public constants from `project1`
+    val proj1Sources = collectProjectModuleSourcesOnDisk(ctx, DEFAULT_STUDIO_PROJECT_NAME)
+    val proj1ModNames = HashSet<String>()
+    val proj1OverloadedNames = HashSet<String>()
+    for ((fileName, rawSrc) in proj1Sources) {
+        val modName = deriveModuleName(fileName, rawSrc)
+        proj1ModNames.add(modName)
+        for (item in extractCatalogItemsFromMathSource(rawSrc, originGroup = "project1", fileName = fileName)) {
+            val key = "project1:${item.moduleName}:${item.kind}:${item.name}:${item.signature}"
+            if (seenKeys.add(key)) {
+                result.add(item)
+                proj1OverloadedNames.add("${item.kind}:${item.name}")
+            }
+        }
+    }
+
+    // 2. Collect all functions and operators from `.math` patches (`filesDir/math_patches/*.math`)
+    MathPatchDownloader.ensureBundledPatchesSeeded(ctx)
+    val patchesDir = MathPatchDownloader.getPatchesDir(ctx)
+    val patchModNames = HashSet<String>()
+    val patchFiles = patchesDir.listFiles { f ->
+        f.isFile && f.name.endsWith(".math", ignoreCase = true) && !f.name.startsWith(".")
+    }?.sortedBy { it.name.lowercase() }.orEmpty()
+
+    for (patchFile in patchFiles) {
+        val rawSrc = runCatching { patchFile.readText() }.getOrDefault("")
+        if (rawSrc.isBlank()) continue
+        val modName = deriveModuleName(patchFile.name, rawSrc)
+        patchModNames.add(modName)
+        for (item in extractCatalogItemsFromMathSource(rawSrc, originGroup = "patch", fileName = patchFile.name)) {
+            val key = "patch:${item.moduleName}:${item.kind}:${item.name}"
+            if (seenKeys.add(key)) {
+                result.add(item)
+            }
+        }
+    }
+
+    // Map curated static suggestions by name for rich stdlib documentation
+    val staticByName = HashMap<String, MathCodeEditText.SuggestionItem>()
+    for (s in MATH_EDITOR_STATIC_SUGGESTIONS) {
+        if (s.category == "std" || s.category == "fn" || s.category == "op") {
+            staticByName.putIfAbsent(s.matchKey, s)
+        }
+    }
+
+    // 3. Merge live engine catalog (`nativeExportCatalog` — includes all stdlib modules, patches & project1)
+    for (live in MATH_EDITOR_LIVE_ENGINE_SUGGESTIONS) {
+        if (live.category != "std" && live.category != "fn" && live.category != "op") continue
+        val modMatch = Regex("^\\[([^\\]]+)\\]").find(live.detail)
+        val modName = modMatch?.groupValues?.getOrNull(1) ?: "stdlib"
+        val kind = if (live.category == "op") "op" else "fn"
+        val origin = when {
+            modName in proj1ModNames -> "project1"
+            modName in patchModNames || modName !in CORE_STDLIB_MODULES -> "patch"
+            else -> "stdlib"
+        }
+
+        // Skip if already extracted with richer source metadata in step 1 or 2
+        if (origin == "project1" && result.any { it.originGroup == "project1" && it.name == live.matchKey && it.kind == kind }) {
+            continue
+        }
+        if (origin == "patch" && result.any { it.originGroup == "patch" && it.name == live.matchKey && it.kind == kind }) {
+            continue
+        }
+
+        val curated = staticByName[live.matchKey]
+        val sig = curated?.displayLabel ?: live.displayLabel
+        val hasZeroArgs = sig.contains("${live.matchKey}()")
+        val insText = when {
+            kind == "op" -> if (live.matchKey.firstOrNull()?.isLetterOrDigit() == true) " ${live.matchKey} " else live.matchKey
+            hasZeroArgs -> "${live.matchKey}()"
+            else -> "${live.matchKey}("
+        }
+        val overloadedNote = if (origin == "stdlib" && "$kind:${live.matchKey}" in proj1OverloadedNames) {
+            " (Overloaded in project1)"
+        } else ""
+        val shortDesc = (curated?.detail ?: live.detail) + overloadedNote
+        val params = curated?.paramBullets?.takeIf { it.isNotEmpty() } ?: live.paramBullets
+        val ret = curated?.returnBullet?.takeIf { it.isNotBlank() } ?: live.returnBullet
+
+        val dedupKey = "$origin:$modName:$kind:${live.matchKey}"
+        if (seenKeys.add(dedupKey)) {
+            result.add(
+                CalculatorCatalogItem(
+                    name = live.matchKey,
+                    signature = sig,
+                    insertText = insText,
+                    originGroup = origin,
+                    moduleName = modName,
+                    kind = kind,
+                    shortDescription = shortDesc,
+                    paramBullets = params,
+                    returnBullet = ret
+                )
+            )
+        }
+    }
+
+    // 4. Ensure all curated stdlib functions & operators from MATH_EDITOR_STATIC_SUGGESTIONS are present
+    for (s in MATH_EDITOR_STATIC_SUGGESTIONS) {
+        if (s.category != "std" && s.category != "fn" && s.category != "op") continue
+        if (s.matchKey in setOf("convert_fx", "fx_rate") && result.any { it.name == s.matchKey }) continue
+        val kind = if (s.category == "op") "op" else "fn"
+        if (result.any { it.originGroup == "stdlib" && it.name == s.matchKey && it.kind == kind }) continue
+        val hasZeroArgs = s.displayLabel.contains("${s.matchKey}()")
+        val insText = when {
+            kind == "op" -> if (s.matchKey.firstOrNull()?.isLetterOrDigit() == true) " ${s.matchKey} " else s.matchKey
+            hasZeroArgs -> "${s.matchKey}()"
+            else -> "${s.matchKey}("
+        }
+        val overloadedNote = if ("$kind:${s.matchKey}" in proj1OverloadedNames) " (Overloaded in project1)" else ""
+        result.add(
+            CalculatorCatalogItem(
+                name = s.matchKey,
+                signature = s.displayLabel,
+                insertText = insText,
+                originGroup = if (s.matchKey in setOf("convert_fx", "fx_rate")) "patch" else "stdlib",
+                moduleName = if (s.matchKey in setOf("convert_fx", "fx_rate")) "currency" else "stdlib",
+                kind = kind,
+                shortDescription = s.detail + overloadedNote,
+                paramBullets = s.paramBullets,
+                returnBullet = s.returnBullet
+            )
+        )
+    }
+
+    return result
 }

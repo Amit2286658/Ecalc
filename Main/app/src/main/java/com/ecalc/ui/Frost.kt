@@ -17,6 +17,61 @@ import android.view.View
 object Frost {
 
     /**
+     * Runs a two-pass separable box blur of [radius] pixels in-place on [bmp].
+     */
+    fun blurBitmapInPlace(bmp: Bitmap, radius: Int = 8) {
+        val sw = bmp.width
+        val sh = bmp.height
+        if (sw <= 1 || sh <= 1) return
+        val pixels = IntArray(sw * sh)
+        val temp = IntArray(sw * sh)
+        bmp.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+
+        val r = radius.coerceIn(1, 16)
+        val div = 2 * r + 1
+        repeat(2) {
+            for (y in 0 until sh) {
+                val rowOffset = y * sw
+                for (x in 0 until sw) {
+                    var sumA = 0
+                    var sumR = 0
+                    var sumG = 0
+                    var sumB = 0
+                    for (k in -r..r) {
+                        val px = (x + k).coerceIn(0, sw - 1)
+                        val c = pixels[rowOffset + px]
+                        sumA += (c ushr 24) and 0xFF
+                        sumR += (c ushr 16) and 0xFF
+                        sumG += (c ushr 8) and 0xFF
+                        sumB += c and 0xFF
+                    }
+                    temp[rowOffset + x] =
+                        ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
+                }
+            }
+            for (x in 0 until sw) {
+                for (y in 0 until sh) {
+                    var sumA = 0
+                    var sumR = 0
+                    var sumG = 0
+                    var sumB = 0
+                    for (k in -r..r) {
+                        val py = (y + k).coerceIn(0, sh - 1)
+                        val c = temp[py * sw + x]
+                        sumA += (c ushr 24) and 0xFF
+                        sumR += (c ushr 16) and 0xFF
+                        sumG += (c ushr 8) and 0xFF
+                        sumB += c and 0xFF
+                    }
+                    pixels[y * sw + x] =
+                        ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
+                }
+            }
+        }
+        bmp.setPixels(pixels, 0, sw, 0, 0, sw, sh)
+    }
+
+    /**
      * Renders [sourceView] at 1/[downscale] resolution, blurs it with a
      * two-pass box ([radius] px at that low resolution — plenty strong after
      * the 6× upscale with bilinear filtering) and returns the SMALL bitmap.
@@ -37,53 +92,7 @@ object Frost {
             val canvas = Canvas(bmp)
             canvas.scale(1f / downscale, 1f / downscale)
             sourceView.draw(canvas)
-
-            val pixels = IntArray(sw * sh)
-            val temp = IntArray(sw * sh)
-            bmp.getPixels(pixels, 0, sw, 0, 0, sw, sh)
-
-            val r = radius.coerceIn(2, 14)
-            val div = 2 * r + 1
-            repeat(2) {
-                for (y in 0 until sh) {
-                    val rowOffset = y * sw
-                    for (x in 0 until sw) {
-                        var sumA = 0
-                        var sumR = 0
-                        var sumG = 0
-                        var sumB = 0
-                        for (k in -r..r) {
-                            val px = (x + k).coerceIn(0, sw - 1)
-                            val c = pixels[rowOffset + px]
-                            sumA += (c ushr 24) and 0xFF
-                            sumR += (c ushr 16) and 0xFF
-                            sumG += (c ushr 8) and 0xFF
-                            sumB += c and 0xFF
-                        }
-                        temp[rowOffset + x] =
-                            ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
-                    }
-                }
-                for (x in 0 until sw) {
-                    for (y in 0 until sh) {
-                        var sumA = 0
-                        var sumR = 0
-                        var sumG = 0
-                        var sumB = 0
-                        for (k in -r..r) {
-                            val py = (y + k).coerceIn(0, sh - 1)
-                            val c = temp[py * sw + x]
-                            sumA += (c ushr 24) and 0xFF
-                            sumR += (c ushr 16) and 0xFF
-                            sumG += (c ushr 8) and 0xFF
-                            sumB += c and 0xFF
-                        }
-                        pixels[y * sw + x] =
-                            ((sumA / div) shl 24) or ((sumR / div) shl 16) or ((sumG / div) shl 8) or (sumB / div)
-                    }
-                }
-            }
-            bmp.setPixels(pixels, 0, sw, 0, 0, sw, sh)
+            blurBitmapInPlace(bmp, radius.coerceIn(2, 14))
             bmp
         } catch (_: Throwable) {
             null

@@ -76,14 +76,17 @@ fun MainActivity.onKeyClicked(label: String) {
                 currentPrimaryInput != "0.0" -> currentPrimaryInput = "0.0"
                 else -> {
                     var s = exprStatement.trimEnd()
+                    val endedWithOpenParen = s.endsWith("(")
                     if (s.isNotEmpty()) s = s.dropLast(1).trimEnd()
-                    val heads = listOf(
-                        "acosec","cosec","asec","acot","sec","cot",
-                        "sin","cos","tan","asin","acos","atan","sinh","cosh","tanh",
-                        "round","cbrt","root","log2","log₂","log","ln","abs","ceil","floor","exp",
-                        "gcd","lcm","npr","ncr","ⁿ√","√","1/(", "10^("
-                    ).sortedByDescending { it.length }
-                    for (h in heads) { if (s.endsWith(h)) { s = s.removeSuffix(h).trimEnd(); break } }
+                    if (endedWithOpenParen) {
+                        val trailIdent = Regex("[a-zA-Z_][a-zA-Z0-9_]*$").find(s)
+                        if (trailIdent != null) {
+                            s = s.substring(0, trailIdent.range.first).trimEnd()
+                        } else {
+                            val heads = listOf("ⁿ√", "√", "log₂", "1/", "10^")
+                            for (h in heads) { if (s.endsWith(h)) { s = s.removeSuffix(h).trimEnd(); break } }
+                        }
+                    }
                     exprStatement = s
                 }
             }

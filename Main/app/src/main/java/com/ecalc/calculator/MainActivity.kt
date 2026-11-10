@@ -138,11 +138,12 @@ class MainActivity : AppCompatActivity() {
                 val summary = synchronized(statusLines) {
                     statusLines.distinct().joinToString("\n")
                 }
-                if (summary.isNotBlank()) {
-                    runOnUiThread {
-                        if (!isFinishing && !isDestroyed) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        if (summary.isNotBlank()) {
                             showPatchStatusToast(summary)
                         }
+                        refreshFunctionCatalogUI()
                     }
                 }
             }
@@ -236,6 +237,9 @@ class MainActivity : AppCompatActivity() {
 
         if (clamped == 1) {
             workspaceFragment?.applyTheme(isDarkMode)
+        } else {
+            workspaceFragment?.saveCurrentModuleEditorState(showToast = false)
+            refreshFunctionCatalogUI()
         }
 
         val width = binding.rootFrame.width.toFloat().coerceAtLeast(1f)
@@ -429,10 +433,11 @@ class MainActivity : AppCompatActivity() {
 
                 updateTabIndicators(animate = true, prevIndex = prevIndex, distance = distance)
                 if (position == 0) refreshHistoryUI()
+                if (position == 5) refreshFunctionCatalogUI()
 
                 val tabs = listOf(
                     binding.tabHistory, binding.tabBasic, binding.tabExtended,
-                    binding.tabTrig, binding.tabFx
+                    binding.tabTrig, binding.tabFx, binding.tabCatalog
                 )
                 val tab = tabs[position]
                 tabSpringPulse(tab, direction, distance)
@@ -551,6 +556,7 @@ class MainActivity : AppCompatActivity() {
             when (frag) {
                 is KeyGridFragment -> frag.springSettle(direction, clampedDist)
                 is HistoryFragment -> frag.springSettle(direction, clampedDist)
+                is FunctionCatalogFragment -> frag.springSettle(direction, clampedDist)
                 else -> if (attempt < 4) {
                     binding.viewPager.postDelayed({ invokeFragmentSpring(attempt + 1) }, 24L)
                 }
@@ -605,11 +611,58 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class EcalcPagerAdapter(activity: FragmentActivity) : FragmentStateAdapter(activity) {
-        override fun getItemCount(): Int = 5
+        override fun getItemCount(): Int = 6
         override fun createFragment(position: Int): Fragment = when (position) {
             0 -> HistoryFragment()
+            5 -> FunctionCatalogFragment()
             else -> KeyGridFragment.newInstance(position)
         }
+    }
+
+    fun refreshFunctionCatalogUI() {
+        (fragmentAt(5) as? FunctionCatalogFragment)?.reloadCatalogFromEngine()
+    }
+
+    fun onCatalogItemClicked(item: CalculatorCatalogItem) {
+        when (item.kind) {
+            "op" -> {
+                if (currentPrimaryInput != "0.0") {
+                    exprStatement += currentPrimaryInput
+                    currentPrimaryInput = "0.0"
+                }
+                val opIns = if (item.name.firstOrNull()?.isLetterOrDigit() == true) {
+                    " ${item.name} "
+                } else {
+                    item.name
+                }
+                exprStatement = exprStatement.trimEnd() + opIns
+            }
+            "const" -> {
+                if (currentPrimaryInput != "0.0") {
+                    exprStatement += currentPrimaryInput
+                    currentPrimaryInput = "0.0"
+                    if (exprStatement.isNotEmpty() && exprStatement.trimEnd().last() !in "+-×÷/*^,(") {
+                        exprStatement += "×"
+                    }
+                }
+                exprStatement += item.name
+            }
+            else -> {
+                if (currentPrimaryInput != "0.0") {
+                    exprStatement += currentPrimaryInput
+                    currentPrimaryInput = "0.0"
+                    if (exprStatement.isNotEmpty() && exprStatement.trimEnd().last() !in "+-×÷/*^,(") {
+                        exprStatement += "×"
+                    }
+                }
+                val isZeroArg = item.signature.contains("${item.name}()")
+                exprStatement += if (isZeroArg) "${item.name}()" else "${item.name}("
+            }
+        }
+        binding.tvPrimaryDisplay.text =
+            if (currentPrimaryInput == "0.0") exprStatement.trimEnd().ifBlank { "0.0" }
+            else (exprStatement + currentPrimaryInput).ifBlank { "0.0" }
+        displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
     }
 
     internal fun fragmentAt(position: Int): Fragment? =
@@ -708,9 +761,9 @@ class MainActivity : AppCompatActivity() {
 
         val tabViews = listOf(
             binding.tabHistory, binding.tabBasic, binding.tabExtended,
-            binding.tabTrig, binding.tabFx
+            binding.tabTrig, binding.tabFx, binding.tabCatalog
         )
-        val tabNames = listOf("History", "Basic keypad", "Extended keypad", "Trig", "Fx")
+        val tabNames = listOf("History", "Basic keypad", "Extended keypad", "Trig", "Fx", "Catalog")
 
         tabViews.forEachIndexed { idx, tab ->
             tab.setOnClickListener {

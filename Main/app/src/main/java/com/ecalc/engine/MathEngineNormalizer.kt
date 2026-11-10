@@ -3,6 +3,110 @@ package com.ecalc
 import android.util.Log
 import com.mathengine.MathEngineBridge
 
+private val infixOpDeclUpgradeRegex = Regex(
+    "^((?:(?:pub|priv)\\s+)*)\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?::\\s*([a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*,\\s*([a-zA-Z_][a-zA-Z0-9_]*))?)?\\s*\\)\\s*(\"[^\"]+\"|[a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?::\\s*([a-zA-Z_][a-zA-Z0-9_]*)(?:\\s*,\\s*([a-zA-Z_][a-zA-Z0-9_]*))?)?\\s*\\)\\s*(:[<>]?\\d+(?:\\s*->\\s*[^=]+)?)\\s*=\\s*(.+)$",
+    setOf(RegexOption.DOT_MATCHES_ALL)
+)
+
+/**
+ * Replaces top-level binary occurrences of [opSymbol] outside string literals with [replacementOp]
+ * so an operator overload on `real` (such as `pub (a: real) "+" (b: real) :<50 = a + b + 1`)
+ * can reference the built-in arithmetic operator in its own body without infinite self-recursion.
+ */
+private fun replaceSelfOperatorOutsideQuotes(rhs: String, opSymbol: String, replacementOp: String): String {
+    if (!rhs.contains(opSymbol)) return rhs
+    val sb = StringBuilder(rhs.length + 32)
+    var inQuotes = false
+    var i = 0
+    while (i < rhs.length) {
+        val c = rhs[i]
+        if (c == '\\' && inQuotes && i + 1 < rhs.length) {
+            sb.append(c).append(rhs[i + 1])
+            i += 2
+            continue
+        }
+        if (c == '"') {
+            inQuotes = !inQuotes
+            sb.append(c)
+            i++
+            continue
+        }
+        if (!inQuotes && rhs.startsWith(opSymbol, i)) {
+            val prevChar = rhs.substring(0, i).trimEnd().lastOrNull()
+            val nextIdx = i + opSymbol.length
+            val nextChar = if (nextIdx < rhs.length) rhs[nextIdx] else ' '
+            val isCompound = nextChar == '=' || nextChar == '>' || (opSymbol == "+" && nextChar == '+') ||
+                (opSymbol == "-" && nextChar == '-') || (prevChar == '+' && opSymbol == "+") ||
+                (prevChar == '-' && opSymbol == "-")
+            val isUnary = prevChar == null || prevChar in "({[,:;?=<>&|+-*/%^"
+            if (!isCompound && !isUnary) {
+                sb.append(" ").append(replacementOp).append(" ")
+                i += opSymbol.length
+                continue
+            }
+        }
+        sb.append(c)
+        i++
+    }
+    return sb.toString()
+}
+
+/**
+ * Upgrades user infix operator overload declarations on `real` (or untyped parameters) so that:
+ * 1. Omitted unit parameters `(a: real)` or `(a)` become `(a: real, T)`, matching/exceeding the
+ *    dispatch specificity of `arith.math`'s generic `T` operators (`+`, `-`, `*`, `/`, `%`, `^`).
+ * 2. Self-referential arithmetic operators (`+`, `-`, `*`, `/`, `%`, `^`) in the overload body
+ *    automatically dispatch to the underlying intrinsic (`@add`, `@sub`, `@mul`, `@div`, `@mod`, `@pow`)
+ *    instead of causing infinite recursion.
+ */
+internal fun MathEngineManager.upgradeUserOperatorOverloadStatement(stmt: String): String {
+    val trimmed = stmt.trim()
+    if (trimmed.endsWith("=>") || trimmed.contains("=> @")) return stmt
+    val m = infixOpDeclUpgradeRegex.matchEntire(trimmed) ?: return stmt
+
+    val mods = m.groupValues[1]
+    val p1Name = m.groupValues[2]
+    val p1Type = m.groupValues[3].ifEmpty { "real" }
+    val p1Unit = m.groupValues[4]
+    val rawOpToken = m.groupValues[5]
+    val p2Name = m.groupValues[6]
+    val p2Type = m.groupValues[7].ifEmpty { "real" }
+    val p2Unit = m.groupValues[8]
+    val precAndRet = m.groupValues[9].trim()
+    val rhsBody = m.groupValues[10].trim()
+
+    val opClean = rawOpToken.removeSurrounding("\"")
+    if (opClean.startsWith("__mep_base_")) return stmt
+
+    val effP1Unit = if (p1Type == "real" && p1Unit.isEmpty()) "T" else p1Unit
+    val effP2Unit = if (p2Type == "real" && p2Unit.isEmpty()) "T" else p2Unit
+
+    val p1Spec = if (effP1Unit.isNotEmpty()) "$p1Name: $p1Type, $effP1Unit" else "$p1Name: $p1Type"
+    val p2Spec = if (effP2Unit.isNotEmpty()) "$p2Name: $p2Type, $effP2Unit" else "$p2Name: $p2Type"
+    val quotedOp = "\"$opClean\""
+
+    val baseIntrinsicInfo: Triple<String, String, String>? = if (p1Type == "real" && p2Type == "real") {
+        when (opClean) {
+            "+" -> Triple("__mep_base_add", ":<50 -> real, T", "@add")
+            "-" -> Triple("__mep_base_sub", ":<50 -> real, T", "@sub")
+            "*" -> Triple("__mep_base_mul", ":<60 -> real", "@mul")
+            "/" -> Triple("__mep_base_div", ":<60 -> real", "@div")
+            "%" -> Triple("__mep_base_mod", ":<60 -> real", "@mod")
+            "^" -> Triple("__mep_base_pow", ":>85 -> real", "@pow")
+            else -> null
+        }
+    } else null
+
+    return if (baseIntrinsicInfo != null && rhsBody.contains(opClean)) {
+        val (helperOp, helperPrec, intrName) = baseIntrinsicInfo
+        val safeRhs = replaceSelfOperatorOutsideQuotes(rhsBody, opClean, helperOp)
+        val helperDecl = "priv (__lhs: real, T) \"$helperOp\" (__rhs: real, T) $helperPrec = $intrName(__lhs, __rhs)"
+        "$helperDecl\n$mods($p1Spec) $quotedOp ($p2Spec) $precAndRet = $safeRhs"
+    } else {
+        "$mods($p1Spec) $quotedOp ($p2Spec) $precAndRet = $rhsBody"
+    }
+}
+
 /**
  * Normalizes `.math` module source code before passing to the C11 Math Engine.
  */
@@ -104,7 +208,7 @@ internal fun MathEngineManager.normalizeExtensionSource(raw: String): String {
             if (m != null && m.groupValues[2] !in reservedWords) {
                 "${m.groupValues[1]}\"${m.groupValues[2]}\"${m.groupValues[3]}"
             } else {
-                line
+                upgradeUserOperatorOverloadStatement(line)
             }
         } else {
             line
@@ -291,6 +395,7 @@ fun MathEngineManager.shutdown() {
     }
     linkedModuleSourcesByName.clear()
     linkedProjectName = null
+    linkedProject1Signature = ""
     isProjectModeActive = false
     MathPatchLoader.resetTracking()
     worker.shutdown()
@@ -497,11 +602,13 @@ fun MathEngineManager.toEngineSyntax(
 }
 
 /**
- * **Path 1 — Standalone Mode (`eng_eval`)** for the Basic/Scientific Calculator keypad.
+ * **Basic/Scientific Calculator Evaluation (`eng_eval`) Linked with `project1`**:
  *
- * Uses the single shared `Engine*` instance ([MathEngineManager.engineHandle]). If user project
- * modules were previously linked in the Studio, flushes them in O(1) time via [flushUserModulesSync]
- * so the calculator always evaluates in pure Standalone Mode (`stdlib + patches`).
+ * Uses the single shared `Engine*` instance ([MathEngineManager.engineHandle]) with `stdlib + patches + project1`
+ * linked. If another Studio project (`project2`, etc.) was previously active, flushes its user modules in
+ * O(1) time via [flushUserModulesSync] and links `project1`'s modules (`custom_ops`, `physics_sim`,
+ * `vectors_stats`, `data_io_json`, and any user-added `.math` files in `project1`) so any functions,
+ * constants, or operator overloads in `project1` reflect directly in the Basic Calculator.
  */
 fun MathEngineManager.evaluate(
     displayExpr: String,
@@ -519,11 +626,7 @@ fun MathEngineManager.evaluate(
             val engineExpr = toEngineSyntax(displayExpr, isDegreeMode, lastAnswer)
 
             synchronized(this) {
-                val handle = if (isProjectModeActive) {
-                    flushUserModulesSync(ctx)
-                } else {
-                    ensureSharedEngineSync(ctx)
-                }
+                val handle = ensureProject1LinkedForCalculatorSync(ctx)
                 if (handle == 0L) {
                     onDone(EvalOutcome(false, "0.0", "", "none", "Engine init failed"))
                     return@execute

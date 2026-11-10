@@ -3,6 +3,7 @@ package com.ecalc
 import android.content.Context
 import android.util.Log
 import com.mathengine.MathEngineBridge
+import java.io.File
 
 /**
  * Unified Compilation, Linking & Execution Pipeline for `.math` Studio Modules and Multi-File Projects.
@@ -138,6 +139,7 @@ internal fun MathEngineManager.executeUnitsViaEngineSync(
     }
     runCatching { MathEngineBridge.nativeSetModule(handle, targetModName, true) }
     linkedProjectName = safeProj
+    linkedProject1Signature = ""
     isProjectModeActive = true
     refreshLiveAutocompleteCatalogSync(handle)
 
@@ -693,4 +695,345 @@ internal fun MathEngineManager.ensureModuleDeclarationsLinkedSync(
         targetRawSource = moduleSource,
         entryPoint = null
     )
+}
+
+
+/**
+ * Ensures `project1` (the default Studio project) is seeded on disk with its default `.math`
+ * example modules (`custom_ops.math`, `physics_sim.math`, `vectors_stats.math`, `data_io_json.math`)
+ * and data files (`config.json`, `sensor_data.csv`), even on cold start before opening the Studio.
+ */
+@Synchronized
+fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
+    val legDir = File(ctx.filesDir, "math_programs").also { if (!it.exists()) it.mkdirs() }
+    val legModDir = File(ctx.filesDir, "math_modules")
+    val modDir = ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME)
+    val sessRoot = File(ctx.filesDir, "math_sessions")
+
+    File(legDir, "trig_ext.math").takeIf { it.exists() }?.delete()
+    File(legModDir, "trig_ext.math").takeIf { it.exists() }?.delete()
+    File(modDir, "trig_ext.math").takeIf { it.exists() }?.delete()
+
+    val calcProj0Dir = File(File(ctx.filesDir, "math_projects"), CALC_PROJECT_NAME)
+    if (calcProj0Dir.exists() && calcProj0Dir.isDirectory) {
+        calcProj0Dir.listFiles { f ->
+            f.isFile && (f.name.endsWith(".math") || f.name.endsWith(".json") || f.name.endsWith(".csv"))
+        }?.forEach { file ->
+            val dest = File(modDir, file.name)
+            if (!dest.exists()) {
+                runCatching { file.copyTo(dest, overwrite = false) }
+            }
+            file.delete()
+        }
+    }
+
+    if (legModDir.exists() && legModDir.isDirectory) {
+        legModDir.listFiles { f ->
+            f.isFile && (f.name.endsWith(".math") || f.name.endsWith(".json") || f.name.endsWith(".csv"))
+        }?.forEach { file ->
+            val dest = File(modDir, file.name)
+            if (!dest.exists()) {
+                runCatching { file.copyTo(dest, overwrite = false) }
+            }
+            file.delete()
+        }
+    }
+    legDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.forEach { file ->
+        val dest = File(modDir, file.name)
+        if (!dest.exists()) {
+            runCatching { dest.writeText(file.readText()) }
+        }
+        file.delete()
+    }
+    if (sessRoot.exists() && sessRoot.isDirectory) {
+        sessRoot.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".math") }
+            .forEach { file ->
+                val dest = File(modDir, file.name)
+                if (!dest.exists()) {
+                    runCatching { dest.writeText(file.readText()) }
+                }
+                file.delete()
+            }
+    }
+
+    val seedMarker = File(modDir, ".seeded_unified_modules_v10")
+    if (!seedMarker.exists()) {
+        val oldV9Marker = File(modDir, ".seeded_unified_modules_v9")
+        if (!oldV9Marker.exists()) {
+            File(modDir, "config.json").writeText(
+                "{\n  \"project\": \"MEP Telemetry\",\n  \"sample_hz\": 50,\n  \"active\": true\n}\n"
+            )
+            File(modDir, "sensor_data.csv").writeText(
+                "sensor, temp_c, status\nCore_A, 42.5, nominal\nCore_B, 48.0, warm\nCore_C, 39.2, nominal\n"
+            )
+            File(modDir, "data_io_json.math").writeText(
+                "# Sandboxed File I/O, RFC 8259 JSON, CSV & Console Stream (.math)\n\n" +
+                "[data_io_json]\n" +
+                "<[string]\n" +
+                "<[vec]\n\n" +
+                "pub cfg := read_json(\"config.json\")\n" +
+                "pub records := csv_to_maps(read_file(\"sensor_data.csv\"))\n\n" +
+                "println(\$\"Loaded project: {cfg[\"project\"]} @ {cfg[\"sample_hz\"]} Hz\")\n" +
+                "println(\$\"CSV rows loaded: {records.len()} (first={records[0][\"sensor\"]})\")\n\n" +
+                "pub avg_temp := (json_parse(records[0][\"temp_c\"]) + json_parse(records[1][\"temp_c\"]) + json_parse(records[2][\"temp_c\"])) / 3\n" +
+                "records\n"
+            )
+            File(modDir, "physics_sim.math").writeText(
+                "# Multi-File Project Module with Project Entry Point: physics_sim.math\n" +
+                "# • Running this file ('▶ Run / Link') executes declarations top-to-bottom.\n" +
+                "# • Running the Project ('▶ Run' in ☰ Project Options) executes pub main().\n\n" +
+                "[physics_sim]\n" +
+                "<[custom_ops]\n" +
+                "<[units]\n" +
+                "<[conversions]\n\n" +
+                "pub v0 := 25.0\n" +
+                "pub angle := 45.0\n" +
+                "priv const g = G_STD\n\n" +
+                "pub range_m := (v0^2 * deg_sin(2 * angle)) / g\n" +
+                "pub range_km := (range_m * 1m) into km\n" +
+                "pub max_h := (v0 * deg_sin(angle))^2 / (2 * g)\n" +
+                "pub flight_t := (2 * v0 * deg_sin(angle)) / g\n\n" +
+                "# Reusable module function:\n" +
+                "pub height_at(t: real) = v0 * deg_sin(angle) * t - 0.5 * g * t^2\n\n" +
+                "# Project entry point (invoked via '▶ Run' in ☰ Project Options):\n" +
+                "pub main() = {\n" +
+                "    println(\$\"Projectile range={range_m} m, max_h={max_h} m\")\n" +
+                "    height_at(1.8)\n" +
+                "}\n"
+            )
+            File(modDir, "vectors_stats.math").writeText(
+                "# Vectors, Scoping, Immutability & Symbolic Math (.math)\n\n" +
+                "[vectors_stats]\n" +
+                "<[vec]\n" +
+                "<[calculus]\n\n" +
+                "const squares = [x^2 for x in 1...8]\n" +
+                "pub total := sum(squares)\n" +
+                "pub avg := mean(squares)\n" +
+                "pub std_val := stddev(squares)\n\n" +
+                "# 3-tier lexical scoping: local { ... } := shadows module 'total'\n" +
+                "local_check := { total := 999 ; total } + total\n\n" +
+                "# Symbolic differentiation & equation solving:\n" +
+                "pub deriv_expr = sym_diff(x, x^3 - 6*x^2 + 11*x - 6)\n" +
+                "pub roots = sym_solve(x, x^2 - 5*x + 6 == 0)\n" +
+                "roots\n"
+            )
+        }
+        val customOpsFile = File(modDir, "custom_ops.math")
+        if (!customOpsFile.exists() || !customOpsFile.readText().contains("\"par\"")) {
+            customOpsFile.writeText(
+                "# Unified Library & Executable Module: custom_ops.math\n" +
+                "# Linked with Basic Calculator & imported via <[custom_ops] in Studio.\n\n" +
+                "[custom_ops]\n" +
+                "<[arith]\n" +
+                "<[trig]\n\n" +
+                "priv const DEG_SCALE = π / 180\n" +
+                "priv deg_to_r(x: real) = x * DEG_SCALE\n\n" +
+                "pub const G_STD = 9.80665\n" +
+                "pub hypot3(a: real, b: real, c: real) = √(a^2 + b^2 + c^2)\n" +
+                "pub kinetic_e(m: real, v: real) = 0.5 * m * v^2\n" +
+                "pub deg_sin(x: real) = sin(deg_to_r(x))\n\n" +
+                "# Custom infix operator (parallel combination a par b = (a*b)/(a+b)):\n" +
+                "pub (a: real) \"par\" (b: real) :<55 = (a * b) / (a + b)\n\n" +
+                "# Top-level self-test expression (runs when custom_ops.math is executed top-to-bottom):\n" +
+                "hypot3(3, 4, 12)\n"
+            )
+        }
+        File(modDir, "custom_module.math").takeIf { it.exists() }?.delete()
+        runCatching { oldV9Marker.writeText("ok") }
+        runCatching { seedMarker.writeText("ok") }
+    }
+    return modDir
+}
+
+/**
+ * Collects all `.math` module sources for [projectName] from disk, overlaying any live in-memory
+ * editor buffers when [projectName] is `project1`.
+ */
+@Synchronized
+internal fun MathEngineManager.collectProjectModuleSourcesOnDisk(
+    ctx: Context,
+    projectName: String = DEFAULT_STUDIO_PROJECT_NAME
+): Map<String, String> {
+    val safeProj = sanitizeProjectName(projectName)
+    val projDir = if (safeProj == DEFAULT_STUDIO_PROJECT_NAME) {
+        ensureDefaultProject1Seeded(ctx)
+    } else {
+        ensureProjectSetup(ctx, safeProj)
+    }
+    val map = LinkedHashMap<String, String>()
+    projDir.listFiles { f ->
+        f.isFile && f.name.endsWith(".math", ignoreCase = true) && !f.name.startsWith(".")
+    }?.sortedBy { it.name.lowercase() }?.forEach { file ->
+        runCatching { map[file.name] = file.readText() }
+    }
+    if (safeProj == DEFAULT_STUDIO_PROJECT_NAME) {
+        for ((fName, fSrc) in liveProject1EditorOverrides) {
+            if (File(projDir, fName).exists() || fName.endsWith(".math", ignoreCase = true)) {
+                map[fName] = fSrc
+            }
+        }
+    }
+    return map
+}
+
+/**
+ * Orders a map of `fileName -> rawSource` topologically by `<[dep]` dependencies so library
+ * modules (such as `custom_ops.math`) are compiled before modules that depend on them (`physics_sim.math`).
+ */
+internal fun MathEngineManager.resolveModuleDependencyOrder(
+    sourcesByFile: Map<String, String>
+): List<Pair<String, String>> {
+    if (sourcesByFile.size <= 1) return sourcesByFile.entries.map { it.key to it.value }
+    val entries = sourcesByFile.entries.map { it.key to it.value }
+    val n = entries.size
+    val modByIdx = Array(n) { i -> deriveModuleName(entries[i].first, entries[i].second) }
+    val depsByIdx = Array(n) { i -> extractModuleDependencies(entries[i].second) }
+    val providerByMod = HashMap<String, Int>()
+    for (i in 0 until n) {
+        providerByMod.putIfAbsent(modByIdx[i], i)
+    }
+
+    val adj = Array(n) { LinkedHashSet<Int>() }
+    val inDeg = IntArray(n)
+    for (i in 0 until n) {
+        for (dep in depsByIdx[i]) {
+            val prov = providerByMod[dep]
+            if (prov != null && prov != i && adj[prov].add(i)) {
+                inDeg[i]++
+            }
+        }
+    }
+
+    val scheduled = BooleanArray(n)
+    val ordered = ArrayList<Pair<String, String>>(n)
+    while (ordered.size < n) {
+        var pick = -1
+        for (i in 0 until n) {
+            if (!scheduled[i] && inDeg[i] == 0) {
+                pick = i
+                break
+            }
+        }
+        if (pick < 0) {
+            for (i in 0 until n) {
+                if (!scheduled[i]) {
+                    pick = i
+                    break
+                }
+            }
+        }
+        scheduled[pick] = true
+        ordered.add(entries[pick])
+        for (next in adj[pick]) {
+            if (inDeg[next] > 0) inDeg[next]--
+        }
+    }
+    return ordered
+}
+
+/**
+ * Builds the declaration & initialization statement list for linking a `project1` `.math` module
+ * into the Basic Calculator engine (preserving `[mod]`, `<[dep]`, `@dim`, `import`, `$type`/`struct`,
+ * functions, operator overloads, and variable/constant bindings while skipping `@entry` and
+ * standalone scratch test expressions).
+ */
+internal fun MathEngineManager.buildCalculatorDeclarationUnit(
+    fileName: String,
+    rawSource: String
+): Pair<String, List<String>> {
+    val modName = deriveModuleName(fileName, rawSource)
+    val stmts = splitModuleStatements(rawSource)
+    val declStmts = ArrayList<String>(stmts.size + 1)
+    var hasModHeader = false
+    for (stmt in stmts) {
+        val trimmed = stmt.trim()
+        if (trimmed.isEmpty()) continue
+        if (explicitEntryRegex.matches(trimmed)) continue
+        if (modHeaderSingleLineRegex.matches(trimmed)) {
+            hasModHeader = true
+            declStmts.add(trimmed)
+            continue
+        }
+        if (isDeclarationOrBindingStatement(trimmed)) {
+            declStmts.add(trimmed)
+        }
+    }
+    if (!hasModHeader) {
+        declStmts.add(0, "[$modName]")
+    }
+    return modName to declStmts
+}
+
+/**
+ * Ensures `project1` (the default Studio project with its examples, custom functions, constants,
+ * and any operator overloads) is compiled and linked on top of `stdlib + patches` in the shared
+ * engine for Basic Calculator evaluations and the Functions Catalog tab.
+ *
+ * Maintains strict project separation: if another Studio project (`project2`, etc.) was previously
+ * active on the shared engine, flushes its user modules in O(1) time via [flushUserModulesSync]
+ * before linking `project1`.
+ */
+@Synchronized
+internal fun MathEngineManager.ensureProject1LinkedForCalculatorSync(ctx: Context): Long {
+    val proj1Dir = ensureDefaultProject1Seeded(ctx)
+    val handle = ensureSharedEngineSync(ctx, DEFAULT_STUDIO_PROJECT_NAME)
+    if (handle == 0L) return 0L
+
+    val proj1Sources = collectProjectModuleSourcesOnDisk(ctx, DEFAULT_STUDIO_PROJECT_NAME)
+    val sig = buildString {
+        append(loadedBaseHash).append('#')
+        for ((fName, fSrc) in proj1Sources) {
+            append(fName).append(':').append(fSrc.length).append(':').append(fSrc.hashCode()).append(';')
+        }
+    }
+
+    if (linkedProjectName == DEFAULT_STUDIO_PROJECT_NAME &&
+        linkedProject1Signature == sig &&
+        isProjectModeActive
+    ) {
+        runCatching { MathEngineBridge.nativeSetImportDir(handle, proj1Dir.absolutePath) }
+        for (modName in linkedModuleSourcesByName.keys) {
+            runCatching { MathEngineBridge.nativeSetModule(handle, modName, true) }
+        }
+        return handle
+    }
+
+    val flushedHandle = flushUserModulesSync(ctx)
+    if (flushedHandle == 0L) return 0L
+
+    registerHostExternsOnHandle(flushedHandle, DEFAULT_STUDIO_PROJECT_NAME)
+    runCatching { MathEngineBridge.nativeSetImportDir(flushedHandle, proj1Dir.absolutePath) }
+
+    val orderedUnits = resolveModuleDependencyOrder(proj1Sources)
+    val linkedMods = ArrayList<String>(orderedUnits.size)
+
+    for ((fileName, rawSrc) in orderedUnits) {
+        val (modName, declStmts) = buildCalculatorDeclarationUnit(fileName, rawSrc)
+        if (declStmts.isEmpty()) continue
+        val combinedPayload = declStmts.joinToString("\n")
+        val wire = runCatching {
+            MathEngineBridge.nativeModuleEval(flushedHandle, modName, combinedPayload)
+        }.getOrNull()
+        if (wire == null || wire.startsWith("ERR|")) {
+            // Fallback: evaluate statement-by-statement so any valid declarations in an edited file still link
+            for (stmt in declStmts) {
+                runCatching { MathEngineBridge.nativeModuleEval(flushedHandle, modName, stmt) }
+            }
+        }
+        runCatching { MathEngineBridge.nativeSetModule(flushedHandle, modName, true) }
+        linkedModuleSourcesByName[modName] = rawSrc
+        linkedMods.add(modName)
+    }
+
+    for (modName in linkedMods) {
+        runCatching { MathEngineBridge.nativeSetModule(flushedHandle, modName, true) }
+    }
+    runCatching { MathEngineBridge.nativeClearOutput(flushedHandle) }
+
+    linkedProjectName = DEFAULT_STUDIO_PROJECT_NAME
+    linkedProject1Signature = sig
+    isProjectModeActive = true
+    refreshLiveAutocompleteCatalogSync(flushedHandle)
+    return flushedHandle
 }

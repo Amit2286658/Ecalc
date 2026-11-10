@@ -96,16 +96,17 @@ internal fun MainActivity.applyThemeColors(dark: Boolean) {
 
     val tabIcons = listOf(
         binding.ivTabHistory, binding.ivTabBasic,
-        binding.ivTabExtended, binding.ivTabTrig, binding.ivTabFx
+        binding.ivTabExtended, binding.ivTabTrig, binding.ivTabFx, binding.ivTabCatalog
     )
     tabIcons.forEach { it.setColorFilter(Color.parseColor(primaryText)) }
 
     updateTabIndicators()
 
-    for (pos in 0 until 5) {
+    for (pos in 0 until 6) {
         when (val frag = fragmentAt(pos)) {
             is KeyGridFragment -> frag.applyTheme(dark)
             is HistoryFragment -> frag.onThemeChanged(dark)
+            is FunctionCatalogFragment -> frag.onThemeChanged(dark)
             else -> {}
         }
     }
@@ -120,7 +121,7 @@ internal fun MainActivity.updateTabIndicators(
     val accentColor = if (isDarkMode) "#13959B" else "#E58A7B"
     val indicators = listOf(
         binding.indTabHistory, binding.indTabBasic,
-        binding.indTabExtended, binding.indTabTrig, binding.indTabFx
+        binding.indTabExtended, binding.indTabTrig, binding.indTabFx, binding.indTabCatalog
     )
     val clampedDist = distance.coerceIn(1, 4)
     val d = clampedDist.toFloat()
@@ -259,7 +260,7 @@ internal fun MainActivity.wobbleRound(cx: Float, cy: Float, maxRadius: Float, re
         add(Triple(binding.mrToggleRow, 0f, 1f))
         if (binding.cbMrToggle.isChecked) add(Triple(binding.mrDisplayCluster, 0f, 1f))
         listOf(binding.tabHistory, binding.tabBasic, binding.tabExtended,
-               binding.tabTrig, binding.tabFx).forEach { add(Triple(it, 5f, 1.9f)) }
+               binding.tabTrig, binding.tabFx, binding.tabCatalog).forEach { add(Triple(it, 5f, 1.9f)) }
     }
 
     targets.forEach { (view, rotBase, ampMul) ->
@@ -301,11 +302,12 @@ internal fun MainActivity.wobbleRound(cx: Float, cy: Float, maxRadius: Float, re
     }
 
     if (!inward) {
-        for (pos in 0 until 5) {
+        for (pos in 0 until 6) {
             val frag = fragmentAt(pos) ?: continue
             when (frag) {
                 is KeyGridFragment -> frag.wobbleRound(cx, cy, maxRadius, revealDurationMs)
                 is HistoryFragment -> frag.wobbleRound(cx, cy, maxRadius, revealDurationMs)
+                is FunctionCatalogFragment -> frag.wobbleRound(cx, cy, maxRadius, revealDurationMs)
                 else -> {}
             }
         }
@@ -608,6 +610,8 @@ internal fun MainActivity.tabDescriptionFor(name: String): String = when (name) 
         "constants π and e. Angles follow the deg/rad mode shown under the display."
     "Fx" -> "Fx keypad — general functions: abs, log / log₂, powers (x², x³, xʸ, 10ˣ, eˣ), roots (cbrt), " +
         "combinatorics (nPr, nCr), gcd / lcm, round / ceil / floor, rand, the parameter separator comma (,), and Ans recall."
+    "Catalog" -> "Functions Catalog (stdlib + patches + project1) — live-synced list of all functions, custom/overloaded operators, " +
+        "and constants from stdlib, global .math patches, and project1. Tap any item to insert it into the expression; hold any item to view its frosted popup info window."
     else -> "$name — open this tab"
 }
 

@@ -391,6 +391,31 @@
                         android:visibility="invisible" />
                 </FrameLayout>
 
+                <!-- Tab 5: All Functions Catalog (stdlib + patches + project1) -->
+                <FrameLayout
+                    android:id="@+id/tabCatalog"
+                    android:layout_width="60dp"
+                    android:layout_height="match_parent"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="@string/tab_catalog">
+
+                    <ImageView
+                        android:id="@+id/ivTabCatalog"
+                        android:layout_width="21dp"
+                        android:layout_height="21dp"
+                        android:layout_gravity="center"
+                        android:src="@drawable/ic_tab_catalog"
+                        android:contentDescription="@string/tab_catalog" />
+
+                    <View
+                        android:id="@+id/indTabCatalog"
+                        android:layout_width="match_parent"
+                        android:layout_height="3dp"
+                        android:layout_gravity="bottom"
+                        android:visibility="invisible" />
+                </FrameLayout>
+
             </LinearLayout>
             </HorizontalScrollView>
 

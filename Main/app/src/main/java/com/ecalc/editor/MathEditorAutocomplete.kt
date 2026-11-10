@@ -219,32 +219,76 @@ internal fun MathCodeEditText.updateSuggestionsForCurrentCursor(editable: Editab
 }
 
 /**
- * Crops the downscaled [Frost.frozenBackdrop] bitmap of [hostFrame] to the sub-rectangle
- * `(leftPx, topPx, widthPx, heightPx)` so a floating popup card displays a true frosted-glass
- * blur of whatever code/UI sits directly behind it.
+ * Captures and blurs the exact background region behind the held suggestion documentation
+ * popup (`(leftPx, topPx, widthPx, heightPx)` in [sourceRoot] coordinates) so that ONLY
+ * the held suggestion info popup has a frosted-glass background blur of whatever
+ * suggestions list rows and editor code sit behind it, while the suggestions popup itself
+ * remains a clean, non-blurred solid surface.
  */
-internal fun cropFrostBackdropForPopup(
-    fullFrost: Bitmap?,
-    hostW: Int,
-    hostH: Int,
+internal fun captureDocPopupFrostBackdrop(
+    sourceRoot: View,
     leftPx: Int,
     topPx: Int,
     widthPx: Int,
-    heightPx: Int
+    heightPx: Int,
+    extraPopupCard: View? = null
 ): Bitmap? {
-    if (fullFrost == null || fullFrost.width <= 0 || fullFrost.height <= 0 || hostW <= 0 || hostH <= 0) {
-        return null
-    }
+    val rootW = if (sourceRoot.width > 0) sourceRoot.width else sourceRoot.resources.displayMetrics.widthPixels
+    val rootH = if (sourceRoot.height > 0) sourceRoot.height else sourceRoot.resources.displayMetrics.heightPixels
+    if (rootW <= 0 || rootH <= 0 || widthPx <= 0 || heightPx <= 0) return null
     return try {
-        val bw = fullFrost.width
-        val bh = fullFrost.height
-        val sx = ((leftPx.toFloat() / hostW.toFloat()) * bw).toInt().coerceIn(0, bw - 1)
-        val sy = ((topPx.toFloat() / hostH.toFloat()) * bh).toInt().coerceIn(0, bh - 1)
-        val sw = ((widthPx.toFloat() / hostW.toFloat()) * bw).toInt().coerceIn(1, bw - sx)
-        val sh = ((heightPx.toFloat() / hostH.toFloat()) * bh).toInt().coerceIn(1, bh - sy)
-        Bitmap.createBitmap(fullFrost, sx, sy, sw, sh)
+        val downscale = 3
+        val blurRadius = 5
+        val padPx = blurRadius * downscale * 2
+        val capLeft = (leftPx - padPx).coerceAtLeast(0)
+        val capTop = (topPx - padPx).coerceAtLeast(0)
+        val capRight = (leftPx + widthPx + padPx).coerceAtMost(rootW)
+        val capBottom = (topPx + heightPx + padPx).coerceAtMost(rootH)
+        val capW = (capRight - capLeft).coerceAtLeast(1)
+        val capH = (capBottom - capTop).coerceAtLeast(1)
+
+        val bw = (capW / downscale).coerceAtLeast(8)
+        val bh = (capH / downscale).coerceAtLeast(8)
+        val paddedBmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(paddedBmp)
+        canvas.scale(bw.toFloat() / capW.toFloat(), bh.toFloat() / capH.toFloat())
+        canvas.translate(-capLeft.toFloat(), -capTop.toFloat())
+
+        // Draw the root view hierarchy (which includes the editor AND suggestionPopupCard
+        // when suggestionPopupCard is attached to hostFrame). Keep suggestionPopupCard
+        // visible so the held info popup blurs the suggestion rows & badges behind it.
+        sourceRoot.draw(canvas)
+
+        // If suggestionPopupCard is shown via the PopupWindow fallback (not a child of sourceRoot),
+        // composite it at its screen offset so the info popup still blurs the suggestion rows behind it.
+        if (extraPopupCard != null && extraPopupCard.isShown && extraPopupCard.parent !== sourceRoot) {
+            val rootLoc = IntArray(2)
+            val cardLoc = IntArray(2)
+            sourceRoot.getLocationOnScreen(rootLoc)
+            extraPopupCard.getLocationOnScreen(cardLoc)
+            val dx = (cardLoc[0] - rootLoc[0]).toFloat()
+            val dy = (cardLoc[1] - rootLoc[1]).toFloat()
+            canvas.save()
+            canvas.translate(dx, dy)
+            extraPopupCard.draw(canvas)
+            canvas.restore()
+        }
+
+        Frost.blurBitmapInPlace(paddedBmp, blurRadius)
+
+        val sx = (((leftPx - capLeft).toFloat() / capW) * bw).toInt().coerceIn(0, (bw - 1).coerceAtLeast(0))
+        val sy = (((topPx - capTop).toFloat() / capH) * bh).toInt().coerceIn(0, (bh - 1).coerceAtLeast(0))
+        val sw = ((widthPx.toFloat() / capW) * bw).toInt().coerceIn(1, (bw - sx).coerceAtLeast(1))
+        val sh = ((heightPx.toFloat() / capH) * bh).toInt().coerceIn(1, (bh - sy).coerceAtLeast(1))
+
+        val cropped = Bitmap.createBitmap(paddedBmp, sx, sy, sw, sh)
+        val smoothW = (widthPx / 2).coerceIn(16, 480)
+        val smoothH = (heightPx / 2).coerceIn(16, 480)
+        val upscaled = Bitmap.createScaledBitmap(cropped, smoothW, smoothH, true)
+        Frost.blurBitmapInPlace(upscaled, 2)
+        upscaled
     } catch (_: Throwable) {
-        fullFrost
+        null
     }
 }
 
@@ -267,16 +311,6 @@ internal fun MathCodeEditText.ensureSuggestionPopupCreated(): PopupWindow {
             isClickable = true
             applyRoundedOutlineClip(this, 14f * density)
         }
-        val frostImg = ImageView(context).apply {
-            scaleType = ImageView.ScaleType.FIT_XY
-            alpha = 0.94f
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        }
-        suggestionPopupFrostView = frostImg
-        cardFrame.addView(frostImg)
 
         val contentWrap = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -329,18 +363,18 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<MathCodeEdi
     val dp = { v: Float -> (v * density).toInt() }
 
     val dark = isDarkThemeMode
-    // Translucent frosted-glass surface tint so the blurred backdrop shines through
-    val cardTintBg = Color.parseColor(if (dark) "#CC1E2228" else "#D8F7F9FC")
-    val rowBg = Color.parseColor(if (dark) "#B82A2E36" else "#C8EAEFF7")
+    // Solid (non-frosted) surface for the suggestions popup itself; only the held info popup uses frost blur
+    val cardSolidBg = Color.parseColor(if (dark) "#1E2228" else "#F7F9FC")
+    val rowBg = Color.parseColor(if (dark) "#2A2E36" else "#EAEFF7")
     val strokeCol = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
     val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#24292F")
     val secondaryText = Color.parseColor(if (dark) "#B0BAC6" else "#4E5762")
 
-    val contentWrap = (card.getChildAt(1) as? LinearLayout)
+    val contentWrap = (card.getChildAt(0) as? LinearLayout)
     contentWrap?.background = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = 14f * density
-        setColor(cardTintBg)
+        setColor(cardSolidBg)
         setStroke(max(1, dp(1.3f)), strokeCol)
     }
 
@@ -372,7 +406,7 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<MathCodeEdi
     hdrRow.addView(tvDismiss)
     container.addView(hdrRow)
 
-    val heldRowBg = Color.parseColor(if (dark) "#D81D3638" else "#E8FCEAE6")
+    val heldRowBg = Color.parseColor(if (dark) "#1D3638" else "#FCEAE6")
     val touchSlopPx = dp(10f).toFloat()
 
     items.forEach { item ->
@@ -569,14 +603,6 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<MathCodeEdi
             else -> belowY.coerceIn(dp(42f), (visibleBottomInHost - measuredH - dp(6f)).coerceAtLeast(dp(42f)))
         }
 
-        // Capture Frosted Glass blur backdrop of hostFrame while popup card is hidden
-        val prevVis = card.visibility
-        card.visibility = View.INVISIBLE
-        val fullFrost = Frost.frozenBackdrop(hostFrame, downscale = 6, radius = 8)
-        val croppedFrost = cropFrostBackdropForPopup(fullFrost, hostW, hostH, leftMargin, topMargin, popupW, measuredH)
-        suggestionPopupFrostView?.setImageBitmap(croppedFrost)
-        card.visibility = prevVis
-
         val lp = FrameLayout.LayoutParams(popupW, measuredH).apply {
             this.leftMargin = leftMargin
             this.topMargin = topMargin
@@ -619,19 +645,24 @@ internal fun MathCodeEditText.showSuggestionsPopupWindow(items: List<MathCodeEdi
 /**
  * Displays a frosted-glass secondary elevated popup on top of the suggestions popup while a
  * suggestion item is held down, listing its full multi-line parameters and return value
- * descriptions without truncation. Disappears immediately on release.
+ * descriptions without truncation. Only this held info window has a background frost blur
+ * effect (blurring the suggestions popup and editor behind it); the suggestions popup itself
+ * remains a solid surface. Disappears immediately on release.
  */
 internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: MathCodeEditText.SuggestionItem) {
     dismissSuggestionDocPopup()
     val dp = { v: Float -> (v * density).toInt() }
     val dark = isDarkThemeMode
 
-    val cardTintBg = Color.parseColor(if (dark) "#D4181B20" else "#DCF8FAFD")
-    val secBg = Color.parseColor(if (dark) "#BC22262C" else "#CCF1F5FA")
+    // Translucent frosted-glass tint so the blurred background (suggestions + code) shines vividly through
+    val cardTintBg = Color.parseColor(if (dark) "#58141820" else "#64F6F9FE")
+    val secBg = Color.parseColor(if (dark) "#28222834" else "#30E4ECF7")
+    val badgeBg = Color.parseColor(if (dark) "#52181C24" else "#78FFFFFF")
     val strokeCol = Color.parseColor(if (dark) "#26C6DA" else "#E58A7B")
-    val subStrokeCol = Color.parseColor(if (dark) "#353B45" else "#D8DEE9")
-    val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#1F2328")
-    val secondaryText = Color.parseColor(if (dark) "#B4C0D0" else "#4E5762")
+    val subStrokeCol = Color.parseColor(if (dark) "#485262" else "#C8D4E3")
+    val primaryText = Color.parseColor(if (dark) "#F5F8FC" else "#161A20")
+    val secondaryText = Color.parseColor(if (dark) "#D0DCEB" else "#38414C")
+    val textShadowCol = Color.parseColor(if (dark) "#B0000000" else "#90FFFFFF")
 
     val badgeCol = when (item.category) {
         "entry", "dir" -> colIntrinsic
@@ -648,7 +679,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
     }
     val docFrostImg = ImageView(context).apply {
         scaleType = ImageView.ScaleType.FIT_XY
-        alpha = 0.95f
+        alpha = 1.0f
         layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
@@ -667,7 +698,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         }
         layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
+            FrameLayout.LayoutParams.MATCH_PARENT
         )
     }
     docFrame.addView(docCard)
@@ -687,11 +718,12 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         setTextColor(badgeCol)
+        setShadowLayer(2f * density, 0f, 1f * density, textShadowCol)
         setPadding(dp(5f), dp(2f), dp(5f), dp(2f))
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 5f * density
-            setColor(secBg)
+            setColor(badgeBg)
             setStroke(1, badgeCol)
         }
         layoutParams = LinearLayout.LayoutParams(
@@ -708,6 +740,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         setTextColor(primaryText)
+        setShadowLayer(2.5f * density, 0f, 1f * density, textShadowCol)
         // Multi-line enabled so long signatures never truncate
         isSingleLine = false
     }
@@ -715,6 +748,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         text = item.detail
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
         setTextColor(strokeCol)
+        setShadowLayer(2f * density, 0f, 1f * density, textShadowCol)
         isSingleLine = false
     }
     titleCol.addView(tvSig)
@@ -761,6 +795,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.4f)
             typeface = Typeface.MONOSPACE
             setTextColor(if (accentPrefix) primaryText else secondaryText)
+            setShadowLayer(2.2f * density, 0f, 1f * density, textShadowCol)
             // Full multi-line wrapping enabled so long parameter & return descriptions never get cut off
             isSingleLine = false
             setLineSpacing(dp(1.5f).toFloat(), 1.0f)
@@ -775,6 +810,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(strokeCol)
+        setShadowLayer(2f * density, 0f, 1f * density, textShadowCol)
         setPadding(0, 0, 0, dp(2f))
     }
     paramsBox.addView(tvParamsHdr)
@@ -796,6 +832,7 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(strokeCol)
+        setShadowLayer(2f * density, 0f, 1f * density, textShadowCol)
         setPadding(0, 0, 0, dp(2f))
     }
     retBox.addView(tvRetHdr)
@@ -810,11 +847,11 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
 
     val popupW = (resources.displayMetrics.widthPixels - dp(28f)).coerceIn(dp(250f), dp(368f))
     val maxDocH = dp(280f)
-    docFrame.measure(
+    docCard.measure(
         View.MeasureSpec.makeMeasureSpec(popupW, View.MeasureSpec.EXACTLY),
         View.MeasureSpec.makeMeasureSpec(maxDocH, View.MeasureSpec.AT_MOST)
     )
-    val measuredH = docFrame.measuredHeight.coerceIn(dp(92f), maxDocH)
+    val measuredH = docCard.measuredHeight.coerceIn(dp(92f), maxDocH)
 
     val hostFrame = findHostOverlayContainer()
     if (hostFrame != null) {
@@ -841,17 +878,18 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
             )
         }
 
-        // Capture Frosted Glass blur backdrop for the doc popup.
-        // Hide the suggestion list card for the snapshot (same technique the
-        // list popup itself uses) — otherwise the blurred "backdrop" is just
-        // the flat popup card and the doc shows no visible frost texture.
-        val listCard = suggestionPopupCard
-        val prevVis = listCard?.visibility ?: View.VISIBLE
-        listCard?.visibility = View.INVISIBLE
-        val fullFrost = Frost.frozenBackdrop(hostFrame, downscale = 6, radius = 8)
-        val croppedFrost = cropFrostBackdropForPopup(fullFrost, hostW, hostH, xPos, yPos, popupW, measuredH)
-        listCard?.visibility = prevVis
+        // Capture Frosted Glass blur backdrop for the held doc popup with suggestionPopupCard
+        // kept visible so the blurred backdrop reflects the suggestion rows & editor behind it.
+        val croppedFrost = captureDocPopupFrostBackdrop(
+            sourceRoot = hostFrame,
+            leftPx = xPos,
+            topPx = yPos,
+            widthPx = popupW,
+            heightPx = measuredH,
+            extraPopupCard = suggestionPopupCard
+        )
         docFrostImg.setImageBitmap(croppedFrost)
+        Frost.tryLiveBlur(docFrostImg, 4.5f * density)
 
         val lp = FrameLayout.LayoutParams(popupW, measuredH).apply {
             leftMargin = xPos
@@ -883,10 +921,6 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
         rowLoc[1] + anchorRow.height + dp(6f)
     }
 
-    // PopupWindow fallback (no overlay host): capture the activity's content
-    // root for the frost backdrop, cropped to the popup's screen rect. Same
-    // hide-the-list-card trick as the host path so the blur shows editor
-    // content instead of the flat suggestion card.
     val activityCtx = run {
         var c: Context? = context
         while (c != null && c !is Activity) c = (c as? ContextWrapper)?.baseContext
@@ -896,18 +930,16 @@ internal fun MathCodeEditText.showSuggestionDocPopup(anchorRow: View, item: Math
     if (contentRoot != null) {
         val rootLoc = IntArray(2)
         contentRoot.getLocationOnScreen(rootLoc)
-        val rootW = if (contentRoot.width > 0) contentRoot.width else resources.displayMetrics.widthPixels
-        val rootH = if (contentRoot.height > 0) contentRoot.height else resources.displayMetrics.heightPixels
-        val listCard = suggestionPopupCard
-        val prevVis = listCard?.visibility ?: View.VISIBLE
-        listCard?.visibility = View.INVISIBLE
-        val fullFrost = Frost.frozenBackdrop(contentRoot, downscale = 6, radius = 8)
-        val croppedFrost = cropFrostBackdropForPopup(
-            fullFrost, rootW, rootH,
-            xPos - rootLoc[0], yPos - rootLoc[1], popupW, measuredH
+        val croppedFrost = captureDocPopupFrostBackdrop(
+            sourceRoot = contentRoot,
+            leftPx = xPos - rootLoc[0],
+            topPx = yPos - rootLoc[1],
+            widthPx = popupW,
+            heightPx = measuredH,
+            extraPopupCard = suggestionPopupCard
         )
-        listCard?.visibility = prevVis
         docFrostImg.setImageBitmap(croppedFrost)
+        Frost.tryLiveBlur(docFrostImg, 4.5f * density)
     }
 
     runCatching {

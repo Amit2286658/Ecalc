@@ -120,6 +120,13 @@ object MathEngineManager {
     @Volatile
     internal var linkedProjectName: String? = null
 
+    /** Content signature of `project1` modules currently linked into [engineHandle] for the Basic Calculator. */
+    @Volatile
+    internal var linkedProject1Signature: String = ""
+
+    /** Live in-memory `.math` editor buffer overrides for `project1` so edits reflect immediately in the Basic Calculator. */
+    internal val liveProject1EditorOverrides = LinkedHashMap<String, String>()
+
     /** Module sources currently linked in [engineHandle] for the active Studio project. */
     internal val linkedModuleSourcesByName = LinkedHashMap<String, String>()
 
@@ -136,6 +143,31 @@ object MathEngineManager {
         appContext = app
         MathPatchDownloader.ensureBundledPatchesSeeded(app)
         CurrencyConverter.initialize(app)
+        worker.execute {
+            runCatching { ensureDefaultProject1Seeded(app) }
+        }
+    }
+
+    /** Updates live editor buffer override for `project1` and invalidates the cached calculator link signature. */
+    @Synchronized
+    fun updateLiveProject1Override(fileName: String?, code: String?) {
+        if (!fileName.isNullOrBlank()) {
+            if (code != null) {
+                liveProject1EditorOverrides[fileName] = code
+            } else {
+                liveProject1EditorOverrides.remove(fileName)
+            }
+        }
+        linkedProject1Signature = ""
+    }
+
+    /** Removes a deleted or renamed file from `project1` live overrides and invalidates the calculator link signature. */
+    @Synchronized
+    fun invalidateProject1CalculatorLink(removedFileName: String? = null) {
+        if (!removedFileName.isNullOrBlank()) {
+            liveProject1EditorOverrides.remove(removedFileName)
+        }
+        linkedProject1Signature = ""
     }
 
     /** Sanitizes a user-supplied project name into a safe directory name. */
@@ -265,7 +297,7 @@ object MathEngineManager {
                 val ok = synchronized(this) {
                     ensureProjectSetup(ctx, safeName)
                     val handle = ensureSharedEngineSync(ctx)
-                    if (handle != 0L && linkedProjectName != null && linkedProjectName != safeName) {
+                    if (handle != 0L && (linkedProjectName != safeName || isProjectModeActive)) {
                         flushUserModulesSync(ctx)
                     }
                     if (handle != 0L) {
@@ -365,6 +397,7 @@ object MathEngineManager {
 
         linkedModuleSourcesByName.clear()
         linkedProjectName = null
+        linkedProject1Signature = ""
         isProjectModeActive = false
         registerHostExternsOnHandle(handle, activeProjectName)
         refreshLiveAutocompleteCatalogSync(handle)
@@ -697,6 +730,7 @@ object MathEngineManager {
         engineHandle = newHandle
         linkedModuleSourcesByName.clear()
         linkedProjectName = null
+        linkedProject1Signature = ""
         isProjectModeActive = false
         registerHostExternsOnHandle(newHandle, activeProjectName)
         MathPatchLoader.resetTracking()

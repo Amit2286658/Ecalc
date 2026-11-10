@@ -180,6 +180,9 @@ internal fun MathWorkspaceFragment.saveCurrentModuleEditorState(showToast: Boole
         val file = File(modulesDir(ctx), modFile)
         file.writeText(code)
         getCachedFileMeta(file)
+        if (activeProjectName == MathEngineManager.DEFAULT_PROJECT_NAME) {
+            MathEngineManager.updateLiveProject1Override(modFile, code)
+        }
         etModuleEditor?.updateProjectAutocompleteContext(
             collectAllProjectModuleSources(ctx, modFile, code)
         )
@@ -333,6 +336,9 @@ internal fun MathWorkspaceFragment.confirmDeleteSpecificModuleFile(fileName: Str
         onConfirm = {
             val prevIdx = openModuleFiles.indexOf(fileName)
             file.delete()
+            if (activeProjectName == MathEngineManager.DEFAULT_PROJECT_NAME) {
+                MathEngineManager.invalidateProject1CalculatorLink(fileName)
+            }
             moduleLogs.remove(projectScopedKey(fileName))
             moduleConsoleLogs.remove(projectScopedKey(fileName))
             moduleErrorLines.remove(projectScopedKey(fileName))
@@ -671,6 +677,9 @@ internal fun MathWorkspaceFragment.promptNewModuleDialog() {
                     "square_sum(base_x, 5)\n"
                 )
             }
+            if (activeProjectName == MathEngineManager.DEFAULT_PROJECT_NAME) {
+                MathEngineManager.updateLiveProject1Override(name, runCatching { newFile.readText() }.getOrNull())
+            }
             if (name !in openModuleFiles) openModuleFiles.add(name)
             val newIdx = openModuleFiles.indexOf(name)
             val fromDir = if (prevIdx < 0 || newIdx >= prevIdx) 1 else -1
@@ -695,17 +704,23 @@ internal fun MathWorkspaceFragment.switchToProject(targetProjectRaw: String, clo
     val activity = activity as? MainActivity ?: return
     val targetProject = MathEngineManager.sanitizeProjectName(targetProjectRaw)
     if (targetProject == activeProjectName) {
+        saveCurrentModuleEditorState(showToast = false)
         if (closeDrawerAfter && isFileManagerDrawerOpen) {
             toggleFileManagerDrawer(open = false, animate = true)
         }
         return
     }
 
-    // Save current editor buffer & open tab list for the outgoing project
+    // Save current editor buffer & close the outgoing project cleanly
+    val outgoingProject = activeProjectName
     saveCurrentModuleEditorState(showToast = false)
-    projectOpenModulesMap[activeProjectName] = openModuleFiles.toMutableList()
-    projectActiveFileMap[activeProjectName] = activeModuleFileName
+    etModuleEditor?.dismissSuggestionsPopup()
+    projectOpenModulesMap[outgoingProject] = openModuleFiles.toMutableList()
+    projectActiveFileMap[outgoingProject] = activeModuleFileName
+    openModuleFiles.clear()
+    activeModuleFileName = null
 
+    // Activate target project and flush outgoing project's modules on the shared engine
     activeProjectName = targetProject
     MathEngineManager.setActiveProject(ctx, targetProject)
 

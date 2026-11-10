@@ -901,6 +901,12 @@ class MathWorkspaceFragment : Fragment() {
                         setColor(if (isCurProj) activeRowBg else rowBg)
                         setStroke(((if (isCurProj) 1.5f else 1f) * density).toInt(), if (isCurProj) activeStroke else strokeColor)
                     }
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        springPulse(this, 0.04f)
+                        switchToProject(projName, closeDrawerAfter = true)
+                    }
                 }
 
                 val pTop = LinearLayout(ctx).apply {
@@ -971,11 +977,8 @@ class MathWorkspaceFragment : Fragment() {
                 }
                 val btnSwitchProj = makeEntryActionBtn(if (isCurProj) "Active" else "Open", !isCurProj).apply {
                     setOnClickListener {
-                        if (!isCurProj) {
-                            switchToProject(projName, closeDrawerAfter = false)
-                        } else {
-                            springPulse(this, 0.05f)
-                        }
+                        springPulse(this, 0.05f)
+                        switchToProject(projName, closeDrawerAfter = true)
                     }
                 }
                 val btnRenameProj = makeEntryActionBtn("Clone/Ren", false).apply {
@@ -1054,6 +1057,12 @@ class MathWorkspaceFragment : Fragment() {
                     cornerRadius = 12f * density
                     setColor(if (isActive) activeRowBg else rowBg)
                     setStroke(((if (isActive) 1.5f else 1f) * density).toInt(), if (isActive) activeStroke else strokeColor)
+                }
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    springPulse(this, 0.04f)
+                    openModuleFile(fname, closeDrawerAfter = true)
                 }
             }
 
