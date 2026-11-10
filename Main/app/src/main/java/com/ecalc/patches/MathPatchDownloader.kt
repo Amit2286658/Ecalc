@@ -76,6 +76,21 @@ object MathPatchDownloader {
                 "\"Rs\"  : real, inr = 1\n\"RS\"  : real, inr = 1\n\"rs\"  : real, inr = 1\n\"inr\" : real, inr = 1\n\"usd\" : real, usd = 1\n\"eur\" : real, eur = 1\n\"gbp\" : real, gbp = 1\n\"jpy\" : real, jpy = 1"
             )
         }
+        if (s.contains("[currency]") && !s.contains("usd_to_inr(")) {
+            s = s.trimEnd() + "\n" +
+                "# Convert USD to INR (Indian Rupee)\n" +
+                "usd_to_inr(amount: real) = @currency_convert(\"USD\", \"INR\", amount)\n" +
+                "# Convert INR (Indian Rupee) to USD\n" +
+                "inr_to_usd(amount: real) = @currency_convert(\"INR\", \"USD\", amount)\n" +
+                "# Convert USD to EUR (Euro)\n" +
+                "usd_to_eur(amount: real) = @currency_convert(\"USD\", \"EUR\", amount)\n" +
+                "# Convert EUR (Euro) to USD\n" +
+                "eur_to_usd(amount: real) = @currency_convert(\"EUR\", \"USD\", amount)\n" +
+                "# Convert USD to GBP (British Pound)\n" +
+                "usd_to_gbp(amount: real) = @currency_convert(\"USD\", \"GBP\", amount)\n" +
+                "# Convert GBP (British Pound) to USD\n" +
+                "gbp_to_usd(amount: real) = @currency_convert(\"GBP\", \"USD\", amount)\n"
+        }
         return s
     }
 
@@ -97,7 +112,7 @@ object MathPatchDownloader {
         runCatching {
             val ccyFile = File(dir, "currency.math")
             val existing = if (ccyFile.isFile && ccyFile.canRead()) ccyFile.readText(Charsets.UTF_8) else ""
-            if (existing.isBlank() || existing.contains(") \"in\" (") || !existing.contains("\"RS\"")) {
+            if (existing.isBlank() || existing.contains(") \"in\" (") || !existing.contains("\"RS\"") || !existing.contains("usd_to_inr(")) {
                 val bundled = runCatching {
                     context.assets.open("patches/currency.math").bufferedReader(Charsets.UTF_8).use { it.readText() }
                 }.getOrNull()

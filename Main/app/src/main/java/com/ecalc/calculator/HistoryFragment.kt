@@ -28,6 +28,8 @@ class HistoryFragment : Fragment() {
     private var header: TextView? = null
     private var clearButton: NeumorphicKeyView? = null
     private val wobbleAnimators = mutableListOf<ValueAnimator>()
+    private var lastRenderedSnapshot: List<String>? = null
+    private var lastRenderedDark: Boolean? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -91,9 +93,15 @@ class HistoryFragment : Fragment() {
         return root
     }
 
-    /** Rebuild the item list from the activity's history data. */
+    /** Rebuild the item list from the activity's history data (skips rebuild if unchanged). */
     fun refresh(items: List<String>, dark: Boolean, fadeInPlaceholder: Boolean = false) {
         if (header == null) return
+        val snapshot = items.take(15).toList()
+        if (!fadeInPlaceholder && lastRenderedDark == dark && lastRenderedSnapshot == snapshot) {
+            return
+        }
+        lastRenderedDark = dark
+        lastRenderedSnapshot = snapshot
         header?.setTextColor(if (dark) Color.parseColor("#E0E0E0") else Color.parseColor("#333333"))
         clearButton?.isDarkThemeMode = dark
 
@@ -290,6 +298,7 @@ class HistoryFragment : Fragment() {
         val rotAmp = (1.4f + (d - 1f) * 1.6f) * fromDirection
         val settleDuration = 460L + (clampedDist - 1) * 60L
 
+        v.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         ValueAnimator.ofFloat(0f, 1f).apply {
             duration = settleDuration
             interpolator = LinearInterpolator()
@@ -312,6 +321,7 @@ class HistoryFragment : Fragment() {
                     v.scaleX = 1f
                     v.scaleY = 1f
                     v.rotation = 0f
+                    v.setLayerType(View.LAYER_TYPE_NONE, null)
                 }
             })
             start()
@@ -325,6 +335,8 @@ class HistoryFragment : Fragment() {
         itemsLayout = null
         header = null
         clearButton = null
+        lastRenderedSnapshot = null
+        lastRenderedDark = null
         super.onDestroyView()
     }
 }

@@ -417,7 +417,7 @@ internal fun MainActivity.playLaunchSplashReveal() {
                     interpolator = AccelerateDecelerateInterpolator()
                     addListener(object : AnimatorListenerAdapter() {
                         override fun onAnimationEnd(animation: Animator) {
-                            binding.viewPager.offscreenPageLimit = 4
+                            binding.viewPager.offscreenPageLimit = 5
                         }
                     })
                     start()

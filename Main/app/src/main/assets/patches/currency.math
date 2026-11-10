@@ -319,3 +319,17 @@ convert_all(amounts: vec, from: str, to: str) -> vec = [convert(a, from, to) for
 # Live exchange rate & calculator convenience aliases
 fx_rate(from: str, to: str) = @currency_convert(from, to, 1)
 convert_fx(amount: real, from: str, to: str) = @currency_convert(from, to, amount)
+
+# Numerical 1-argument currency functions for the Basic Calculator keypad
+# Convert USD to INR (Indian Rupee)
+usd_to_inr(amount: real) = @currency_convert("USD", "INR", amount)
+# Convert INR (Indian Rupee) to USD
+inr_to_usd(amount: real) = @currency_convert("INR", "USD", amount)
+# Convert USD to EUR (Euro)
+usd_to_eur(amount: real) = @currency_convert("USD", "EUR", amount)
+# Convert EUR (Euro) to USD
+eur_to_usd(amount: real) = @currency_convert("EUR", "USD", amount)
+# Convert USD to GBP (British Pound)
+usd_to_gbp(amount: real) = @currency_convert("USD", "GBP", amount)
+# Convert GBP (British Pound) to USD
+gbp_to_usd(amount: real) = @currency_convert("GBP", "USD", amount)

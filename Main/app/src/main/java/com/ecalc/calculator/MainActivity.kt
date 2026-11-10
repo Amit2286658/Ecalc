@@ -407,18 +407,25 @@ class MainActivity : AppCompatActivity() {
     internal fun setupViewPager() {
         binding.viewPager.adapter = EcalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
-        binding.viewPager.offscreenPageLimit = 1
+        binding.viewPager.offscreenPageLimit = 5
         binding.viewPager.setPageTransformer { page, position ->
-            val absPos = Math.abs(position).coerceIn(0f, 1f)
-            val distScale = 0.75f + 0.35f * lastTabDistance.coerceIn(1, 4)
-            val t = (1f - absPos) * 0.48
-            val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat() * absPos * distScale
-            val scale = (0.92f + 0.08f * (1f - absPos)) + 0.03f * pulse
-            page.scaleX = scale
-            page.scaleY = scale
-            val clampedPos = position.coerceIn(-1.5f, 1.5f)
-            page.rotation = -clampedPos * (2.6f + 0.9f * lastTabDistance.coerceIn(1, 4)) * (1f - absPos * 0.5f)
-            page.alpha = 0.65f + 0.35f * (1f - absPos)
+            if (position <= -1f || position >= 1f || position == 0f) {
+                page.scaleX = 1f
+                page.scaleY = 1f
+                page.rotation = 0f
+                page.alpha = 1f
+            } else {
+                val absPos = Math.abs(position).coerceIn(0f, 1f)
+                val distScale = 0.75f + 0.35f * lastTabDistance.coerceIn(1, 4)
+                val t = (1f - absPos) * 0.48
+                val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat() * absPos * distScale
+                val scale = (0.92f + 0.08f * (1f - absPos)) + 0.03f * pulse
+                page.scaleX = scale
+                page.scaleY = scale
+                val clampedPos = position.coerceIn(-1.5f, 1.5f)
+                page.rotation = -clampedPos * (2.6f + 0.9f * lastTabDistance.coerceIn(1, 4)) * (1f - absPos * 0.5f)
+                page.alpha = 0.65f + 0.35f * (1f - absPos)
+            }
         }
         binding.viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
@@ -432,8 +439,6 @@ class MainActivity : AppCompatActivity() {
                 selectedTabIndex = position
 
                 updateTabIndicators(animate = true, prevIndex = prevIndex, distance = distance)
-                if (position == 0) refreshHistoryUI()
-                if (position == 5) refreshFunctionCatalogUI()
 
                 val tabs = listOf(
                     binding.tabHistory, binding.tabBasic, binding.tabExtended,

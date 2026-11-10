@@ -1,6 +1,7 @@
 package com.ecalc
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
@@ -8,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
+import android.util.LruCache
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewConfiguration
@@ -18,12 +20,13 @@ import androidx.appcompat.widget.AppCompatTextView
  * Supports dual soft shadows (highlight and shade), pressed-in depth inversion,
  * and adaptive dark/light theme palettes.
  *
- * Shadow technique: each shadow is an explicitly blurred round-rect
- * ([BlurMaskFilter], rendered on this view's software layer) drawn inside a
- * rounded clipping contour slightly larger than the key pill. Because the surrounding
- * glow is always bounded by a rounded silhouette, no renderer path (hardware layer
- * drop-outs, clip variants, shadow-layer quirks) can ever paint an opaque square
- * block around the key.
+ * Performance architecture:
+ * Instead of putting the View itself in `LAYER_TYPE_SOFTWARE` (which forces the CPU to
+ * re-run `BlurMaskFilter` on every animation frame whenever `ViewPager2` or `springSettle`
+ * scales/rotates the view), the blurred neumorphic shadow + pill surface for a given
+ * `(width, height, dark, accent, pressed, radius, pad)` tuple is rendered once into a
+ * shared software [Bitmap] cache ([shadowBitmapCache]) and drawn onto the hardware-accelerated
+ * Canvas in O(1) GPU time.
  */
 class NeumorphicKeyView @JvmOverloads constructor(
     context: Context,
@@ -31,24 +34,36 @@ class NeumorphicKeyView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : AppCompatTextView(context, attrs, defStyleAttr) {
 
+    companion object {
+        private val shadowBitmapCache = object : LruCache<String, Bitmap>(64) {
+            override fun sizeOf(key: String, value: Bitmap): Int = 1
+        }
+    }
+
     var isDarkThemeMode: Boolean = true
         set(value) {
-            field = value
-            updateColors()
-            invalidate()
+            if (field != value) {
+                field = value
+                updateColors()
+                invalidate()
+            }
         }
 
     var isAccentKey: Boolean = false
         set(value) {
-            field = value
-            updateColors()
-            invalidate()
+            if (field != value) {
+                field = value
+                updateColors()
+                invalidate()
+            }
         }
 
     var cornerRadiusDp: Float = 8f
         set(value) {
-            field = value
-            invalidate()
+            if (field != value) {
+                field = value
+                invalidate()
+            }
         }
 
     private var isKeyPressed: Boolean = false
@@ -69,6 +84,7 @@ class NeumorphicKeyView @JvmOverloads constructor(
     private val surfacePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val lightShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val darkShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val rectF = RectF()
     private val outerRect = RectF()
     private val clipPath = Path()
@@ -83,8 +99,6 @@ class NeumorphicKeyView @JvmOverloads constructor(
     init {
         gravity = Gravity.CENTER
         textSize = 17f
-        // Software layer is required for BlurMaskFilter shadows to rasterize.
-        setLayerType(LAYER_TYPE_SOFTWARE, null)
         isClickable = true
         isFocusable = true
         updateColors()
@@ -99,25 +113,26 @@ class NeumorphicKeyView @JvmOverloads constructor(
             val surface = if (isKeyPressed) Color.parseColor("#2E2E2E") else Color.parseColor("#333333")
             val lightShadow = Color.parseColor("#3E3E3E")
             val darkShadow = Color.parseColor("#212121")
-            applyShadowColors(surface, lightShadow, darkShadow,
-                if (isAccentKey) Color.parseColor("#2E8B90") else Color.parseColor("#CCCCCC"))
+            applyShadowColors(
+                surface, lightShadow, darkShadow,
+                if (isAccentKey) Color.parseColor("#2E8B90") else Color.parseColor("#CCCCCC")
+            )
         } else {
             val surface = if (isKeyPressed) Color.parseColor("#EAEAEA") else Color.parseColor("#F3F3F3")
             val lightShadow = Color.parseColor("#FFFFFF")
             val darkShadow = Color.parseColor("#D5D5D5")
-            applyShadowColors(surface, lightShadow, darkShadow,
-                if (isAccentKey) Color.parseColor("#E58A7B") else Color.parseColor("#444444"))
+            applyShadowColors(
+                surface, lightShadow, darkShadow,
+                if (isAccentKey) Color.parseColor("#E58A7B") else Color.parseColor("#444444")
+            )
         }
 
         if (isKeyPressed) {
-            // Pressed-in: tighter shadow with INVERTED offsets (light moves
-            // down-right, dark up-left → inward depth inversion)
             shadowBlurPx = blur * 0.5f
             val o = offset * 0.4f
             lightDx = o; lightDy = o
             darkDx = -o; darkDy = -o
         } else {
-            // Raised convex neumorphic look: light up-left, dark down-right
             shadowBlurPx = blur
             lightDx = -offset; lightDy = -offset
             darkDx = offset; darkDy = offset
@@ -129,8 +144,6 @@ class NeumorphicKeyView @JvmOverloads constructor(
 
     private fun applyShadowColors(surface: Int, lightShadow: Int, darkShadow: Int, textColor: Int) {
         surfacePaint.color = surface
-        // Shadow paints carry the shadow COLOR itself; the blurred halo they
-        // produce is later over-painted in the middle by the opaque surface pill.
         lightShadowPaint.color = lightShadow
         darkShadowPaint.color = darkShadow
         setTextColor(textColor)
@@ -138,44 +151,59 @@ class NeumorphicKeyView @JvmOverloads constructor(
 
     var shadowPadDp: Float = 5f
         set(value) {
-            field = value
-            invalidate()
+            if (field != value) {
+                field = value
+                invalidate()
+            }
         }
 
+    private fun getOrBuildShadowBitmap(w: Int, h: Int): Bitmap? {
+        if (w <= 0 || h <= 0) return null
+        val cacheKey = "${w}x${h}:${if (isDarkThemeMode) 1 else 0}:${if (isAccentKey) 1 else 0}:${if (isKeyPressed) 1 else 0}:$cornerRadiusDp:$shadowPadDp"
+        shadowBitmapCache.get(cacheKey)?.let { cached ->
+            if (!cached.isRecycled) return cached
+        }
+
+        return runCatching {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val offCanvas = Canvas(bmp)
+            val density = resources.displayMetrics.density
+            val pad = shadowPadDp * density
+            val radius = cornerRadiusDp * density
+
+            rectF.set(pad, pad, w - pad, h - pad)
+            val grow = pad * 0.9f
+            outerRect.set(rectF.left - grow, rectF.top - grow, rectF.right + grow, rectF.bottom + grow)
+            clipPath.rewind()
+            clipPath.addRoundRect(outerRect, radius + grow, radius + grow, Path.Direction.CW)
+
+            val saveCount = offCanvas.save()
+            offCanvas.clipPath(clipPath)
+
+            val saveShadow = offCanvas.save()
+            offCanvas.translate(darkDx, darkDy)
+            offCanvas.drawRoundRect(rectF, radius, radius, darkShadowPaint)
+            offCanvas.restoreToCount(saveShadow)
+
+            val saveLight = offCanvas.save()
+            offCanvas.translate(lightDx, lightDy)
+            offCanvas.drawRoundRect(rectF, radius, radius, lightShadowPaint)
+            offCanvas.restoreToCount(saveLight)
+
+            surfacePaint.maskFilter = null
+            offCanvas.drawRoundRect(rectF, radius, radius, surfacePaint)
+            offCanvas.restoreToCount(saveCount)
+
+            shadowBitmapCache.put(cacheKey, bmp)
+            bmp
+        }.getOrNull()
+    }
+
     override fun onDraw(canvas: Canvas) {
-        val density = resources.displayMetrics.density
-        val pad = shadowPadDp * density
-        val radius = cornerRadiusDp * density
-
-        rectF.set(pad, pad, width - pad, height - pad)
-
-        // Rounded clip boundary: the glow may only exist inside a rounded
-        // contour ~pad-extended around the pill — this is what makes an
-        // opaque square halo geometrically impossible on any pipeline.
-        val grow = pad * 0.9f
-        outerRect.set(rectF.left - grow, rectF.top - grow, rectF.right + grow, rectF.bottom + grow)
-        clipPath.rewind()
-        clipPath.addRoundRect(outerRect, radius + grow, radius + grow, Path.Direction.CW)
-        val saveCount = canvas.save()
-        canvas.clipPath(clipPath)
-
-        // Soft shadows: blurred pill drawn offset — dark down-right / light
-        // up-left when raised; inverted when pressed.
-        val saveShadow = canvas.save()
-        canvas.translate(darkDx, darkDy)
-        canvas.drawRoundRect(rectF, radius, radius, darkShadowPaint)
-        canvas.restoreToCount(saveShadow)
-
-        val saveLight = canvas.save()
-        canvas.translate(lightDx, lightDy)
-        canvas.drawRoundRect(rectF, radius, radius, lightShadowPaint)
-        canvas.restoreToCount(saveLight)
-
-        // Key surface on top (opaque pill hides the halo interiors)
-        surfacePaint.maskFilter = null
-        canvas.drawRoundRect(rectF, radius, radius, surfacePaint)
-        canvas.restoreToCount(saveCount)
-
+        val bmp = getOrBuildShadowBitmap(width, height)
+        if (bmp != null) {
+            canvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
+        }
         super.onDraw(canvas)
     }
 
