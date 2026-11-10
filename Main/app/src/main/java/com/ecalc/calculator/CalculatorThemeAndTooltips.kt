@@ -653,8 +653,13 @@ fun MainActivity.keyDescriptionFor(label: String): String = when (label) {
     "floor" -> "floor(x) — rounds down: floor(2.999) = 2, floor(−2.001) = −3."
     "rand" -> "rand() — a fresh uniform random number in [0, 1) each time it is evaluated."
     "," -> ", — parameter separator for multi-argument functions such as gcd(a, b), lcm(a, b), nPr(n, r), nCr(n, r), and ⁿ√(x, n)."
+    "1", "2", "3", "4", "5", "6", "7", "8", "9" -> "$label — digit for the Functions-tab quick pad; opens directly into an operand " +
+        "(tap a function row first to start its argument list)"
+    "." -> ". — decimal point"
     "(" -> "( — opening parenthesis; also starts a function's argument list, e.g. log(100)"
     ")" -> ") — closing parenthesis (or comma in 2-arg functions)"
+    "( )" -> "( ) — smart bracket: opens a new parenthesis after an operator/comma or at the start; " +
+        "closes the innermost open one right after a value or closing bracket"
     "sin" -> "sin — sine of the angle in the active deg/rad mode"
     "cos" -> "cos — cosine of the angle in the active deg/rad mode"
     "tan" -> "tan — tangent; ±90°/±π/2 reports a tangent asymptote instead of a huge number"

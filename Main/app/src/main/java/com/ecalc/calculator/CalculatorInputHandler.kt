@@ -223,12 +223,32 @@ fun MainActivity.onKeyClicked(label: String) {
     displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
 }
 
+internal fun MainActivity.onSmartBracketClicked() {
+    val activeOperand = if (currentPrimaryInput != "0.0") currentPrimaryInput else ""
+    val tail = (exprStatement + activeOperand).trimEnd()
+    val lastChar = tail.lastOrNull()
+    val balance = tail.count { it == '(' } - tail.count { it == ')' }
+    val operandExpected = lastChar == null || lastChar in "(,+×÷/*^-"
+    val shouldClose = balance > 0 && !operandExpected
+    if (shouldClose) {
+        onKeyClicked(")")
+    } else {
+        onKeyClicked("(")
+    }
+}
+
 internal fun MainActivity.evaluateCurrent() {
     val fullDisplay = if (currentPrimaryInput == "0.0") exprStatement
                       else exprStatement + currentPrimaryInput
     if (fullDisplay.isBlank()) return
 
     binding.tvSecondaryDisplay.text = "$fullDisplay ="
+
+    // Spring feedback fires at the '=' click itself (expression line + current answer preview),
+    // independent of the engine round-trip below — the damped-spring kick the user sees on every
+    // equals press, even while evaluation is still in flight on the worker queue.
+    displaySpringPulse(binding.tvPrimaryDisplay, 0.05f)
+    displaySpringPulse(binding.tvSecondaryDisplay, 0.04f)
 
     MathEngineManager.evaluate(fullDisplay, isDegreeMode, lastAnswer) { outcome ->
         runOnUiThread {

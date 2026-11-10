@@ -13,8 +13,11 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateInterpolator
 import android.view.animation.LinearInterpolator
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.fragment.app.Fragment
@@ -49,6 +52,10 @@ class FunctionCatalogFragment : Fragment() {
     private val helperKeyViews = mutableListOf<NeumorphicKeyView>()
     private val wobbleAnimators = mutableListOf<ValueAnimator>()
     private val boldMonoTypeface: Typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+
+    /** Frost-blurred quick numeric-pad dropdown overlay shown from the unified pad toggle button. */
+    private var helperPadOverlay: FrameLayout? = null
+    private val padAnimators = mutableListOf<ValueAnimator>()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -126,50 +133,42 @@ class FunctionCatalogFragment : Fragment() {
         chipsScroll.addView(chipsInner)
         topControlsRow.addView(chipsScroll)
 
-        // Quick helper keys `(`, `,`, `)`, `⌫`, `=` for completing multi-arg function calls
-        val helpersContainer = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dp(32f)
-            ).apply { marginStart = dp(4f) }
-        }
-        helperKeyViews.clear()
-        val helperSpecs = listOf(
-            "(" to false,
-            "," to false,
-            ")" to false,
-            "⌫" to false,
-            "=" to true
-        )
-        for ((keyLabel, isAccent) in helperSpecs) {
-            val hBtn = NeumorphicKeyView(ctx).apply {
-                text = keyLabel
-                textSize = 11.5f
-                cornerRadiusDp = 9.5f
-                shadowPadDp = 2.0f
-                isAccentKey = isAccent
-                isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(30f), dp(28f)).apply {
-                    marginStart = dp(2f)
-                }
-                setOnClickListener {
-                    (this@FunctionCatalogFragment.activity as? MainActivity)?.onKeyClicked(keyLabel)
-                }
-                setOnLongClickListener { true }
-                holdListener = { held ->
+        // Unified quick-insert pad toggle: replaces the old `(` `,` `)` ⌫ `=` helper row with a
+        // single button that drops down a frost-blurred mini pad (1–9, dot, comma, smart bracket,
+        // equals) with the app's signature damped-spring animation and full-screen outside-tap
+        // dismissal. The pad stays open across taps so multi-argument calls are quick to finish.
+        val padToggle = NeumorphicKeyView(ctx).apply {
+            text = "1-9"
+            textSize = 11f
+            cornerRadiusDp = 9.5f
+            shadowPadDp = 2.0f
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(44f), dp(28f)).apply {
+                marginStart = dp(4f)
+            }
+            setOnClickListener { toggleHelperPad(this) }
+            setOnLongClickListener { true }
+            holdListener = { held ->
+                if (helperPadOverlay == null) {
                     val act = this@FunctionCatalogFragment.activity as? MainActivity
                     if (act != null) {
-                        if (held) act.showButtonPopup(this, act.keyDescriptionFor(keyLabel))
-                        else act.dismissButtonPopup()
+                        if (held) {
+                            act.showButtonPopup(
+                                this,
+                                "1-9 — Quick numeric insert pad: a small frost-blurred window with digits 1-9, " +
+                                    "decimal dot, parameter comma, a smart bracket that opens or closes ( ) automatically, " +
+                                    "and equals. Tap outside or the button again to dismiss."
+                            )
+                        } else {
+                            act.dismissButtonPopup()
+                        }
                     }
                 }
             }
-            helperKeyViews.add(hBtn)
-            helpersContainer.addView(hBtn)
         }
-        topControlsRow.addView(helpersContainer)
+        helperKeyViews.clear()
+        helperKeyViews.add(padToggle)
+        topControlsRow.addView(padToggle)
         root.addView(topControlsRow)
 
         // 2. Subtitle / Count & Hint Bar
@@ -217,6 +216,231 @@ class FunctionCatalogFragment : Fragment() {
         helperKeyViews.forEach { it.isDarkThemeMode = dark }
     }
 
+    /** Opens the quick numeric pad if closed, closes it if open. */
+    private fun toggleHelperPad(anchor: View) {
+        if (helperPadOverlay != null) {
+            dismissHelperPad()
+        } else {
+            showHelperPad(anchor)
+        }
+    }
+
+    /**
+     * Drops down a small frost-blurred button window anchored to [anchor] (the `1-9` toggle):
+     * digits 1–9, decimal dot, parameter comma, a smart `( )` bracket key and an accent equals
+     * key. Entrance runs the app's signature damped-spring animation (`e⁻⁴ᶠ · cos(3πf)` scale
+     * with a slide + fade, identical to the hold-info popups). Tapping the overlay anywhere
+     * outside the panel — or the toggle again — dismisses it.
+     */
+    private fun showHelperPad(anchor: View) {
+        val act = activity as? MainActivity ?: return
+        val rootFrame = act.binding.rootFrame
+        act.dismissButtonPopup()
+        padAnimators.forEach { it.cancel() }
+        padAnimators.clear()
+        helperPadOverlay?.let { (it.parent as? FrameLayout)?.removeView(it) }
+        helperPadOverlay = null
+
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+        val dark = act.isDarkMode
+        val panelBg = if (dark) "#F8F8F8" else "#2E2E2E"
+        val strokeCol = if (dark) "#13959B" else "#E58A7B"
+
+        fun makeKey(label: String, isAccent: Boolean, widthDp: Float, onClick: () -> Unit): NeumorphicKeyView {
+            val key = NeumorphicKeyView(act)
+            key.text = label
+            key.textSize = if (label.length > 1) 10.5f else 13f
+            key.cornerRadiusDp = 8.5f
+            key.shadowPadDp = 2.0f
+            key.isAccentKey = isAccent
+            key.isDarkThemeMode = dark
+            key.layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(30f)).apply {
+                marginStart = dp(3f)
+                marginEnd = dp(3f)
+            }
+            key.setOnClickListener {
+                pulseRow(key)
+                onClick()
+            }
+            key.setOnLongClickListener { true }
+            key.holdListener = { held ->
+                if (held) act.showButtonPopup(key, act.keyDescriptionFor(label))
+                else act.dismissButtonPopup()
+            }
+            return key
+        }
+
+        val panel = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 13f * density
+                setColor(Color.parseColor(panelBg))
+                setStroke((1.2f * density).toInt().coerceAtLeast(1), Color.parseColor(strokeCol))
+            }
+            elevation = 12f * density
+            setPadding(dp(9f), dp(9f), dp(9f), dp(8f))
+            isClickable = true
+            isFocusable = true
+            visibility = View.INVISIBLE
+        }
+
+        val rowsGrid = listOf(
+            listOf("1" to false, "2" to false, "3" to false),
+            listOf("4" to false, "5" to false, "6" to false),
+            listOf("7" to false, "8" to false, "9" to false),
+            listOf("( )" to false, "," to false, "." to false)
+        )
+        for (row in rowsGrid) {
+            val rowLayout = LinearLayout(act).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            for ((label, accent) in row) {
+                rowLayout.addView(makeKey(label, accent, 34f) {
+                    when (label) {
+                        "( )" -> act.onSmartBracketClicked()
+                        else -> act.onKeyClicked(label)
+                    }
+                })
+            }
+            panel.addView(
+                rowLayout,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(2f) }
+            )
+        }
+        panel.addView(
+            makeKey("=", true, 114f) {
+                act.onKeyClicked("=")
+                dismissHelperPad()
+            }
+        )
+
+        val overlay = FrameLayout(act).apply {
+            elevation = 48f * density
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { dismissHelperPad() }
+        }
+        // Full-strength frosted backdrop captured BEFORE the overlay joins the tree (same recipe
+        // as the hold-info popups), faded in below the panel.
+        val frostBmp = Frost.frozenBackdrop(rootFrame, downscale = 6, radius = 6)
+        var frostView: ImageView? = null
+        if (frostBmp != null) {
+            frostView = ImageView(act).apply {
+                setImageBitmap(frostBmp)
+                scaleType = ImageView.ScaleType.FIT_XY
+                alpha = 0f
+            }
+            overlay.addView(
+                frostView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        overlay.addView(
+            panel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        rootFrame.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        helperPadOverlay = overlay
+
+        fun positionAndAnimatePanel() {
+            if (helperPadOverlay !== overlay) return
+            val rootW = if (rootFrame.width > 0) rootFrame.width else resources.displayMetrics.widthPixels
+            val rootH = if (rootFrame.height > 0) rootFrame.height else resources.displayMetrics.heightPixels
+            val rootLoc = IntArray(2)
+            rootFrame.getLocationInWindow(rootLoc)
+            val anchorLoc = IntArray(2)
+            anchor.getLocationInWindow(anchorLoc)
+            val layerPad = dp(12f)
+            panel.measure(
+                View.MeasureSpec.makeMeasureSpec((rootW - 2 * layerPad).coerceAtLeast(1), View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec((rootH - 2 * layerPad).coerceAtLeast(1), View.MeasureSpec.AT_MOST)
+            )
+            val bw = panel.measuredWidth
+            val bh = panel.measuredHeight
+            val anchorCx = anchorLoc[0] + anchor.width / 2 - rootLoc[0]
+            val anchorTop = anchorLoc[1] - rootLoc[1]
+            val anchorBottom = anchorTop + anchor.height
+            val showAbove = anchorTop - bh - layerPad >= layerPad
+            val rawY = if (showAbove) anchorTop - bh - layerPad else anchorBottom + layerPad
+            val maxTop = (rootH - bh - layerPad).coerceAtLeast(layerPad)
+            val y = rawY.coerceIn(layerPad, maxTop)
+            val maxLeft = (rootW - bw - layerPad).coerceAtLeast(layerPad)
+            val x = (anchorCx - bw / 2).coerceIn(layerPad, maxLeft)
+            (panel.layoutParams as FrameLayout.LayoutParams).apply {
+                width = bw
+                leftMargin = x
+                topMargin = y
+            }
+            panel.requestLayout()
+            panel.visibility = View.VISIBLE
+            panel.pivotX = bw / 2f
+            panel.pivotY = if (showAbove) bh.toFloat() else 0f
+            panel.translationY = if (showAbove) 12f * density else -12f * density
+            val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 430L
+                interpolator = LinearInterpolator()
+                addUpdateListener { a ->
+                    val f = a.animatedValue as Float
+                    val decay = Math.exp(-4.0 * f)
+                    val scale = (1.0 - 0.45 * decay * Math.cos(f * 3.0 * Math.PI)).toFloat()
+                    panel.scaleX = scale
+                    panel.scaleY = scale
+                    panel.alpha = (f / 0.22f).coerceIn(0f, 1f)
+                    panel.translationY = (if (showAbove) 12f * density else -12f * density) * (1f - f)
+                    frostView?.alpha = 0.92f * (f / 0.3f).coerceIn(0f, 1f)
+                }
+                start()
+                padAnimators.add(this)
+            }
+        }
+        if (rootFrame.width > 0 && anchor.width > 0) {
+            positionAndAnimatePanel()
+        } else {
+            overlay.post { positionAndAnimatePanel() }
+        }
+    }
+
+    /** Collapses the quick numeric pad: frost fades + panel shrink, same recipe as the hold popups. */
+    private fun dismissHelperPad() {
+        padAnimators.forEach { it.cancel() }
+        padAnimators.clear()
+        helperPadOverlay?.let { overlay ->
+            helperPadOverlay = null
+            if (overlay.childCount > 1) {
+                overlay.getChildAt(0).animate().alpha(0f).setDuration(170L).start()
+            }
+            val panel = overlay.getChildAt(overlay.childCount - 1)
+            if (panel != null) {
+                panel.animate()
+                    .scaleX(0.62f).scaleY(0.62f).alpha(0f)
+                    .setDuration(170L)
+                    .setInterpolator(AccelerateInterpolator(0.8f))
+                    .withEndAction { (overlay.parent as? FrameLayout)?.removeView(overlay) }
+                    .start()
+            } else {
+                (overlay.parent as? FrameLayout)?.removeView(overlay)
+            }
+        }
+    }
+
     /** Asynchronously links `project1` and reloads numerical functions & operators if changed. */
     fun reloadCatalogFromEngine() {
         val ctx = context?.applicationContext ?: return
@@ -239,6 +463,7 @@ class FunctionCatalogFragment : Fragment() {
 
     fun onThemeChanged(isDark: Boolean) {
         if (lastRenderedDark == isDark) return
+        dismissHelperPad()
         tvHeaderSubtitle?.setTextColor(Color.parseColor(if (isDark) "#8E8E8E" else "#666666"))
         updateFilterChipSelection(isDark)
         renderFilteredItems(isDark, force = true)
@@ -524,6 +749,7 @@ class FunctionCatalogFragment : Fragment() {
     override fun onDestroyView() {
         wobbleAnimators.forEach { it.cancel() }
         wobbleAnimators.clear()
+        dismissHelperPad()
         recyclerView?.adapter = null
         recyclerView = null
         adapter = null
