@@ -28,6 +28,7 @@ import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 
+import com.mathengine.MathEngineBridge
 internal val MATH_EDITOR_STATIC_SUGGESTIONS: List<MathCodeEditText.SuggestionItem> = listOf(
     // Entry points & directives
     MathCodeEditText.SuggestionItem(
@@ -1098,7 +1099,9 @@ private fun isNumericalParamSpec(paramSpec: String): Boolean {
 
 private fun isNumericalReturnSpec(retSpec: String, rhsRaw: String): Boolean {
     val cleanRet = retSpec.substringBefore(',').trim().lowercase()
-    if (cleanRet in nonNumericTypeTokens) return false
+    if (cleanRet in nonNumericTypeTokens || cleanRet.startsWith("vec<") || cleanRet.startsWith("map<")) {
+        return false
+    }
     if (rhsRaw.contains("println(") || rhsRaw.contains("print(") ||
         rhsRaw.contains("read_file(") || rhsRaw.contains("read_json(") ||
         rhsRaw.contains("csv_to_maps(") || rhsRaw.contains("@str_fmt")
@@ -1106,6 +1109,80 @@ private fun isNumericalReturnSpec(retSpec: String, rhsRaw: String): Boolean {
         return false
     }
     return true
+}
+
+/**
+ * Names that must never surface in the Basic Calculator's Functions tab even though the engine
+ * catalog reports them as numerical `fn` entries: language keywords / overload shims registered
+ * by the `boot_control` module (`if`, `then`, `switch`, `return`, ...) and engine internals
+ * (`raw_val`, `gc_compact`, ...).
+ */
+private val calculatorExcludedFunctionNames = setOf(
+    "call", "if", "or", "and", "not", "in", "is", "mod", "then", "else", "default",
+    "switch", "case", "for", "while", "jump", "run", "break", "continue", "return",
+    "raw_val", "with_unit", "gc_compact", "pool_used", "error", "assert"
+)
+
+/**
+ * Derives extra numerical `fn` entries for the Basic Calculator's Functions tab from the live
+ * engine catalog dump (`eng_export_catalog` → `kind|name|sig|retType|retUnit|modName`).
+ * Selection criterion (same as the handpicked list): every parameter accepts a numerical
+ * value (`real` / `int` / `any` / generic `T`) and the return type is numerical.
+ * Zero-argument numerical functions are included; keyword shims and verbosely-typed
+ * entries are filtered. Runs entirely offline against the dump text.
+ */
+internal fun extractLiveCatalogNumericalItems(rawCatalog: String): List<CalculatorCatalogItem> {
+    if (rawCatalog.isBlank()) return emptyList()
+    val items = ArrayList<CalculatorCatalogItem>(96)
+    val takenSigs = HashSet<String>()
+    for (rawLine in rawCatalog.lineSequence()) {
+        val line = rawLine.trim()
+        if (line.isEmpty()) continue
+        val parts = line.split('|')
+        if (parts.size < 6) continue
+        val kind = parts[0].trim()
+        if (kind != "fn") continue
+        val name = parts[1].trim()
+        val sig = parts[2].trim()
+        val retType = parts[3].trim().ifEmpty { "real" }
+        val retUnit = parts[4].trim().ifEmpty { "none" }
+        val modName = parts[5].trim().ifEmpty { "default" }
+        if (name.isEmpty() || sig.isEmpty()) continue
+        if (!name[0].isLetter() && name[0] != '_') continue
+        if (name.startsWith("__mep_base_")) continue
+        if (name in calculatorExcludedFunctionNames) continue
+        if (!sig.startsWith("$name(")) continue
+        val openIdx = sig.indexOf('(')
+        val closeIdx = sig.lastIndexOf(')')
+        val arrowIdx = sig.indexOf("->")
+        if (openIdx < 0 || closeIdx < openIdx || arrowIdx <= closeIdx) continue
+        val paramsInside = sig.substring(openIdx + 1, closeIdx).trim()
+        val retSpec = sig.substring(arrowIdx + 2).trim().substringBefore(',').trim()
+        if (!isNumericalReturnSpec(retSpec, "")) continue
+        val paramSpecs = if (paramsInside.isEmpty()) emptyList() else paramsInside.split(',')
+        if (!paramSpecs.all { isNumericalParamSpec(it) }) continue
+        if (!takenSigs.add("$kind:$name|$paramsInside")) continue
+        val hasArgs = paramsInside.isNotEmpty()
+        val retBadge = if (retUnit != "none" && retUnit.isNotEmpty()) "$retType [$retUnit]" else retType
+        items.add(
+            CalculatorCatalogItem(
+                name = name,
+                signature = "$name($paramsInside)",
+                insertText = if (hasArgs) "$name(" else "$name()",
+                originGroup = "stdlib",
+                moduleName = modName,
+                kind = "fn",
+                shortDescription = "Numerical function in [$modName] — accepts numeric parameters, returns a number",
+                paramBullets = if (hasArgs) {
+                    paramSpecs.mapIndexed { idx, p -> "${p.trim()} — Parameter #${idx + 1} in [$modName]" }
+                } else {
+                    listOf("None — Zero-argument numerical function in [$modName]")
+                },
+                returnBullet = "$retBadge — Result from [$modName]::$name"
+            )
+        )
+    }
+    return items
 }
 
 /**
@@ -1809,10 +1886,22 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
             !f.name.startsWith("currency_pairs_")
     }?.sortedBy { it.name.lowercase() }.orEmpty()
 
+    // 4th source: live engine catalog dump (`eng_export_catalog`) — every active `fn` whose
+    // parameters are numerical and whose return type is numerical. Fetched on the worker
+    // thread that calls this; handle == 0 (engine not yet booted) degrades gracefully.
+    val liveCatalogDump = if (engineHandle != 0L) {
+        runCatching { MathEngineBridge.nativeExportCatalog(engineHandle) }.getOrNull()
+    } else {
+        null
+    }
+
     val sig = buildString {
         append(linkedProject1Signature).append('|')
         for (pf in patchFiles) {
             append(pf.name).append(':').append(pf.lastModified()).append(':').append(pf.length()).append(';')
+        }
+        if (!liveCatalogDump.isNullOrBlank()) {
+            append('|').append(liveCatalogDump.hashCode())
         }
     }
     if (sig == cachedCatalogSignature && cachedCatalogItems.isNotEmpty()) {
@@ -1822,10 +1911,15 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
     val result = ArrayList<CalculatorCatalogItem>(64)
     val seenKeys = HashSet<String>()
     val proj1OverloadedNames = HashSet<String>()
+    // Module → origin-group attribution for live-engine items whose module came from a patch or project1.
+    val liveModuleGroups = HashMap<String, String>()
 
     // 1. Numerical functions & operator overloads from `project1`
     for ((fileName, rawSrc) in proj1Sources) {
         for (item in extractCatalogItemsFromMathSource(rawSrc, originGroup = "project1", fileName = fileName)) {
+            if (!liveModuleGroups.containsKey(item.moduleName)) {
+                liveModuleGroups[item.moduleName] = "project1"
+            }
             val key = "project1:${item.moduleName}:${item.kind}:${item.name}"
             if (seenKeys.add(key)) {
                 result.add(item)
@@ -1839,6 +1933,9 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
         val rawSrc = runCatching { patchFile.readText() }.getOrDefault("")
         if (rawSrc.isBlank()) continue
         for (item in extractCatalogItemsFromMathSource(rawSrc, originGroup = "patch", fileName = patchFile.name)) {
+            if (!liveModuleGroups.containsKey(item.moduleName)) {
+                liveModuleGroups[item.moduleName] = "patch"
+            }
             val key = "patch:${item.moduleName}:${item.kind}:${item.name}"
             if (seenKeys.add(key)) {
                 result.add(item)
@@ -1858,6 +1955,23 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
                     stdItem
                 }
             )
+        }
+    }
+
+    // 4. Live-engine derived numerical functions (beyond the handpicked set). Curated entries from
+    // sources 1–3 win on name overlap; every remaining numerical `fn` overload from the dump is added.
+    if (!liveCatalogDump.isNullOrBlank()) {
+        val takenNames = result.mapTo(HashSet()) { "${it.kind}:${it.name}" }
+        for (liveItem in extractLiveCatalogNumericalItems(liveCatalogDump)) {
+            val grp = liveModuleGroups[liveItem.moduleName]
+            val enriched = if (grp != null && liveItem.moduleName !in CORE_STDLIB_MODULES) {
+                liveItem.copy(originGroup = grp)
+            } else {
+                liveItem
+            }
+            if (takenNames.add("${enriched.kind}:${enriched.name}")) {
+                result.add(enriched)
+            }
         }
     }
 
