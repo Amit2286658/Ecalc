@@ -64,10 +64,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { profile: pixel_4,     api: 34, dark: no  }   # 5.7" phone, 1080x2280 @440dpi
-          - { profile: pixel_6_pro, api: 34, dark: yes }   # 6.7" big phone, dark mode
-          - { profile: nexus_7,     api: 30, dark: no  }   # 7" tablet, 1200x1920 @213dpi
-          - { profile: nexus_10,    api: 34, dark: no  }   # 10" tablet, 2560x1600 @160dpi
+          - { profile: pixel_4,        api: 34, dark: no  }   # 5.7" phone, 1080x2280 @440dpi
+          - { profile: pixel_6_pro,    api: 34, dark: yes }   # 6.7" big phone, dark mode
+          - { profile: small_tablet,   api: 30, dark: no  }   # 7" tablet, 1920x1200 @xhdpi
+          - { profile: pixel_tablet,   api: 34, dark: no  }   # 10.95" tablet, 2560x1600 @xhdpi
     steps:
       # Checkout: defaults.run.working-directory is "Main", so bash would fail to
       # start in the screenshots job without the repo tree being present.
