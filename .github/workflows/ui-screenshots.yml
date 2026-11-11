@@ -99,7 +99,7 @@ jobs:
             set -eu
             cd "$GITHUB_WORKSPACE"
             adb shell cmd uimode night ${{ matrix.dark }}
-            APK="$(ls "$GITHUB_WORKSPACE/apk/"*.apk | head -1)"
+            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' | head -1)"
             adb install -r "$APK"
             adb shell am start -W -n com.ecalc/.LauncherDark
             # generous wait: engine boot + stdlib load + first patch seed
