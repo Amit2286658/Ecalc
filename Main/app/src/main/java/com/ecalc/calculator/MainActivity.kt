@@ -111,12 +111,15 @@ class MainActivity : AppCompatActivity() {
         // Pre-15 devices keep the decor-fits behavior (bars reserve their own space) —
         // there the reported systemBars insets are already consumed/zero, so this is a
         // no-op and nothing changes visually (CI emulator screenshots stay valid).
-        // Pad the root by the system bars and forward children insets with ONLY the
-        // systemBars type zeroed, keeping ime() and displayCutout() intact for the
-        // fragment-level keyboard/cutout handling.
+        // Forward children insets with ONLY the systemBars type zeroed, keeping ime()
+        // and displayCutout() intact for the fragment-level keyboard/cutout handling.
+        // Pad only the nav-bar edges (bottom + sides): the app intentionally draws
+        // behind the status bar (its containers reserve their own 48dp header padding
+        // and color the bar area), so padding the top here double-compensated and left
+        // a large gap below the status bar.
         ViewCompat.setOnApplyWindowInsetsListener(binding.rootFrame) { v, windowInsets ->
             val bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            v.setPadding(bars.left, 0, bars.right, bars.bottom)
             WindowInsetsCompat.Builder(windowInsets)
                 .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.NONE)
                 .build()
