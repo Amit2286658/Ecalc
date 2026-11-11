@@ -6,8 +6,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Dynamic `.math` Doc-Comment Parser & Runtime Documentation Registry.
  *
  * Recognizes the fixed `.math` documentation comment pattern placed directly above a
- * function or operator declaration inside any `.math` file (`Library/*.math`,
- * `patches/*.math`, or Studio project `.math` modules):
+ * function or operator declaration inside any `.math` file (`Library`-folder
+ * `*.math` files, `patches`-folder `*.math` files, or Studio project modules):
  *
  * ```math
  * # @desc <Description of what the function does and its formula>

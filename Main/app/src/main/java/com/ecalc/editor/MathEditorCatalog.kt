@@ -1545,7 +1545,7 @@ private val stdlibModulePriorityOrder = listOf(
 )
 
 /**
- * Dynamically parses all bundled `.math` standard library files under `assets/Library/*.math`,
+ * Dynamically parses all bundled `.math` standard library files under the `assets/Library` folder,
  * extracting every numerical function and its `# @desc` / `# @param` / `# @return` documentation.
  */
 internal fun ensureBundledStdlibDocsLoaded(ctx: Context): List<CalculatorCatalogItem> {
@@ -1589,7 +1589,7 @@ private var cachedCatalogItems: List<CalculatorCatalogItem> = emptyList()
  * Dynamically collects all numerical functions and operators from all sources:
  * 1. `project1` (`.math` files in `filesDir/math_projects/project1/` + live Studio editor buffers)
  * 2. `patches` (`.math` files in `filesDir/math_patches/`, including newly downloaded OTA patches)
- * 3. `stdlib` (`.math` files in `assets/Library/*.math` + live C engine `SymTable` fallback)
+ * 3. `stdlib` (`.math` files in the `assets/Library` folder + live C engine `SymTable` fallback)
  *
  * No functions or descriptions are hardcoded in the app: every item and its documentation is
  * dynamically extracted from the `.math` files (falling back to generic descriptions when
