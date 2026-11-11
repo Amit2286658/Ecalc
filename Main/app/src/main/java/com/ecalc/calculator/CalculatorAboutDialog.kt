@@ -168,7 +168,7 @@ fun MainActivity.showAboutInfoWindow() {
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
     }
     val tvTitle = TextView(this).apply {
-        text = "Ecalc"
+        text = "MEP Calc"
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(primaryText)
@@ -284,7 +284,7 @@ fun MainActivity.showAboutInfoWindow() {
     authorBox.addView(makeSectionTitle("Developer & Project Information"))
     addInfoBullet(authorBox, "Author", "Amit kumar")
     addInfoBullet(authorBox, "Email", "amitkumar13234353@gmail.com") {
-        openExternalUri("mailto:amitkumar13234353@gmail.com?subject=Ecalc%20Query%20/%20Feedback")
+        openExternalUri("mailto:amitkumar13234353@gmail.com?subject=MEP%20Calc%20Query%20/%20Feedback")
     }
     addInfoBullet(authorBox, "Project GitHub", "GitHub.com/Amit2286658/Ecalc") {
         openExternalUri("https://github.com/Amit2286658/Ecalc")
@@ -331,8 +331,8 @@ fun MainActivity.showAboutInfoWindow() {
             }
         }
     }
-    quickLinksRow.addView(makeQuickLinkBtn("✉ Email", "mailto:amitkumar13234353@gmail.com?subject=Ecalc%20Query%20/%20Feedback"))
-    quickLinksRow.addView(makeQuickLinkBtn("🌐 Ecalc Repo", "https://github.com/Amit2286658/Ecalc"))
+    quickLinksRow.addView(makeQuickLinkBtn("✉ Email", "mailto:amitkumar13234353@gmail.com?subject=MEP%20Calc%20Query%20/%20Feedback"))
+    quickLinksRow.addView(makeQuickLinkBtn("🌐 MEP Calc Repo", "https://github.com/Amit2286658/Ecalc"))
     quickLinksRow.addView(makeQuickLinkBtn("⚙ MEP Engine", "https://github.com/Amit2286658/Math-Engine-MEP").apply {
         (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
     })

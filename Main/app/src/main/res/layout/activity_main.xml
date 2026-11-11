@@ -4,28 +4,58 @@
     android:id="@+id/rootFrame"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
+    android:background="#F8F8F8">
 
-    <!-- Launch/Exit animated circle splash (pre-sized to match splash_icon.xml) -->
+    <!-- Splash screen with centered & equidistant App Icon, Minimal App Title, and Circle Loading Bar -->
     <FrameLayout
         android:id="@+id/splashCircle"
-        android:layout_width="120dp"
-        android:layout_height="120dp"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:layout_gravity="center"
+        android:background="#F8F8F8"
+        android:elevation="24dp"
+        android:clickable="true"
+        android:focusable="true"
         android:visibility="visible">
 
-        <View
-            android:id="@+id/splashOuterDot"
-            android:layout_width="120dp"
-            android:layout_height="120dp"
-            android:layout_gravity="center" />
-
-        <View
-            android:id="@+id/splashInnerDot"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+        <LinearLayout
+            android:id="@+id/splashContentStack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="center"
-            android:alpha="1.0" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/splashAppIcon"
+                android:layout_width="76dp"
+                android:layout_height="76dp"
+                android:layout_gravity="center_horizontal"
+                android:src="@drawable/ic_launcher"
+                android:contentDescription="@string/app_name" />
+
+            <TextView
+                android:id="@+id/splashAppTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="28dp"
+                android:fontFamily="sans-serif-light"
+                android:letterSpacing="0.14"
+                android:text="@string/app_name"
+                android:textColor="#333333"
+                android:textSize="22sp" />
+
+            <ProgressBar
+                android:id="@+id/splashLoadingBar"
+                style="?android:attr/progressBarStyle"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="28dp"
+                android:indeterminate="true"
+                android:indeterminateDrawable="@drawable/splash_circle_loading_bar" />
+        </LinearLayout>
     </FrameLayout>
 
     <!-- Main calculator container -->
@@ -34,7 +64,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:background="#2D2D2D"
+        android:background="#F8F8F8"
         android:visibility="invisible">
 
         <!-- Display section -->
@@ -105,7 +135,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="6dp"
                     android:text="@string/mr_toggle_label"
-                    android:textColor="#CCCCCC"
+                    android:textColor="#444444"
                     android:textSize="14sp"
                     android:textStyle="bold" />
 
@@ -116,7 +146,7 @@
                     android:layout_marginStart="10dp"
                     android:clickable="true"
                     android:focusable="true"
-                    android:contentDescription="About Ecalc">
+                    android:contentDescription="About MEP Calc">
 
                     <ImageView
                         android:id="@+id/ivAboutInfo"
@@ -124,7 +154,7 @@
                         android:layout_height="20dp"
                         android:layout_gravity="center"
                         android:src="@drawable/ic_about_info"
-                        android:contentDescription="About Ecalc" />
+                        android:contentDescription="About MEP Calc" />
                 </FrameLayout>
             </LinearLayout>
 
@@ -135,7 +165,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:text="@string/angle_mode_deg"
-                android:textColor="#8E8E8E"
+                android:textColor="#888888"
                 android:textSize="15sp"
                 android:clickable="true"
                 android:focusable="true"
@@ -155,7 +185,7 @@
                 android:paddingEnd="0dp"
                 android:maxLines="1"
                 android:text="0.0"
-                android:textColor="#E0E0E0"
+                android:textColor="#333333"
                 android:autoSizeTextType="uniform"
                 android:autoSizeMinTextSize="20sp"
                 android:autoSizeMaxTextSize="42sp"
@@ -179,7 +209,7 @@
                 android:paddingEnd="2.5dp"
                 android:maxLines="1"
                 android:text="0.0"
-                android:textColor="#8E8E8E"
+                android:textColor="#888888"
                 android:autoSizeTextType="uniform"
                 android:autoSizeMinTextSize="12sp"
                 android:autoSizeMaxTextSize="19sp"
@@ -219,7 +249,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/mr_toggle_label"
-                        android:textColor="#8E8E8E"
+                        android:textColor="#888888"
                         android:textSize="18sp" />
                 </LinearLayout>
 
@@ -229,7 +259,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="0.0"
-                    android:textColor="#8E8E8E"
+                    android:textColor="#888888"
                     android:textSize="14sp" />
             </LinearLayout>
 
@@ -312,7 +342,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="3dp"
                         android:layout_gravity="bottom"
-                        android:background="#13959B"
+                        android:background="#E58A7B"
                         android:visibility="visible" />
                 </FrameLayout>
 

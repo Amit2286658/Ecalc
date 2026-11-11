@@ -4,33 +4,34 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Calculator body -->
+    <!-- Minimal rounded frame -->
     <path
-        android:fillColor="#232323"
-        android:strokeColor="#13959B"
-        android:strokeWidth="2"
-        android:pathData="M32,24 h44 c4.4,0 8,3.6 8,8 v44 c0,4.4 -3.6,8 -8,8 H32 c-4.4,0 -8,-3.6 -8,-8 V32 c0,-4.4 3.6,-8 8,-8 Z" />
-    <!-- Screen -->
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#333333"
+        android:strokeWidth="2.4"
+        android:pathData="M37,29h34c4.42,0 8,3.58 8,8v34c0,4.42 -3.58,8 -8,8H37c-4.42,0 -8,-3.58 -8,-8V37c0,-4.42 3.58,-8 8,-8z" />
+    <!-- Top-left: + -->
     <path
-        android:fillColor="#1A1A1A"
-        android:pathData="M30,30 h48 c2.2,0 4,1.8 4,4 v10 c0,2.2 -1.8,4 -4,4 H30 c-2.2,0 -4,-1.8 -4,-4 V34 c0,-2.2 1.8,-4 4,-4 Z" />
-    <!-- Screen accent line -->
+        android:strokeColor="#333333"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M40.5,44.5h9M45,40v9" />
+    <!-- Top-right: − -->
     <path
-        android:fillColor="#13959B"
-        android:pathData="M64,36 h12 v4 H64 Z" />
-    <!-- Keys Grid -->
-    <!-- Row 1 -->
-    <path android:fillColor="#E58A7B" android:pathData="M30,52 h8 v6 h-8 Z" />
-    <path android:fillColor="#3E3E3E" android:pathData="M43,52 h8 v6 h-8 Z" />
-    <path android:fillColor="#3E3E3E" android:pathData="M56,52 h8 v6 h-8 Z" />
-    <path android:fillColor="#13959B" android:pathData="M69,52 h8 v6 h-8 Z" />
-    <!-- Row 2 -->
-    <path android:fillColor="#3E3E3E" android:pathData="M30,61 h8 v6 h-8 Z" />
-    <path android:fillColor="#3E3E3E" android:pathData="M43,61 h8 v6 h-8 Z" />
-    <path android:fillColor="#3E3E3E" android:pathData="M56,61 h8 v6 h-8 Z" />
-    <path android:fillColor="#13959B" android:pathData="M69,61 h8 v6 h-8 Z" />
-    <!-- Row 3 -->
-    <path android:fillColor="#3E3E3E" android:pathData="M30,70 h8 v6 h-8 Z" />
-    <path android:fillColor="#3E3E3E" android:pathData="M43,70 h8 v6 h-8 Z" />
-    <path android:fillColor="#13959B" android:pathData="M56,70 h21 v6 H56 Z" />
+        android:strokeColor="#333333"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M58.5,44.5h9" />
+    <!-- Bottom-left: × -->
+    <path
+        android:strokeColor="#333333"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M41.5,59.5l7,7M48.5,59.5l-7,7" />
+    <!-- Bottom-right: = (minimal accent) -->
+    <path
+        android:strokeColor="#E58A7B"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:pathData="M58.5,60.5h9M58.5,65.5h9" />
 </vector>

@@ -48,13 +48,15 @@ class MainActivity : AppCompatActivity() {
 
     internal lateinit var binding: ActivityMainBinding
     internal val prefs by lazy { getSharedPreferences("ecalc_prefs", MODE_PRIVATE) }
-    var isDarkMode: Boolean = true
+    var isDarkMode: Boolean = false
     internal var selectedTabIndex: Int = 1 // Default to Basic keypad
     var isDegreeMode: Boolean = true
     internal var currentWorkspacePage: Int = 0 // 0 = Calculator, 1 = .math Studio
     internal var currentToast: Toast? = null
     internal var patchToast: Toast? = null
     internal var launchRevealStarted: Boolean = false
+    internal var splashUiSetupDone: Boolean = false
+    internal var splashStdlibSetupDone: Boolean = false
     internal var isExitingApp: Boolean = false
 
     internal var currentPrimaryInput: String = "0.0"
@@ -93,7 +95,7 @@ class MainActivity : AppCompatActivity() {
     internal var swipeBlockedByChild: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Restore persisted theme before super.onCreate so recreated fragments read the right mode
+        // Restore persisted in-app light/dark switcher preference (independent of the light startup theme)
         isDarkMode = prefs.getBoolean("dark_mode", isDarkMode)
         isDegreeMode = prefs.getBoolean("degree_mode", isDegreeMode)
 
@@ -102,33 +104,78 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)"
-        styleSplashDots(isDarkMode)
+        styleSplashDots(false)
 
         // Immediately hand off from the Android 12+ (API 31+) system splash screen
-        // into our in-app ripple reveal so the static icon never lingers on cold start.
+        // into our in-app splash screen (App Icon + "MEP Calc" Title + Circle Loading Bar).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
                 splashScreen.setOnExitAnimationListener { splashView ->
                     splashView.remove()
-                    triggerLaunchSplashIfReady()
                 }
             } catch (_: Throwable) { /* fall back */ }
         }
-
-        // Initialize context asynchronously (no main-thread asset I/O on cold start)
-        MathEngineManager.initialize(applicationContext)
 
         setupWorkspaceFragment()
         setupViewPager()
         setupInteractions()
         applyThemeColors(isDarkMode)
         applyThemeIconScales(isDarkMode, animate = false)
+        // Keep window bars in light startup theme while the splash screen is displayed
+        styleSplashDots(false)
 
-        // Coordinate engine boot, remote .math patch sync, and worker-thread patch
-        // compilation/linking so status feedback is only toasted AFTER all stages
-        // finish (preventing the race where statusLines was checked before the
-        // async worker executed loadPendingPatches, or where ensureEngine()
-        // consumed unloaded patches with a null status callback).
+        // 1. Splash screen startup setup: load stdlib.mathc, seed project1, preload catalog docs,
+        // and set up the Freeform Editor & ViewPager tabs during the splash screen (excluding patches).
+        MathEngineManager.initializeStdlibForSplash(applicationContext) {
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    splashStdlibSetupDone = true
+                    refreshFunctionCatalogUI()
+                    triggerLaunchSplashIfReady()
+                }
+            }
+        }
+
+        binding.rootFrame.viewTreeObserver.addOnPreDrawListener(
+            object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (binding.rootFrame.viewTreeObserver.isAlive) {
+                        binding.rootFrame.viewTreeObserver.removeOnPreDrawListener(this)
+                    }
+                    binding.rootFrame.post {
+                        if (!isFinishing && !isDestroyed) {
+                            ensureWorkspaceFragment()?.applyTheme(isDarkMode)
+                            binding.viewPager.offscreenPageLimit = 5
+                            splashUiSetupDone = true
+                            triggerLaunchSplashIfReady()
+                        }
+                    }
+                    return true
+                }
+            }
+        )
+
+        // 2. Background patch loader: runs completely independent of the splash screen and dispatches
+        // toast messages as needed on failure or success.
+        startBackgroundPatchLoader()
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when {
+                    aboutOverlay != null -> dismissAboutInfoWindow()
+                    currentWorkspacePage == 1 && workspaceFragment?.handleBackPressed() == true -> Unit
+                    currentWorkspacePage == 1 -> switchWorkspacePage(0)
+                    else -> playExitSplashCollapse()
+                }
+            }
+        })
+    }
+
+    /**
+     * Dispatches remote/bundled `.math` patch syncing and compilation to a background loader
+     * completely independent of the splash screen, showing toast messages on failure or success.
+     */
+    internal fun startBackgroundPatchLoader() {
         val statusLines = java.util.Collections.synchronizedList(ArrayList<String>())
         val stageToasts: (String) -> Unit = { msg -> statusLines.add(msg) }
         MathEngineManager.syncAndLoadPatches(
@@ -148,53 +195,32 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         )
-
-        // Start the in-app ripple animation on the very first pre-draw frame
-        binding.rootFrame.viewTreeObserver.addOnPreDrawListener(
-            object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
-                    if (binding.rootFrame.viewTreeObserver.isAlive) {
-                        binding.rootFrame.viewTreeObserver.removeOnPreDrawListener(this)
-                    }
-                    triggerLaunchSplashIfReady()
-                    return true
-                }
-            }
-        )
-
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                when {
-                    aboutOverlay != null -> dismissAboutInfoWindow()
-                    currentWorkspacePage == 1 && workspaceFragment?.handleBackPressed() == true -> Unit
-                    currentWorkspacePage == 1 -> switchWorkspacePage(0)
-                    else -> playExitSplashCollapse()
-                }
-            }
-        })
     }
 
-    internal fun styleSplashDots(dark: Boolean) {
-        val outerColor = if (dark) "#3A3E43" else "#E2E5E9"
-        val innerColor = if (dark) "#F8F8F8" else "#2D2D2D"
-        binding.splashOuterDot.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor(outerColor))
-        }
-        binding.splashInnerDot.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor(innerColor))
+    /**
+     * Styles the startup splash screen in Light Theme (app startup always happens with light theme,
+     * independent of the in-app light/dark theme switcher).
+     */
+    internal fun styleSplashDots(dark: Boolean = false) {
+        binding.splashCircle.setBackgroundColor(Color.parseColor("#F8F8F8"))
+        binding.splashAppTitle.setTextColor(Color.parseColor("#333333"))
+        if (binding.splashCircle.visibility == View.VISIBLE && !launchRevealStarted) {
+            window.statusBarColor = Color.parseColor("#F8F8F8")
+            window.navigationBarColor = Color.parseColor("#F3F3F3")
+            WindowCompat.getInsetsController(window, window.decorView)
+                .isAppearanceLightStatusBars = true
         }
     }
 
     internal fun triggerLaunchSplashIfReady() {
         if (launchRevealStarted) return
+        if (!splashUiSetupDone || !splashStdlibSetupDone) return
         if (binding.rootFrame.width > 0 && binding.rootFrame.height > 0) {
             launchRevealStarted = true
             playLaunchSplashReveal()
         } else {
             binding.rootFrame.post {
-                if (!launchRevealStarted) {
+                if (!launchRevealStarted && splashUiSetupDone && splashStdlibSetupDone) {
                     launchRevealStarted = true
                     playLaunchSplashReveal()
                 }
@@ -207,7 +233,7 @@ class MainActivity : AppCompatActivity() {
         currentToast = Toast.makeText(this, label, Toast.LENGTH_SHORT).also { it.show() }
     }
 
-    /** Dedicated long-duration toast for startup/patch pipeline status so keypad or
+    /** Dedicated long-duration toast for background patch loader status so keypad or
      *  studio button toasts do not immediately cancel patch diagnostic messages. */
     fun showPatchStatusToast(summary: String) {
         patchToast?.cancel()
@@ -356,10 +382,6 @@ class MainActivity : AppCompatActivity() {
                 swipeStartY = ev.rawY
                 isWorkspaceSwiping = false
                 val fromRightEdge = ev.rawX >= width - 28f * density
-                // Page-swipe is calculator→workspace only. Swiping back from
-                // the freeform workspace was removed: it steals horizontal
-                // moves from scrollable content (e.g. multiple open editor
-                // tabs). Return to the calculator via the back gesture instead.
                 swipeBlockedByChild = if (currentWorkspacePage == 0) {
                     !fromRightEdge && isTouchInsideInteractiveWorkspaceView(ev)
                 } else {
@@ -397,8 +419,6 @@ class MainActivity : AppCompatActivity() {
                 if (isWorkspaceSwiping) {
                     val dx = ev.rawX - swipeStartX
                     val threshold = width * 0.22f
-                    // Only the calculator→workspace direction can still be
-                    // mid-swipe here (workspace→calculator swipes were removed).
                     val target = if (currentWorkspacePage == 0 && dx < -threshold) {
                         1
                     } else {
@@ -413,12 +433,10 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchTouchEvent(ev)
     }
 
-    /** Five tabs (history + 4 keypads) live inside a ViewPager2 with distance-dependent damped-spring physics. */
+    /** Six tabs (history + 4 keypads + catalog) live inside a ViewPager2 with distance-dependent damped-spring physics. */
     internal fun setupViewPager() {
         binding.viewPager.adapter = EcalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
-        // Keep offscreenPageLimit = 1 during cold start so only the visible keypad inflates before
-        // the first frame; playLaunchSplashReveal() expands it to 5 once the splash reveal ends.
         binding.viewPager.offscreenPageLimit = 1
         binding.viewPager.setPageTransformer { page, position ->
             if (position <= -1f || position >= 1f || position == 0f) {
@@ -743,7 +761,7 @@ class MainActivity : AppCompatActivity() {
         bindHoldPopup(binding.tvAngleMode, "Angle mode — taps switch how trigonometric functions interpret angles: " +
             "Degrees (sin 90° = 1) or Radians (sin π/2 = 1). The choice is saved persistently; the label below the " +
             "display always shows the active mode.")
-        bindHoldPopup(binding.btnAboutInfo, "About & Docs — opens a blurred-glass modal with Ecalc & developer info " +
+        bindHoldPopup(binding.btnAboutInfo, "About & Docs — opens a blurred-glass modal with MEP Calc & developer info " +
             "(Amit kumar), GitHub links, MIT License T&C, and the complete embedded CMath Engine (MEP) documentation.")
 
         binding.themeTogglePill.setOnClickListener {

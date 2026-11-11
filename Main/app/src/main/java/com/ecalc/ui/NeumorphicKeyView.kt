@@ -18,15 +18,7 @@ import androidx.appcompat.widget.AppCompatTextView
 /**
  * Custom View that implements realistic 3D Neumorphic styling for calculator keys.
  * Supports dual soft shadows (highlight and shade), pressed-in depth inversion,
- * and adaptive dark/light theme palettes.
- *
- * Performance architecture:
- * Instead of putting the View itself in `LAYER_TYPE_SOFTWARE` (which forces the CPU to
- * re-run `BlurMaskFilter` on every animation frame whenever `ViewPager2` or `springSettle`
- * scales/rotates the view), the blurred neumorphic shadow + pill surface for a given
- * `(width, height, dark, accent, pressed, radius, pad)` tuple is rendered once into a
- * shared software [Bitmap] cache ([shadowBitmapCache]) and drawn onto the hardware-accelerated
- * Canvas in O(1) GPU time.
+ * disabled/greyed-out state, and adaptive dark/light theme palettes.
  */
 class NeumorphicKeyView @JvmOverloads constructor(
     context: Context,
@@ -40,7 +32,7 @@ class NeumorphicKeyView @JvmOverloads constructor(
         }
     }
 
-    var isDarkThemeMode: Boolean = true
+    var isDarkThemeMode: Boolean = false
         set(value) {
             if (field != value) {
                 field = value
@@ -72,7 +64,7 @@ class NeumorphicKeyView @JvmOverloads constructor(
      *  that gesture ends (finger up / cancelled) — used for hold-lived popups. */
     var holdListener: ((Boolean) -> Unit)? = null
     private val longPressChecker = Runnable {
-        if (isKeyPressed) {
+        if (isKeyPressed && isEnabled) {
             val handled = performLongClick() || holdListener != null
             if (handled) {
                 longPressConsumed = true
@@ -104,30 +96,55 @@ class NeumorphicKeyView @JvmOverloads constructor(
         updateColors()
     }
 
+    override fun setEnabled(enabled: Boolean) {
+        val changed = (isEnabled != enabled)
+        super.setEnabled(enabled)
+        if (!enabled) {
+            isKeyPressed = false
+            removeCallbacks(longPressChecker)
+        }
+        if (changed) {
+            updateColors()
+            invalidate()
+        }
+    }
+
     fun updateColors() {
         val density = resources.displayMetrics.density
         val blur = 6f * density
         val offset = 3f * density
 
         if (isDarkThemeMode) {
-            val surface = if (isKeyPressed) Color.parseColor("#2E2E2E") else Color.parseColor("#333333")
+            val surface = when {
+                !isEnabled -> Color.parseColor("#2A2A2A")
+                isKeyPressed -> Color.parseColor("#2E2E2E")
+                else -> Color.parseColor("#333333")
+            }
             val lightShadow = Color.parseColor("#3E3E3E")
             val darkShadow = Color.parseColor("#212121")
-            applyShadowColors(
-                surface, lightShadow, darkShadow,
-                if (isAccentKey) Color.parseColor("#2E8B90") else Color.parseColor("#CCCCCC")
-            )
+            val txtColor = when {
+                !isEnabled -> Color.parseColor("#666666")
+                isAccentKey -> Color.parseColor("#2E8B90")
+                else -> Color.parseColor("#CCCCCC")
+            }
+            applyShadowColors(surface, lightShadow, darkShadow, txtColor)
         } else {
-            val surface = if (isKeyPressed) Color.parseColor("#EAEAEA") else Color.parseColor("#F3F3F3")
+            val surface = when {
+                !isEnabled -> Color.parseColor("#E6E6E6")
+                isKeyPressed -> Color.parseColor("#EAEAEA")
+                else -> Color.parseColor("#F3F3F3")
+            }
             val lightShadow = Color.parseColor("#FFFFFF")
             val darkShadow = Color.parseColor("#D5D5D5")
-            applyShadowColors(
-                surface, lightShadow, darkShadow,
-                if (isAccentKey) Color.parseColor("#E58A7B") else Color.parseColor("#444444")
-            )
+            val txtColor = when {
+                !isEnabled -> Color.parseColor("#9E9E9E")
+                isAccentKey -> Color.parseColor("#E58A7B")
+                else -> Color.parseColor("#444444")
+            }
+            applyShadowColors(surface, lightShadow, darkShadow, txtColor)
         }
 
-        if (isKeyPressed) {
+        if (isKeyPressed && isEnabled) {
             shadowBlurPx = blur * 0.5f
             val o = offset * 0.4f
             lightDx = o; lightDy = o
@@ -159,7 +176,7 @@ class NeumorphicKeyView @JvmOverloads constructor(
 
     private fun getOrBuildShadowBitmap(w: Int, h: Int): Bitmap? {
         if (w <= 0 || h <= 0) return null
-        val cacheKey = "${w}x${h}:${if (isDarkThemeMode) 1 else 0}:${if (isAccentKey) 1 else 0}:${if (isKeyPressed) 1 else 0}:$cornerRadiusDp:$shadowPadDp"
+        val cacheKey = "${w}x${h}:${if (isDarkThemeMode) 1 else 0}:${if (isAccentKey) 1 else 0}:${if (isKeyPressed) 1 else 0}:${if (isEnabled) 1 else 0}:$cornerRadiusDp:$shadowPadDp"
         shadowBitmapCache.get(cacheKey)?.let { cached ->
             if (!cached.isRecycled) return cached
         }
@@ -180,15 +197,17 @@ class NeumorphicKeyView @JvmOverloads constructor(
             val saveCount = offCanvas.save()
             offCanvas.clipPath(clipPath)
 
-            val saveShadow = offCanvas.save()
-            offCanvas.translate(darkDx, darkDy)
-            offCanvas.drawRoundRect(rectF, radius, radius, darkShadowPaint)
-            offCanvas.restoreToCount(saveShadow)
+            if (isEnabled) {
+                val saveShadow = offCanvas.save()
+                offCanvas.translate(darkDx, darkDy)
+                offCanvas.drawRoundRect(rectF, radius, radius, darkShadowPaint)
+                offCanvas.restoreToCount(saveShadow)
 
-            val saveLight = offCanvas.save()
-            offCanvas.translate(lightDx, lightDy)
-            offCanvas.drawRoundRect(rectF, radius, radius, lightShadowPaint)
-            offCanvas.restoreToCount(saveLight)
+                val saveLight = offCanvas.save()
+                offCanvas.translate(lightDx, lightDy)
+                offCanvas.drawRoundRect(rectF, radius, radius, lightShadowPaint)
+                offCanvas.restoreToCount(saveLight)
+            }
 
             surfacePaint.maskFilter = null
             offCanvas.drawRoundRect(rectF, radius, radius, surfacePaint)
@@ -208,6 +227,10 @@ class NeumorphicKeyView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!isEnabled || !isClickable) {
+            // Consume touch on disabled button without firing click or letting parent card intercept
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 isKeyPressed = true
@@ -243,6 +266,7 @@ class NeumorphicKeyView @JvmOverloads constructor(
     }
 
     override fun performClick(): Boolean {
+        if (!isEnabled || !isClickable) return false
         return super.performClick()
     }
 }

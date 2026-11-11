@@ -40,24 +40,6 @@ import kotlin.math.hypot
 /**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
  * with Left-Drawer Project & File Manager.
- *
- * Key design:
- * 1. **Top-to-Bottom Individual `.math` Modules vs. Project-Level `main`/`@entry` Execution**:
- *    - Running an individual `.math` file (`▶ Run / Link` in the Editor) executes that module
- *      strictly top-to-bottom on its own.
- *    - Running a Project (`▶ Run` in the Project Options inside the `☰` Drawer) searches across
- *      all `.math` files in that project for `@entry(fn)` or `main()` and executes it. If no
- *      `main` / `@entry` exists in any file of the project, the project itself cannot run while
- *      individual files can still run top-to-bottom on their own.
- * 2. **Maximized Main Editing & Output Window**:
- *    - Top Header Bar has the **`☰` Hamburger Menu** button on the far left and **`← Calc`** right next to it.
- *    - Horizontal scrollable open-module chips row (`🧩 custom_ops.math`, `🧩 physics_sim.math`, ...)
- *      lets you switch between files in your multi-file project with directional damped-spring physics.
- *    - Two sub-tabs: **`📝 Editor`** and **`📋 Output & Vars`**.
- * 3. **Left-Side Hamburger Project & File Manager Drawer (`☰`)**:
- *    - Provides project options (`▶ Run`, `Open`, `Rename/Copy`, `Reset .mathc`, `Del`),
- *      file creation/import (`+ Module`, `📥 Import`), and per-file inline actions
- *      (`Open`, `Close`, `Save`, `Rename`, `Export`, `Del`).
  */
 class MathWorkspaceFragment : Fragment() {
 
@@ -83,7 +65,7 @@ class MathWorkspaceFragment : Fragment() {
     internal var tvDrawerSubtitle: TextView? = null
     internal var btnDrawerCloseIcon: NeumorphicKeyView? = null
 
-    // Drawer Projects Section (project0 = Basic Calculator; project1 = default Studio project; per-project engine.so & patched stdlib.mathc)
+    // Drawer Projects Section
     internal var tvDrawerProjectsSectionLabel: TextView? = null
     internal var btnDrawerRunProject: NeumorphicKeyView? = null
     internal var btnDrawerCreateProject: NeumorphicKeyView? = null
@@ -136,7 +118,7 @@ class MathWorkspaceFragment : Fragment() {
     internal var btnOutputBytecode: NeumorphicKeyView? = null
     internal var btnClearModuleLog: NeumorphicKeyView? = null
 
-    // --- Workspace State (Scoped per Project, defaulting to project1 for Studio; project0 is Basic Calculator) ---
+    // --- Workspace State ---
     internal var activeProjectName: String = MathEngineManager.DEFAULT_PROJECT_NAME
     internal val projectOpenModulesMap = mutableMapOf<String, MutableList<String>>()
     internal val projectActiveFileMap = mutableMapOf<String, String?>()
@@ -377,7 +359,6 @@ class MathWorkspaceFragment : Fragment() {
                 lastAppliedImePad = effectiveBottom
                 root.setPadding(dp(12f), topPad, dp(12f), effectiveBottom)
                 root.requestLayout()
-                // Also shift any active modal dialog card above the keyboard
                 activeModalOverlay?.setPadding(0, 0, 0, (imeBottomPx / 2).coerceAtLeast(0))
                 if (isKeyboardUp) {
                     etModuleEditor?.post {
@@ -495,7 +476,7 @@ class MathWorkspaceFragment : Fragment() {
                 setTextColor(primaryText)
             }
             tvDrawerSubtitle = TextView(ctx).apply {
-                text = "Project [$activeProjectName] • Shared Recyclable Engine (O(1) Flush)"
+                text = "Project [$activeProjectName] • Shared Recyclable Engine"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
                 setTextColor(secondaryText)
             }
@@ -519,7 +500,7 @@ class MathWorkspaceFragment : Fragment() {
             headerRow.addView(btnDrawerCloseIcon)
             addView(headerRow)
 
-            // 2. Projects Section Header: Label + [▶ Run] + [+ Project] + [↺ Engine]
+            // 2. Projects Section Header: Label + [▶ Run] + [+ Project] (no flush engine bloat button)
             val projectsHeaderRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -543,7 +524,7 @@ class MathWorkspaceFragment : Fragment() {
                 shadowPadDp = 2.3f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(60f), dp(30f)).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(64f), dp(30f)).apply {
                     marginEnd = dp(4f)
                 }
                 setOnClickListener {
@@ -566,9 +547,7 @@ class MathWorkspaceFragment : Fragment() {
                 shadowPadDp = 2.3f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(72f), dp(30f)).apply {
-                    marginEnd = dp(4f)
-                }
+                layoutParams = LinearLayout.LayoutParams(dp(76f), dp(30f))
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     promptNewProjectDialog()
@@ -577,34 +556,13 @@ class MathWorkspaceFragment : Fragment() {
                 holdListener = { held ->
                     if (held) activity.showButtonPopup(
                         this,
-                        "+ Project — creates a new Studio project folder (recycled on the single shared engine via O(1) module flush)."
-                    ) else activity.dismissButtonPopup()
-                }
-            }
-            btnDrawerResetProjectEngine = NeumorphicKeyView(ctx).apply {
-                text = "↺ Engine"
-                textSize = 10.2f
-                cornerRadiusDp = 10f
-                shadowPadDp = 2.3f
-                isAccentKey = false
-                isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(68f), dp(30f))
-                setOnClickListener {
-                    springPulse(this, 0.07f)
-                    resetActiveProjectIsolatedEngine()
-                }
-                setOnLongClickListener { true }
-                holdListener = { held ->
-                    if (held) activity.showButtonPopup(
-                        this,
-                        "↺ Flush — flushes all user project modules from the shared engine in O(1) time back to the clean stdlib + patches baseline."
+                        "+ Project — creates a new Studio project folder."
                     ) else activity.dismissButtonPopup()
                 }
             }
             projectsHeaderRow.addView(tvDrawerProjectsSectionLabel)
             projectsHeaderRow.addView(btnDrawerRunProject)
             projectsHeaderRow.addView(btnDrawerCreateProject)
-            projectsHeaderRow.addView(btnDrawerResetProjectEngine)
             addView(projectsHeaderRow)
 
             drawerProjectListContainer = LinearLayout(ctx).apply {
@@ -864,20 +822,18 @@ class MathWorkspaceFragment : Fragment() {
         btnActiveProjectPill?.text = "📦 $activeProjectName"
         btnActiveProjectPill?.layoutParams = LinearLayout.LayoutParams(dp(pillW), dp(36f))
 
-        // Defer constructing the 40+ drawer project/file cards until the drawer is actually open;
-        // toggleFileManagerDrawer(open = true) always invokes refreshFileManagerDrawer() right before showing.
         if (!isFileManagerDrawerOpen) return
 
         tvDrawerTitle?.text = "📦 Project & Module Manager"
         val stdlibKb = (projStatus.stdlibMathcBytes / 1024L).coerceAtLeast(1L)
-        val soBadge = if (projStatus.hasEngineSo) "engine.so ✓" else "engine.so (jni)"
-        tvDrawerSubtitle?.text = "[$activeProjectName] • Shared Engine ✓ • stdlib+patches (${stdlibKb}KB) • O(1) Flush"
+        tvDrawerSubtitle?.text = "[$activeProjectName] • Shared Engine ✓ • stdlib+patches (${stdlibKb}KB)"
         tvDrawerFilesSectionLabel?.text = "MODULES IN [$activeProjectName] (${openModuleFiles.size}/${allModFiles.size})"
 
         drawerProjectListContainer?.let { projContainer ->
             projContainer.removeAllViews()
             allProjects.forEach { projName ->
                 val isCurProj = (projName == activeProjectName)
+                val isDefaultProj = (projName == MathEngineManager.DEFAULT_PROJECT_NAME)
                 val pStat = MathEngineManager.getProjectBinaryStatus(ctx, projName)
                 val pModsCount = listModuleFiles(ctx, projName).size
                 val pStdKb = (pStat.stdlibMathcBytes / 1024L).coerceAtLeast(1L)
@@ -919,7 +875,7 @@ class MathWorkspaceFragment : Fragment() {
                     )
                 }
                 val tvPName = TextView(ctx).apply {
-                    text = if (projName == MathEngineManager.DEFAULT_PROJECT_NAME) "📦 $projName (default)" else "📦 $projName"
+                    text = if (isDefaultProj) "📦 $projName (default)" else "📦 $projName"
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f)
                     setTypeface(typeface, if (isCurProj) Typeface.BOLD else Typeface.NORMAL)
                     setTextColor(if (isCurProj) accentText else primaryText)
@@ -949,7 +905,8 @@ class MathWorkspaceFragment : Fragment() {
                 }
                 projCard.addView(tvPMeta)
 
-                // Project Options Row: [▶ Run] | [Open/Active] | [Rename/Copy] | [Reset .mathc] | [Del/Reset1]
+                // Project Options Row: [▶ Run] | [Open/Active] | [Clone/Ren] | [Del]
+                // Reset is completely removed; for default project (project1), "Del" is greyed out and unclickable.
                 val pActions = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -987,21 +944,22 @@ class MathWorkspaceFragment : Fragment() {
                         promptRenameOrCopyProjectDialog(projName)
                     }
                 }
-                val btnResetProj = makeEntryActionBtn("Reset", false).apply {
-                    setOnClickListener {
-                        resetSpecificProjectEngine(projName)
-                    }
-                }
-                val btnDelProj = makeEntryActionBtn(if (projName == MathEngineManager.DEFAULT_PROJECT_NAME) "Reset1" else "Del", false).apply {
+                val btnDelProj = makeEntryActionBtn("Del", false).apply {
                     (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
-                    setOnClickListener {
-                        confirmDeleteOrResetProject(projName)
+                    if (isDefaultProj) {
+                        isEnabled = false
+                        isClickable = false
+                        isFocusable = false
+                        alpha = 0.42f
+                    } else {
+                        setOnClickListener {
+                            confirmDeleteOrResetProject(projName)
+                        }
                     }
                 }
                 pActions.addView(btnRunProj)
                 pActions.addView(btnSwitchProj)
                 pActions.addView(btnRenameProj)
-                pActions.addView(btnResetProj)
                 pActions.addView(btnDelProj)
                 projCard.addView(pActions)
 
@@ -1162,11 +1120,6 @@ class MathWorkspaceFragment : Fragment() {
             listContainer.addView(itemCard)
         }
     }
-
-    // =========================================================================
-    //  Main Window UI Builder (Maximized Editor & Output/Variables Panes)
-    // =========================================================================
-
 
     internal var selectedInspectorIdx: Int = 0
 

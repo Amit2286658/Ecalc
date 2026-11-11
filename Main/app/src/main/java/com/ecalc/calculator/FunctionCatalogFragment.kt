@@ -82,7 +82,7 @@ class FunctionCatalogFragment : Fragment() {
     ): View {
         val ctx = requireContext()
         val activity = activity as? MainActivity
-        val dark = activity?.isDarkMode ?: true
+        val dark = activity?.isDarkMode ?: false
         val density = resources.displayMetrics.density
         val dp = { v: Float -> (v * density).toInt() }
 
@@ -242,15 +242,43 @@ class FunctionCatalogFragment : Fragment() {
         }
     }
 
-    /** Creates the frosted backdrop ImageView with a live display cutout over tvPrimaryDisplay + tvSecondaryDisplay. */
+    /**
+     * Creates the frosted backdrop ImageView with a live display cutout over `tvPrimaryDisplay` +
+     * `tvSecondaryDisplay`, while hiding the display text views during `Frost.frozenBackdrop` capture
+     * so the blurred text behind them never produces a white tint or halo around the cutout.
+     */
     private fun createFrostedBackdropWithDisplayCutout(act: MainActivity, rootFrame: FrameLayout, dp: (Float) -> Int): ImageView? {
-        val frostBmp = Frost.frozenBackdrop(rootFrame, downscale = 6, radius = 6) ?: return null
-        val clipPath = Path().apply { fillType = Path.FillType.EVEN_ODD }
+        val dispPri = act.binding.tvPrimaryDisplay
+        val dispSec = act.binding.tvSecondaryDisplay
+        val dispAngle = act.binding.tvAngleMode
+        val dispMr = act.binding.mrDisplayCluster
+
+        val origPriVis = dispPri.visibility
+        val origSecVis = dispSec.visibility
+        val origAngleVis = dispAngle.visibility
+        val origMrVis = dispMr.visibility
+
+        // Temporarily mark the display text views INVISIBLE during the synchronous snapshot draw
+        // (View.draw skips INVISIBLE children without triggering a layout pass) so the text behind
+        // the cutout is never blurred into the frost bitmap, eliminating the white tint behind it.
+        dispPri.visibility = View.INVISIBLE
+        dispSec.visibility = View.INVISIBLE
+        dispAngle.visibility = View.INVISIBLE
+        if (origMrVis == View.VISIBLE) dispMr.visibility = View.INVISIBLE
+        val frostBmp = try {
+            Frost.frozenBackdrop(rootFrame, downscale = 6, radius = 6)
+        } finally {
+            dispPri.visibility = origPriVis
+            dispSec.visibility = origSecVis
+            dispAngle.visibility = origAngleVis
+            dispMr.visibility = origMrVis
+        } ?: return null
+
+        val outerPath = Path()
+        val holePath = Path()
         val cutoutRect = RectF()
         return object : ImageView(act) {
             override fun onDraw(canvas: Canvas) {
-                val dispPri = act.binding.tvPrimaryDisplay
-                val dispSec = act.binding.tvSecondaryDisplay
                 if (dispPri.width > 0 && dispSec.width > 0 && width > 0 && height > 0) {
                     val priLoc = IntArray(2)
                     val secLoc = IntArray(2)
@@ -258,23 +286,25 @@ class FunctionCatalogFragment : Fragment() {
                     dispPri.getLocationInWindow(priLoc)
                     dispSec.getLocationInWindow(secLoc)
                     getLocationInWindow(selfLoc)
-                    val leftB = (minOf(priLoc[0], secLoc[0]) - selfLoc[0] - dp(10f)).toFloat()
-                    val topB = (minOf(priLoc[1], secLoc[1]) - selfLoc[1] - dp(8f)).toFloat()
-                    val rightB = (maxOf(priLoc[0] + dispPri.width, secLoc[0] + dispSec.width) - selfLoc[0] + dp(10f)).toFloat()
-                    val bottomB = (maxOf(priLoc[1] + dispPri.height, secLoc[1] + dispSec.height) - selfLoc[1] + dp(8f)).toFloat()
+                    val leftB = (minOf(priLoc[0], secLoc[0]) - selfLoc[0] - dp(12f)).toFloat()
+                    val topB = (minOf(priLoc[1], secLoc[1]) - selfLoc[1] - dp(10f)).toFloat()
+                    val rightB = (maxOf(priLoc[0] + dispPri.width, secLoc[0] + dispSec.width) - selfLoc[0] + dp(12f)).toFloat()
+                    val bottomB = (maxOf(priLoc[1] + dispPri.height, secLoc[1] + dispSec.height) - selfLoc[1] + dp(10f)).toFloat()
                     cutoutRect.set(
                         leftB.coerceIn(0f, width.toFloat()),
                         topB.coerceIn(0f, height.toFloat()),
                         rightB.coerceIn(0f, width.toFloat()),
                         bottomB.coerceIn(0f, height.toFloat())
                     )
-                    clipPath.reset()
-                    clipPath.fillType = Path.FillType.EVEN_ODD
-                    clipPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
+                    outerPath.reset()
+                    outerPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
+                    holePath.reset()
                     val r = dp(10f).toFloat()
-                    clipPath.addRoundRect(cutoutRect, r, r, Path.Direction.CW)
+                    holePath.addRoundRect(cutoutRect, r, r, Path.Direction.CW)
+                    outerPath.op(holePath, Path.Op.DIFFERENCE)
+
                     val saveCount = canvas.save()
-                    canvas.clipPath(clipPath)
+                    canvas.clipPath(outerPath)
                     super.onDraw(canvas)
                     canvas.restoreToCount(saveCount)
                 } else {
@@ -340,7 +370,7 @@ class FunctionCatalogFragment : Fragment() {
             val count = countForFilter(filterKey)
             val isSelected = (filterKey == activeFilter)
             val optionBtn = NeumorphicKeyView(act).apply {
-                text = if ( isSelected ) "✓  $label  ($count)" else "$label  ($count)"
+                text = if (isSelected) "✓  $label  ($count)" else "$label  ($count)"
                 textSize = 11.4f
                 cornerRadiusDp = 9.5f
                 shadowPadDp = 2.0f
@@ -358,7 +388,7 @@ class FunctionCatalogFragment : Fragment() {
                     val dist = kotlin.math.abs(newIdx - prevIdx).coerceIn(1, 4)
                     val dir = if (newIdx >= prevIdx) 1 else -1
                     activeFilter = filterKey
-                    val curDark = (this@FunctionCatalogFragment.activity as? MainActivity)?.isDarkMode ?: true
+                    val curDark = (this@FunctionCatalogFragment.activity as? MainActivity)?.isDarkMode ?: false
                     updateTopButtonsAppearance(curDark)
                     btnFilterDropdown?.let { pulseRow(it) }
                     renderFilteredItems(
@@ -379,22 +409,18 @@ class FunctionCatalogFragment : Fragment() {
             setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { dismissFilterDropdown() }
         }
-        // Filter dropdown frosts the whole screen — expression/answer stay blurred here
-        // (no display cutout; the sharp cutout is reserved for the helper key pad).
         val frostView = ImageView(act).apply {
             setImageBitmap(Frost.frozenBackdrop(rootFrame, downscale = 6, radius = 6))
             scaleType = ImageView.ScaleType.FIT_XY
             alpha = 0f
         }
-        if (frostView != null) {
-            overlay.addView(
-                frostView,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
+        overlay.addView(
+            frostView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
             )
-        }
+        )
         overlay.addView(
             panel,
             FrameLayout.LayoutParams(
@@ -456,7 +482,7 @@ class FunctionCatalogFragment : Fragment() {
                     panel.scaleY = scale
                     panel.alpha = (f / 0.22f).coerceIn(0f, 1f)
                     panel.translationY = (if (showBelow) -12f * density else 12f * density) * (1f - f)
-                    frostView?.alpha = 0.92f * (f / 0.3f).coerceIn(0f, 1f)
+                    frostView.alpha = 0.92f * (f / 0.3f).coerceIn(0f, 1f)
                 }
                 start()
                 filterDropdownAnimators.add(this)
@@ -505,10 +531,7 @@ class FunctionCatalogFragment : Fragment() {
     /**
      * Drops down a small frost-blurred button window anchored to [anchor] (the `0-9` toggle):
      * digits 1–9 (3×3 grid), decimal dot, parameter comma, a smart `( )` bracket key, a `0` key
-     * and an accent equals key. Entrance runs the app's signature damped-spring animation
-     * (`e⁻⁴ᶠ · cos(3πf)` scale
-     * with a slide + fade, identical to the hold-info popups). Tapping the overlay anywhere
-     * outside the panel — or the toggle again — dismisses it.
+     * and an accent equals key.
      */
     private fun showHelperPad(anchor: View) {
         val act = activity as? MainActivity ?: return
@@ -659,8 +682,8 @@ class FunctionCatalogFragment : Fragment() {
             val anchorCx = anchorLoc[0] + anchor.width / 2 - rootLoc[0]
             val anchorTop = anchorLoc[1] - rootLoc[1]
             val anchorBottom = anchorTop + anchor.height
-            val showAbove = anchorTop - bh - layerPad >= layerPad
-            val rawY = if (showAbove) anchorTop - bh - layerPad else anchorBottom + layerPad
+            val showBelow = anchorBottom + bh + layerPad <= rootH - layerPad
+            val rawY = if (showBelow) anchorBottom + dp(6f) else anchorTop - bh - dp(6f)
             val maxTop = (rootH - bh - layerPad).coerceAtLeast(layerPad)
             val y = rawY.coerceIn(layerPad, maxTop)
             val maxLeft = (rootW - bw - layerPad).coerceAtLeast(layerPad)
@@ -673,8 +696,8 @@ class FunctionCatalogFragment : Fragment() {
             panel.requestLayout()
             panel.visibility = View.VISIBLE
             panel.pivotX = bw / 2f
-            panel.pivotY = if (showAbove) bh.toFloat() else 0f
-            panel.translationY = if (showAbove) 12f * density else -12f * density
+            panel.pivotY = if (showBelow) 0f else bh.toFloat()
+            panel.translationY = if (showBelow) -12f * density else 12f * density
             val anim = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 430L
                 interpolator = LinearInterpolator()
@@ -685,7 +708,7 @@ class FunctionCatalogFragment : Fragment() {
                     panel.scaleX = scale
                     panel.scaleY = scale
                     panel.alpha = (f / 0.22f).coerceIn(0f, 1f)
-                    panel.translationY = (if (showAbove) 12f * density else -12f * density) * (1f - f)
+                    panel.translationY = (if (showBelow) -12f * density else 12f * density) * (1f - f)
                     frostView?.alpha = 0.92f * (f / 0.3f).coerceIn(0f, 1f)
                 }
                 start()
@@ -735,7 +758,7 @@ class FunctionCatalogFragment : Fragment() {
                 if (!isAdded) return@runOnUiThread
                 val changed = (items !== allItems && items != allItems)
                 allItems = items
-                val dark = (activity as? MainActivity)?.isDarkMode ?: true
+                val dark = (activity as? MainActivity)?.isDarkMode ?: false
                 updateTopButtonsAppearance(dark)
                 if (changed || lastRenderedItemsRef == null) {
                     renderFilteredItems(dark, force = true)

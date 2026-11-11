@@ -135,19 +135,98 @@ object MathEngineManager {
     var activeProjectName: String = DEFAULT_STUDIO_PROJECT_NAME
 
     internal val worker = Executors.newSingleThreadExecutor()
+    internal val patchBackgroundExecutor = Executors.newSingleThreadExecutor()
     internal val projectFsLock = Any()
     @Volatile
     internal var defaultProject1Seeded: Boolean = false
     internal val customExternCallbacks = linkedMapOf<String, MathEngineBridge.ExternCallback>()
 
-    /** Initializes application context, bundled patches (`assets/patches/`), and [CurrencyConverter] rates off the UI thread. */
+    /**
+     * Initializes application context, offline currency cache, `project1` default modules, and the
+     * core `stdlib.mathc` engine off the UI thread (without waiting on internet or patch compilation).
+     */
     fun initialize(context: Context) {
         val app = context.applicationContext
         appContext = app
         worker.execute {
-            runCatching { MathPatchDownloader.ensureBundledPatchesSeeded(app) }
-            runCatching { CurrencyConverter.initialize(app) }
+            runCatching { CurrencyConverter.initializeOfflineOnly(app) }
             runCatching { ensureDefaultProject1Seeded(app) }
+            runCatching { ensureStdlibOnlyEngineSync(app) }
+        }
+    }
+
+    /**
+     * Performs all non-network startup initialization during the splash screen:
+     * 1. Loads offline currency cache from disk (no network requests).
+     * 2. Seeds default `project1` `.math` modules & data files on disk for the Freeform Editor.
+     * 3. Boots the native C11 engine (`stdlib.mathc` or precompiled cache) and links `project1`.
+     * 4. Preloads stdlib documentation and calculator function catalog.
+     *
+     * Patch downloading and patch compilation are intentionally excluded from the splash screen
+     * and handled independently in the background via [syncAndLoadPatches].
+     */
+    fun initializeStdlibForSplash(context: Context, onReady: ((Boolean) -> Unit)? = null) {
+        val app = context.applicationContext
+        appContext = app
+        worker.execute {
+            var ok = false
+            try {
+                runCatching { CurrencyConverter.initializeOfflineOnly(app) }
+                runCatching { ensureDefaultProject1Seeded(app) }
+                val handle = ensureStdlibOnlyEngineSync(app)
+                ok = (handle != 0L)
+                if (ok) {
+                    runCatching { ensureProject1LinkedForCalculatorSync(app) }
+                    runCatching { refreshLiveAutocompleteCatalogSync(handle) }
+                }
+                runCatching { ensureBundledStdlibDocsLoaded(app) }
+                runCatching { collectCalculatorFunctionCatalog(app) }
+            } catch (t: Throwable) {
+                Log.e(TAG, "initializeStdlibForSplash failed", t)
+            } finally {
+                onReady?.invoke(ok)
+            }
+        }
+    }
+
+    /**
+     * Boots [engineHandle] with `stdlib.mathc` (or an already-cached `compiled_state.mathc` image)
+     * in O(1) time without running `.math` patch compilation or network checks.
+     */
+    @Synchronized
+    internal fun ensureStdlibOnlyEngineSync(ctx: Context): Long {
+        ensureProjectSetup(ctx, activeProjectName)
+        if (engineHandle != 0L) {
+            registerHostExternsOnHandle(engineHandle, activeProjectName)
+            return engineHandle
+        }
+        return try {
+            val cachedHandle = MathPatchLoader.tryBootFromCompiledCache(ctx, null)
+            if (cachedHandle != 0L) {
+                engineHandle = cachedHandle
+                linkedModuleSourcesByName.clear()
+                linkedProjectName = null
+                isProjectModeActive = false
+                registerHostExternsOnHandle(cachedHandle, activeProjectName)
+                loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                refreshLiveAutocompleteCatalogSync(cachedHandle)
+                return cachedHandle
+            }
+
+            val handle = createFreshStdlibEngine(ctx, activeProjectName)
+            engineHandle = handle
+            linkedModuleSourcesByName.clear()
+            linkedProjectName = null
+            isProjectModeActive = false
+            if (handle != 0L) {
+                registerHostExternsOnHandle(handle, activeProjectName)
+                loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                refreshLiveAutocompleteCatalogSync(handle)
+            }
+            handle
+        } catch (t: Throwable) {
+            Log.e(TAG, "ensureStdlibOnlyEngineSync failed", t)
+            0L
         }
     }
 
@@ -211,7 +290,7 @@ object MathEngineManager {
      */
     @Synchronized
     internal fun getUniversalPatchedStdlibBytes(ctx: Context): ByteArray {
-        val patchesDir = MathPatchDownloader.getPatchesDir(ctx)
+        val patchesDir = File(ctx.filesDir, MathPatchDownloader.PATCHES_FOLDER_NAME)
         val cachedPatchedStdlib = File(patchesDir, MathPatchDownloader.CACHE_MATHC_FILE)
         if (cachedPatchedStdlib.isFile && cachedPatchedStdlib.canRead() && cachedPatchedStdlib.length() > 0L) {
             runCatching { return cachedPatchedStdlib.readBytes() }
@@ -685,8 +764,8 @@ object MathEngineManager {
     }
 
     /**
-     * Ensures the single shared `Engine*` handle ([engineHandle]) is booted with `stdlib.mathc` +
-     * all global patches (`filesDir/math_patches/compiled_state.mathc`) and returns it.
+     * Ensures the single shared `Engine*` handle ([engineHandle]) is booted with `stdlib.mathc`
+     * (plus any cached `compiled_state.mathc`) without blocking on network or uncached patch compilation.
      */
     @Synchronized
     internal fun ensureSharedEngineSync(
@@ -694,11 +773,11 @@ object MathEngineManager {
         projectName: String = activeProjectName
     ): Long {
         val safeName = sanitizeProjectName(projectName)
-        ensureEngine()
-        if (engineHandle != 0L) {
-            registerHostExternsOnHandle(engineHandle, safeName)
+        val handle = ensureStdlibOnlyEngineSync(ctx)
+        if (handle != 0L) {
+            registerHostExternsOnHandle(handle, safeName)
         }
-        return engineHandle
+        return handle
     }
 
     /** Compatibility alias returning the single shared `Engine*` handle. */
@@ -749,24 +828,28 @@ object MathEngineManager {
     }
 
     /**
-     * Ensures the single shared `Engine*` instance ([engineHandle]) and the global patch cache
-     * (`compiled_state.mathc`) are booted and up to date.
+     * Ensures the single shared `Engine*` instance ([engineHandle]) is booted.
+     * When called without [onStatus] (e.g. calculator/editor evaluation), guarantees `stdlib.mathc`
+     * is ready immediately without blocking on patch compilation. When called by the background
+     * patch loader ([onStatus] provided), also links any pending patches.
      */
     @Synchronized
     fun ensureEngine(onStatus: ((String) -> Unit)? = null): Boolean {
         val ctx = appContext ?: return false
         ensureProjectSetup(ctx, activeProjectName)
 
+        if (onStatus == null) {
+            return ensureStdlibOnlyEngineSync(ctx) != 0L
+        }
+
         if (engineHandle != 0L) {
             registerHostExternsOnHandle(engineHandle, activeProjectName)
             if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
                 return rebuildSharedEngineAndPatchesSync(ctx, onStatus)
             }
-            // If user project modules are loaded, flush them before applying any newly downloaded global patches
             val patchesDir = MathPatchDownloader.getPatchesDir(ctx)
             val hasPatchFiles = patchesDir.listFiles { f -> f.isFile && f.name.endsWith(".math") }?.isNotEmpty() == true
             if (hasPatchFiles && isProjectModeActive) {
-                // Only flush if unloaded patches actually exist
                 val newlyLoaded = MathPatchLoader.loadUnloadedPatches(
                     ctx,
                     engineHandle,
@@ -801,14 +884,6 @@ object MathEngineManager {
                 linkedProjectName = null
                 isProjectModeActive = false
                 registerHostExternsOnHandle(cachedHandle, activeProjectName)
-                if (onStatus == null) {
-                    MathPatchLoader.loadUnloadedPatches(
-                        ctx,
-                        cachedHandle,
-                        { src -> compileAndLoadPatchOnHandleSync(cachedHandle, src) },
-                        null
-                    )
-                }
                 loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
                 return true
             }
@@ -841,12 +916,15 @@ object MathEngineManager {
         }
     }
 
-    /** Scans `filesDir/math_patches/` on the engine worker thread and links any unloaded `.math` patches into the shared engine. */
+    /**
+     * Scans `filesDir/math_patches/` in the background and compiles/links any unloaded `.math`
+     * patches without stalling interactive calculator or studio evaluations.
+     */
     fun loadPendingPatches(
         onDone: ((loadedCount: Int) -> Unit)? = null,
         onStatus: ((String) -> Unit)? = null
     ) {
-        worker.execute {
+        patchBackgroundExecutor.execute {
             try {
                 val ctx = appContext
                 if (ctx == null) {
@@ -854,44 +932,98 @@ object MathEngineManager {
                     onDone?.invoke(0)
                     return@execute
                 }
-                synchronized(this) {
-                    if (engineHandle == 0L) {
-                        val ok = ensureEngine(onStatus = onStatus)
-                        if (!ok) {
-                            onStatus?.invoke("Patch load skipped: engine not ready")
+                MathPatchDownloader.ensureBundledPatchesSeeded(ctx)
+
+                // Compile any uncached patches on an isolated staging handle first so the main
+                // calculator/editor worker thread is never blocked during patch compilation.
+                val cachedProbe = MathPatchLoader.tryBootFromCompiledCache(ctx, null)
+                if (cachedProbe != 0L) {
+                    runCatching { MathEngineBridge.nativeDestroy(cachedProbe) }
+                } else {
+                    val stagingHandle = createFreshStdlibEngine(ctx, activeProjectName)
+                    if (stagingHandle != 0L) {
+                        try {
+                            MathPatchLoader.loadUnloadedPatches(
+                                ctx,
+                                stagingHandle,
+                                { src -> compileAndLoadPatchOnHandleSync(stagingHandle, src) },
+                                onStatus
+                            )
+                        } finally {
+                            runCatching { MathEngineBridge.nativeDestroy(stagingHandle) }
                         }
+                    }
+                }
+
+                // Now swap/apply the precompiled patch cache onto the shared engine on worker (< 1 ms)
+                worker.execute {
+                    try {
+                        synchronized(this) {
+                            if (engineHandle == 0L) {
+                                val ok = ensureEngine(onStatus = onStatus)
+                                if (!ok) {
+                                    onStatus?.invoke("Patch load skipped: engine not ready")
+                                }
+                                onDone?.invoke(if (ok) 1 else 0)
+                                return@execute
+                            }
+                            registerHostExternsOnHandle(engineHandle, activeProjectName)
+                            if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
+                                rebuildSharedEngineAndPatchesSync(ctx, onStatus)
+                                onDone?.invoke(1)
+                                return@execute
+                            }
+                            val cachedHandle = MathPatchLoader.tryBootFromCompiledCache(ctx, onStatus)
+                            if (cachedHandle != 0L) {
+                                val oldHandle = engineHandle
+                                engineHandle = cachedHandle
+                                if (oldHandle != 0L) {
+                                    runCatching { MathEngineBridge.nativeDestroy(oldHandle) }
+                                }
+                                linkedModuleSourcesByName.clear()
+                                linkedProjectName = null
+                                linkedProject1Signature = ""
+                                isProjectModeActive = false
+                                registerHostExternsOnHandle(cachedHandle, activeProjectName)
+                                loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                                refreshLiveAutocompleteCatalogSync(cachedHandle)
+                                onDone?.invoke(1)
+                                return@execute
+                            }
+                            val count = MathPatchLoader.loadUnloadedPatches(
+                                ctx,
+                                engineHandle,
+                                { src ->
+                                    if (isProjectModeActive) flushUserModulesSync(ctx)
+                                    compileAndLoadPatchOnHandleSync(engineHandle, src)
+                                },
+                                onStatus
+                            )
+                            if (count > 0) {
+                                loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
+                                refreshLiveAutocompleteCatalogSync(engineHandle)
+                            }
+                            onDone?.invoke(count)
+                        }
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "loadPendingPatches worker swap failed", t)
+                        onStatus?.invoke("Patch load failed: ${t.message ?: t.javaClass.simpleName}")
                         onDone?.invoke(0)
-                        return@execute
                     }
-                    registerHostExternsOnHandle(engineHandle, activeProjectName)
-                    if (MathPatchLoader.needsEngineRebuild(ctx, engineHandle)) {
-                        rebuildSharedEngineAndPatchesSync(ctx, onStatus)
-                        onDone?.invoke(1)
-                        return@execute
-                    }
-                    val count = MathPatchLoader.loadUnloadedPatches(
-                        ctx,
-                        engineHandle,
-                        { src ->
-                            if (isProjectModeActive) flushUserModulesSync(ctx)
-                            compileAndLoadPatchOnHandleSync(engineHandle, src)
-                        },
-                        onStatus
-                    )
-                    if (count > 0) {
-                        loadedBaseHash = runCatching { getUniversalPatchedStdlibBytes(ctx).contentHashCode() }.getOrDefault(0)
-                        refreshLiveAutocompleteCatalogSync(engineHandle)
-                    }
-                    onDone?.invoke(count)
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "loadPendingPatches failed", t)
+                onStatus?.invoke("Patch load failed: ${t.message ?: t.javaClass.simpleName}")
                 onDone?.invoke(0)
             }
         }
     }
 
-    /** Runs the complete startup patch pipeline in deterministic order. */
+    /**
+     * Runs the complete background patch loader pipeline completely independent of the splash screen:
+     * seeds bundled patches, syncs remote patches over the internet, compiles/links patches in the
+     * background, and reports status messages for toast notifications on failure or success.
+     */
     fun syncAndLoadPatches(
         context: Context,
         onStatus: ((String) -> Unit)? = null,
@@ -899,7 +1031,7 @@ object MathEngineManager {
     ) {
         val app = context.applicationContext
         appContext = app
-        Thread {
+        patchBackgroundExecutor.execute {
             runCatching { MathPatchDownloader.ensureBundledPatchesSeeded(app) }
             runCatching { CurrencyConverter.initialize(app) }
             val downloaded = runCatching { MathPatchDownloader.syncMissingPatches(app, onStatus) }.getOrDefault(0)
@@ -909,7 +1041,7 @@ object MathEngineManager {
                 },
                 onStatus = onStatus
             )
-        }.start()
+        }
     }
 
 }

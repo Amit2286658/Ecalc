@@ -1,28 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Default startup theme is Light Theme so Android cold start always starts with Light Theme,
+         while the in-app light/dark theme switcher remains completely independent at runtime. -->
     <style name="Theme.Ecalc" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="android:windowBackground">#2D2D2D</item>
-        <item name="android:statusBarColor">#2D2D2D</item>
-        <item name="android:navigationBarColor">#333333</item>
-        <item name="android:windowSplashScreenBackground">#2D2D2D</item>
+        <item name="android:windowBackground">#F8F8F8</item>
+        <item name="android:statusBarColor">#F8F8F8</item>
+        <item name="android:navigationBarColor">#F3F3F3</item>
+        <item name="android:windowSplashScreenBackground">#F8F8F8</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
-        <item name="android:windowSplashScreenAnimationDuration">500</item>
-        <item name="colorPrimary">#13959B</item>
+        <item name="android:windowSplashScreenAnimationDuration">150</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="colorPrimary">#F18977</item>
     </style>
 
-    <!-- Launch stages: the system draws the 12+ splash (and the pre-launch
-         window preview) from the alias the launcher picks, so each alias's
-         theme pins the splash to the APP's saved theme instead of the
-         system's. -->
     <style name="Theme.Ecalc.LaunchDark" parent="Theme.Ecalc">
-        <item name="android:windowBackground">#2D2D2D</item>
-        <item name="android:statusBarColor">#2D2D2D</item>
-        <item name="android:navigationBarColor">#333333</item>
-        <item name="android:windowSplashScreenBackground">#2D2D2D</item>
+        <item name="android:windowBackground">#F8F8F8</item>
+        <item name="android:statusBarColor">#F8F8F8</item>
+        <item name="android:navigationBarColor">#F3F3F3</item>
+        <item name="android:windowSplashScreenBackground">#F8F8F8</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
-        <item name="android:windowSplashScreenAnimationDuration">500</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowSplashScreenAnimationDuration">150</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 
     <style name="Theme.Ecalc.LaunchLight" parent="Theme.Ecalc">
@@ -31,7 +31,7 @@
         <item name="android:navigationBarColor">#F3F3F3</item>
         <item name="android:windowSplashScreenBackground">#F8F8F8</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
-        <item name="android:windowSplashScreenAnimationDuration">500</item>
+        <item name="android:windowSplashScreenAnimationDuration">150</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
     </style>

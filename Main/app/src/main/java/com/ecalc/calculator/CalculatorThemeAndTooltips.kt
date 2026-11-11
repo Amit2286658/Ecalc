@@ -369,70 +369,46 @@ internal fun MainActivity.toggleThemeWithCircularReveal() {
 
 internal fun MainActivity.persistTheme() { prefs.edit().putBoolean("dark_mode", isDarkMode).apply() }
 
+/**
+ * Transitions from the light-themed splash screen (App Icon + "MEP Calc" Title + Circle Loading Bar)
+ * into the main calculator once stdlib + freeform editor setup is finished.
+ */
 internal fun MainActivity.playLaunchSplashReveal() {
-    styleSplashDots(isDarkMode)
-    binding.splashCircle.visibility = View.VISIBLE
-    binding.splashInnerDot.alpha = 1f
-    binding.calculatorContainer.visibility = View.INVISIBLE
+    applyThemeColors(isDarkMode)
+    binding.calculatorContainer.visibility = View.VISIBLE
 
-    val cx = binding.rootFrame.width / 2
-    val cy = binding.rootFrame.height / 2
-    val splashRadius = hypot(cx.toDouble(), cy.toDouble()).toFloat() * 0.45f
-    listOf(0L, 120L).forEach { spawnRippleRing(cx, cy, splashRadius, it, 0.26f, 440L) }
+    val rcx = binding.calculatorContainer.width / 2
+    val rcy = binding.calculatorContainer.height / 2
+    val maxR = hypot(rcx.toDouble(), rcy.toDouble()).toFloat()
 
-    ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 240L
-        interpolator = LinearInterpolator()
-        addUpdateListener { anim ->
-            val f = anim.animatedValue as Float
-            val t = f * 0.24
-            val kick = Math.exp(-7.5 * t) * Math.sin(t * 24.0)
-            val innerScale = (1.0 + 0.35 * kick - 0.45 * f * f).toFloat().coerceAtLeast(0.25f)
-            val outerScale = (1.0 + 0.14 * kick).toFloat()
-            binding.splashInnerDot.scaleX = innerScale
-            binding.splashInnerDot.scaleY = innerScale
-            binding.splashInnerDot.alpha = (1f - 0.65f * f * f).coerceIn(0f, 1f)
-            binding.splashOuterDot.scaleX = outerScale
-            binding.splashOuterDot.scaleY = outerScale
+    // Fade out the splash screen while revealing the ready calculator underneath
+    binding.splashCircle.animate()
+        .alpha(0f)
+        .setDuration(220L)
+        .setInterpolator(DecelerateInterpolator())
+        .withEndAction {
+            binding.splashCircle.visibility = View.GONE
+            binding.splashCircle.alpha = 1f
         }
-        addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                binding.splashCircle.visibility = View.GONE
-                binding.splashOuterDot.scaleX = 1f
-                binding.splashOuterDot.scaleY = 1f
-                binding.splashInnerDot.scaleX = 1f
-                binding.splashInnerDot.scaleY = 1f
-                binding.calculatorContainer.visibility = View.VISIBLE
-                val rcx = binding.calculatorContainer.width / 2
-                val rcy = binding.calculatorContainer.height / 2
-                val maxR = hypot(rcx.toDouble(), rcy.toDouble()).toFloat()
-                ViewAnimationUtils.createCircularReveal(
-                    binding.calculatorContainer,
-                    rcx,
-                    rcy,
-                    38f * resources.displayMetrics.density,
-                    maxR
-                ).apply {
-                    duration = 340L
-                    interpolator = AccelerateDecelerateInterpolator()
-                    addListener(object : AnimatorListenerAdapter() {
-                        override fun onAnimationEnd(animation: Animator) {
-                            binding.viewPager.offscreenPageLimit = 5
-                            binding.rootFrame.postDelayed({
-                                if (!isFinishing && !isDestroyed) {
-                                    ensureWorkspaceFragment()
-                                }
-                            }, 180L)
-                        }
-                    })
-                    start()
-                }
-                spawnRippleRing(rcx, rcy, maxR, 40L, 0.35f, 700L)
-                spawnRippleRing(rcx, rcy, maxR, 190L, 0.35f, 700L)
-                wobbleRound(rcx.toFloat(), rcy.toFloat(), maxR, 340L)
+        .start()
+
+    if (binding.calculatorContainer.isAttachedToWindow && maxR > 0f) {
+        runCatching {
+            ViewAnimationUtils.createCircularReveal(
+                binding.calculatorContainer,
+                rcx,
+                rcy,
+                38f * resources.displayMetrics.density,
+                maxR
+            ).apply {
+                duration = 320L
+                interpolator = AccelerateDecelerateInterpolator()
+                start()
             }
-        })
-        start()
+        }
+        spawnRippleRing(rcx, rcy, maxR, 40L, 0.35f, 700L)
+        spawnRippleRing(rcx, rcy, maxR, 190L, 0.35f, 700L)
+        wobbleRound(rcx.toFloat(), rcy.toFloat(), maxR, 320L)
     }
 }
 

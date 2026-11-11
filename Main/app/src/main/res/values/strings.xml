@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Ecalc</string>
+    <string name="app_name">MEP Calc</string>
     <string name="theme_toggle_desc">Toggle dark and light theme</string>
     <string name="mr_toggle_label">MR</string>
     <string name="mr_clear">Clear</string>

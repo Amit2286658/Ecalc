@@ -187,6 +187,16 @@ object CurrencyConverter {
     }
 
     /**
+     * Loads cached exchange rates from disk only without initiating any network requests
+     * (used during the splash screen so startup is never delayed by internet latency).
+     */
+    fun initializeOfflineOnly(context: Context) {
+        val app = context.applicationContext
+        appContext = app
+        loadCachedRatesFromDisk(app)
+    }
+
+    /**
      * Initializes disk cache and starts an asynchronous background fetch of live exchange rates.
      */
     fun initialize(context: Context) {

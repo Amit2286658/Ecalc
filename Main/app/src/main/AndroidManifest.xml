@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Engine hot-update: startup check against Math-Engine-MEP repo -->
+    <!-- Engine hot-update: background check against Math-Engine-MEP repo -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
@@ -19,12 +19,10 @@
             android:exported="true"
             android:label="@string/app_name"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Ecalc" />
+            android:theme="@style/Theme.Ecalc.LaunchLight" />
 
-        <!-- Launcher alias pinned to the dark splash stage. Runtime alias
-             flipping was removed — PackageManager component flips could kill
-             the app on some OEMs. The splash-exit hook repaints to the app's
-             theme instead. -->
+        <!-- Launcher alias pinned to the light startup theme stage.
+             The in-app light/dark theme switcher operates independently at runtime. -->
         <activity-alias
             android:name=".LauncherDark"
             android:enabled="true"
@@ -33,7 +31,7 @@
             android:label="@string/app_name"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:targetActivity=".MainActivity"
-            android:theme="@style/Theme.Ecalc.LaunchDark">
+            android:theme="@style/Theme.Ecalc.LaunchLight">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 

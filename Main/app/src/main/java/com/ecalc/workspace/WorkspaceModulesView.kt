@@ -231,6 +231,8 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             symScroll.addView(sRow)
             addView(symScroll)
 
+            // Bottom action bar in Editor: [▶ Run / Link] | [📈 Plot] | [⚙ CAS]
+            // (Redundant "📋 Out" and individual file reset "↺" removed)
             val execRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -270,7 +272,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 shadowPadDp = 2.8f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(64f), dp(38f)).apply { marginEnd = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(dp(76f), dp(38f)).apply { marginEnd = dp(4f) }
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     showFrostedPlotterModal()
@@ -291,7 +293,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 shadowPadDp = 2.8f
                 isAccentKey = false
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(56f), dp(38f)).apply { marginEnd = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(dp(72f), dp(38f))
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     showFrostedBytecodeDisasmModal()
@@ -305,55 +307,12 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 }
             }
 
-            btnResetActiveModule = NeumorphicKeyView(ctx).apply {
-                text = "↺"
-                textSize = 12f
-                cornerRadiusDp = 13f
-                shadowPadDp = 2.8f
-                isAccentKey = false
-                isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(42f), dp(38f)).apply { marginEnd = dp(4f) }
-                setOnClickListener {
-                    springPulse(this, 0.07f)
-                    resetActiveModuleState()
-                }
-                setOnLongClickListener { true }
-                holdListener = { held ->
-                    if (held) activity.showButtonPopup(
-                        this,
-                        "↺ Reset Module — clears runtime variables and constants bound in the active module."
-                    ) else activity.dismissButtonPopup()
-                }
-            }
-
-            btnModuleViewLog = NeumorphicKeyView(ctx).apply {
-                text = "📋 Out"
-                textSize = 11.2f
-                cornerRadiusDp = 13f
-                shadowPadDp = 2.8f
-                isAccentKey = false
-                isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(66f), dp(38f))
-                setOnClickListener {
-                    springPulse(this, 0.07f)
-                    saveCurrentModuleEditorState(showToast = false)
-                    isModuleEditorSubTab = false
-                    updateModuleSubTabVisibility(animate = true)
-                }
-                setOnLongClickListener { true }
-                holdListener = { held ->
-                    if (held) activity.showButtonPopup(
-                        this,
-                        "📋 Out — switches to the Output, Variables & Table Inspector tab."
-                    ) else activity.dismissButtonPopup()
-                }
-            }
+            btnResetActiveModule = null
+            btnModuleViewLog = null
 
             execRow.addView(btnCompileModule)
             execRow.addView(btnPlotModule)
             execRow.addView(btnBytecodeModule)
-            execRow.addView(btnResetActiveModule)
-            execRow.addView(btnModuleViewLog)
             addView(execRow)
 
             moduleQuickStatusCard = LinearLayout(ctx).apply {
@@ -492,7 +451,6 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             }
             inspectorTableContainer?.addView(tvInspPlaceholder)
             inspCard.addView(inspectorTableContainer)
-            // inspCard added after mLogCard
 
             // 3. Dedicated Console Stream (print / println) Card
             val cCard = LinearLayout(ctx).apply {
@@ -575,6 +533,8 @@ internal fun MathWorkspaceFragment.buildModulesSection(
             outOuterScroll.addView(outStack)
             addView(outOuterScroll)
 
+            // Bottom action bar in Output & Vars: [📈 Plot] | [⚙ CAS] | [Clear]
+            // (Redundant "📝 Edit" button removed)
             val mLogActions = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -583,20 +543,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
-            btnModuleBackToEditor = NeumorphicKeyView(ctx).apply {
-                text = "📝 Edit"
-                textSize = 11.2f
-                cornerRadiusDp = 13f
-                shadowPadDp = 2.8f
-                isAccentKey = true
-                isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.0f).apply { marginEnd = dp(4f) }
-                setOnClickListener {
-                    springPulse(this, 0.07f)
-                    isModuleEditorSubTab = true
-                    updateModuleSubTabVisibility(animate = true)
-                }
-            }
+            btnModuleBackToEditor = null
             btnOutputPlot = NeumorphicKeyView(ctx).apply {
                 text = "📈 Plot"
                 textSize = 11.2f
@@ -617,7 +564,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 shadowPadDp = 2.8f
                 isAccentKey = false
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 0.9f).apply { marginEnd = dp(4f) }
+                layoutParams = LinearLayout.LayoutParams(0, dp(38f), 1.0f).apply { marginEnd = dp(4f) }
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     showFrostedBytecodeDisasmModal()
@@ -630,7 +577,7 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                 shadowPadDp = 2.8f
                 isAccentKey = false
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(72f), dp(38f))
+                layoutParams = LinearLayout.LayoutParams(dp(84f), dp(38f))
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     val fileLabel = activeModuleFileName ?: "default"
@@ -641,7 +588,6 @@ internal fun MathWorkspaceFragment.buildModulesSection(
                     moduleLogCard?.let { springPulse(it, 0.04f) }
                 }
             }
-            mLogActions.addView(btnModuleBackToEditor)
             mLogActions.addView(btnOutputPlot)
             mLogActions.addView(btnOutputBytecode)
             mLogActions.addView(btnClearModuleLog)
@@ -715,7 +661,3 @@ internal fun MathWorkspaceFragment.ensureSampleAndMigratedModuleFiles(ctx: Conte
         activeModuleFileName = null
     }
 }
-
-// =========================================================================
-//  Module Tabs, Editor, Individual Top-to-Bottom Run & Project Entry Run
-// =========================================================================
