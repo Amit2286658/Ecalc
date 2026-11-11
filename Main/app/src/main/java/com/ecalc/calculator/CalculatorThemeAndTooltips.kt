@@ -418,6 +418,11 @@ internal fun MainActivity.playLaunchSplashReveal() {
                     addListener(object : AnimatorListenerAdapter() {
                         override fun onAnimationEnd(animation: Animator) {
                             binding.viewPager.offscreenPageLimit = 5
+                            binding.rootFrame.postDelayed({
+                                if (!isFinishing && !isDestroyed) {
+                                    ensureWorkspaceFragment()
+                                }
+                            }, 180L)
                         }
                     })
                     start()

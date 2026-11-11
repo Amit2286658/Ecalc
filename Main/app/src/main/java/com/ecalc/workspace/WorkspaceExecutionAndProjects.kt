@@ -673,6 +673,10 @@ internal fun MathWorkspaceFragment.promptNewModuleDialog() {
                     "<[arith]\n\n" +
                     "priv const SCALE = 2\n" +
                     "pub base_x := 10\n" +
+                    "# @desc Computes the scaled sum of squares (a² + b²) × SCALE.\n" +
+                    "# @param a: real — First numeric operand\n" +
+                    "# @param b: real — Second numeric operand\n" +
+                    "# @return real — Scaled sum of squares (a² + b²) · SCALE\n" +
                     "pub square_sum(a: real, b: real) = (a^2 + b^2) * SCALE\n\n" +
                     "square_sum(base_x, 5)\n"
                 )
@@ -790,6 +794,9 @@ internal fun MathWorkspaceFragment.promptNewProjectDialog() {
                     "<[trig]\n\n" +
                     "pub const PROJECT_SCALE = 1.0\n" +
                     "pub x0 := 12.0\n" +
+                    "# @desc Evaluates the quadratic module transfer function (v² + 2v) × PROJECT_SCALE.\n" +
+                    "# @param v: real — Input scalar value v\n" +
+                    "# @return real — Computed value (v² + 2v) · PROJECT_SCALE\n" +
                     "pub compute(v: real) = (v^2 + 2 * v) * PROJECT_SCALE\n\n" +
                     "pub main() = {\n" +
                     "    compute(x0)\n" +

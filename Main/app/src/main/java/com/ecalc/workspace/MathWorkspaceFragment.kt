@@ -412,18 +412,15 @@ class MathWorkspaceFragment : Fragment() {
             }
         }
 
-        applyTheme(dark)
-        refreshModuleChips()
         loadModuleStateIntoEditor(animate = false)
         updateModuleSubTabVisibility(animate = false)
-        refreshFileManagerDrawer()
+        applyTheme(dark)
 
         return outerFrame
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        (activity as? MainActivity)?.let { applyTheme(it.isDarkMode) }
     }
 
     override fun onResume() {
@@ -866,6 +863,10 @@ class MathWorkspaceFragment : Fragment() {
         val pillW = (activeProjectName.length * 7.5f + 44f).coerceIn(96f, 150f)
         btnActiveProjectPill?.text = "📦 $activeProjectName"
         btnActiveProjectPill?.layoutParams = LinearLayout.LayoutParams(dp(pillW), dp(36f))
+
+        // Defer constructing the 40+ drawer project/file cards until the drawer is actually open;
+        // toggleFileManagerDrawer(open = true) always invokes refreshFileManagerDrawer() right before showing.
+        if (!isFileManagerDrawerOpen) return
 
         tvDrawerTitle?.text = "📦 Project & Module Manager"
         val stdlibKb = (projStatus.stdlibMathcBytes / 1024L).coerceAtLeast(1L)

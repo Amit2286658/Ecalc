@@ -135,15 +135,18 @@ object MathEngineManager {
     var activeProjectName: String = DEFAULT_STUDIO_PROJECT_NAME
 
     internal val worker = Executors.newSingleThreadExecutor()
+    internal val projectFsLock = Any()
+    @Volatile
+    internal var defaultProject1Seeded: Boolean = false
     internal val customExternCallbacks = linkedMapOf<String, MathEngineBridge.ExternCallback>()
 
-    /** Initializes application context, bundled patches (`assets/patches/`), and [CurrencyConverter] rates. */
+    /** Initializes application context, bundled patches (`assets/patches/`), and [CurrencyConverter] rates off the UI thread. */
     fun initialize(context: Context) {
         val app = context.applicationContext
         appContext = app
-        MathPatchDownloader.ensureBundledPatchesSeeded(app)
-        CurrencyConverter.initialize(app)
         worker.execute {
+            runCatching { MathPatchDownloader.ensureBundledPatchesSeeded(app) }
+            runCatching { CurrencyConverter.initialize(app) }
             runCatching { ensureDefaultProject1Seeded(app) }
         }
     }
@@ -220,12 +223,11 @@ object MathEngineManager {
      * Ensures that [projectName]'s directory exists for `.math` and data files, and removes any
      * obsolete per-project `engine.so`, `stdlib.mathc`, or `.base_stdlib.mathc` duplicates.
      */
-    @Synchronized
     fun ensureProjectSetup(
         ctx: Context,
         projectName: String = activeProjectName,
         allowCalcProject0: Boolean = false
-    ): File {
+    ): File = synchronized(projectFsLock) {
         val safeName = sanitizeProjectName(projectName, allowCalcProject0 = false)
         val projDir = getProjectDir(ctx, safeName, allowCalcProject0 = false)
 
@@ -241,12 +243,11 @@ object MathEngineManager {
                 File(legacyProj0, PROJECT_BASE_STDLIB_BACKUP).takeIf { it.exists() }?.delete()
             }
         }
-        return projDir
+        projDir
     }
 
     /** Lists all Studio project names in `filesDir/math_projects/`, ordering `project1` first. */
-    @Synchronized
-    fun listProjects(ctx: Context): List<String> {
+    fun listProjects(ctx: Context): List<String> = synchronized(projectFsLock) {
         ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME)
         val root = getProjectsRootDir(ctx)
         val dirs = root.listFiles { f ->
@@ -255,19 +256,19 @@ object MathEngineManager {
             ?.map { it.name }
             ?.sortedWith(compareBy<String> { if (it == DEFAULT_STUDIO_PROJECT_NAME) 0 else 1 }.thenBy { it })
             ?: listOf(DEFAULT_STUDIO_PROJECT_NAME)
-        return if (DEFAULT_STUDIO_PROJECT_NAME in dirs) dirs else (listOf(DEFAULT_STUDIO_PROJECT_NAME) + dirs)
+        if (DEFAULT_STUDIO_PROJECT_NAME in dirs) dirs else (listOf(DEFAULT_STUDIO_PROJECT_NAME) + dirs)
     }
 
-    /** Inspects the shared engine & stdlib+patches status alongside [projectName]'s linked module count. */
-    @Synchronized
-    fun getProjectBinaryStatus(ctx: Context, projectName: String = activeProjectName): ProjectBinaryStatus {
+    /** Inspects the shared engine & stdlib+patches status alongside [projectName]'s linked module count without blocking on native compilation or reading 250KB byte arrays on the UI thread. */
+    fun getProjectBinaryStatus(ctx: Context, projectName: String = activeProjectName): ProjectBinaryStatus = synchronized(projectFsLock) {
         val safeName = sanitizeProjectName(projectName)
         ensureProjectSetup(ctx, safeName)
         val nativeSo = ctx.applicationInfo?.nativeLibraryDir?.let { File(it, "libmathengine.so") }
         val soBytes = if (nativeSo != null && nativeSo.isFile) nativeSo.length() else 287_000L
-        val stdlibBytes = runCatching { getUniversalPatchedStdlibBytes(ctx).size.toLong() }.getOrDefault(251_891L)
+        val cachedMathc = File(File(ctx.filesDir, MathPatchDownloader.PATCHES_FOLDER_NAME), MathPatchDownloader.CACHE_MATHC_FILE)
+        val stdlibBytes = if (cachedMathc.isFile && cachedMathc.length() > 0L) cachedMathc.length() else 251_891L
         val linkedCount = if (linkedProjectName == safeName) linkedModuleSourcesByName.size else 0
-        return ProjectBinaryStatus(
+        ProjectBinaryStatus(
             projectName = safeName,
             hasEngineSo = engineHandle != 0L,
             engineSoBytes = soBytes,
@@ -360,6 +361,7 @@ object MathEngineManager {
         projDir.deleteRecursively()
 
         if (safeName == DEFAULT_STUDIO_PROJECT_NAME) {
+            defaultProject1Seeded = false
             ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME)
         }
         val remaining = listProjects(ctx)
@@ -897,8 +899,9 @@ object MathEngineManager {
     ) {
         val app = context.applicationContext
         appContext = app
-        CurrencyConverter.initialize(app)
         Thread {
+            runCatching { MathPatchDownloader.ensureBundledPatchesSeeded(app) }
+            runCatching { CurrencyConverter.initialize(app) }
             val downloaded = runCatching { MathPatchDownloader.syncMissingPatches(app, onStatus) }.getOrDefault(0)
             loadPendingPatches(
                 onDone = { loaded ->

@@ -218,14 +218,24 @@ class MainActivity : AppCompatActivity() {
         val existing = supportFragmentManager.findFragmentByTag("math_workspace") as? MathWorkspaceFragment
         if (existing != null) {
             workspaceFragment = existing
-        } else {
-            val frag = MathWorkspaceFragment()
-            workspaceFragment = frag
-            supportFragmentManager.beginTransaction()
-                .replace(binding.mathWorkspaceContainer.id, frag, "math_workspace")
-                .commitNowAllowingStateLoss()
         }
         binding.mathWorkspaceContainer.visibility = View.INVISIBLE
+    }
+
+    internal fun ensureWorkspaceFragment(): MathWorkspaceFragment? {
+        workspaceFragment?.let { return it }
+        if (isFinishing || isDestroyed || supportFragmentManager.isStateSaved) return null
+        val existing = supportFragmentManager.findFragmentByTag("math_workspace") as? MathWorkspaceFragment
+        if (existing != null) {
+            workspaceFragment = existing
+            return existing
+        }
+        val frag = MathWorkspaceFragment()
+        workspaceFragment = frag
+        supportFragmentManager.beginTransaction()
+            .replace(binding.mathWorkspaceContainer.id, frag, "math_workspace")
+            .commitNowAllowingStateLoss()
+        return frag
     }
 
     /** Switch between Calculator (page 0) and Free-form .math Studio (page 1)
@@ -236,7 +246,7 @@ class MainActivity : AppCompatActivity() {
         workspaceSlideAnimators.clear()
 
         if (clamped == 1) {
-            workspaceFragment?.applyTheme(isDarkMode)
+            ensureWorkspaceFragment()?.applyTheme(isDarkMode)
         } else {
             workspaceFragment?.saveCurrentModuleEditorState(showToast = false)
             refreshFunctionCatalogUI()
@@ -366,7 +376,7 @@ class MainActivity : AppCompatActivity() {
                             isWorkspaceSwiping = true
                             workspaceSlideAnimators.forEach { it.cancel() }
                             workspaceSlideAnimators.clear()
-                            workspaceFragment?.applyTheme(isDarkMode)
+                            ensureWorkspaceFragment()?.applyTheme(isDarkMode)
                             binding.calculatorContainer.visibility = View.VISIBLE
                             binding.mathWorkspaceContainer.visibility = View.VISIBLE
                             val cancelEvent = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
@@ -407,7 +417,9 @@ class MainActivity : AppCompatActivity() {
     internal fun setupViewPager() {
         binding.viewPager.adapter = EcalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
-        binding.viewPager.offscreenPageLimit = 5
+        // Keep offscreenPageLimit = 1 during cold start so only the visible keypad inflates before
+        // the first frame; playLaunchSplashReveal() expands it to 5 once the splash reveal ends.
+        binding.viewPager.offscreenPageLimit = 1
         binding.viewPager.setPageTransformer { page, position ->
             if (position <= -1f || position >= 1f || position == 0f) {
                 page.scaleX = 1f

@@ -876,14 +876,15 @@ data class CalculatorCatalogItem(
     val shortDescription: String,
     val paramBullets: List<String>,
     val returnBullet: String,
-    val sourceFile: String? = null
+    val sourceFile: String? = null,
+    val fullDescription: String = shortDescription
 ) {
     /** Formatted text for the frosted hold-popup info window. */
     fun toPopupInfoText(): String {
         val originLabel = when (originGroup) {
             "project1" -> "project1 • [$moduleName]" + (sourceFile?.let { " ($it)" } ?: "")
             "patch" -> "patch • [$moduleName]" + (sourceFile?.let { " ($it)" } ?: "")
-            else -> "stdlib • [$moduleName]"
+            else -> "stdlib • [$moduleName]" + (sourceFile?.let { " ($it)" } ?: "")
         }
         val kindLabel = when (kind) {
             "op" -> "Operator / Overload"
@@ -895,11 +896,12 @@ data class CalculatorCatalogItem(
         } else {
             paramBullets.mapIndexed { idx, line -> "  ${idx + 1}. $line" }.joinToString("\n")
         }
+        val bodyDesc = fullDescription.ifBlank { shortDescription }
         return buildString {
             append(signature).append("\n")
             append("Source: ").append(originLabel).append(" • ").append(kindLabel).append("\n")
-            if (shortDescription.isNotBlank()) {
-                append(shortDescription).append("\n")
+            if (bodyDesc.isNotBlank()) {
+                append(bodyDesc).append("\n")
             }
             append("\nParameters / Operands:\n")
             append(paramsBlock).append("\n\n")
@@ -910,6 +912,8 @@ data class CalculatorCatalogItem(
 
 internal fun mergeLiveEngineCatalog(rawCatalog: String) {
     if (rawCatalog.isBlank()) return
+    // Ensure bundled stdlib .math doc comments are registered in CalculatorFunctionDocs
+    MathEngineManager.appContext?.let { runCatching { ensureBundledStdlibDocsLoaded(it) } }
     val staticKeys = MATH_EDITOR_STATIC_SUGGESTIONS.mapTo(HashSet()) { "${it.category}:${it.matchKey}" }
     val seen = HashSet<String>()
     val items = ArrayList<MathCodeEditText.SuggestionItem>(256)
@@ -953,40 +957,57 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
             "fn" -> {
                 if (!name[0].isLetter() && name[0] != '_') continue
                 if (isCoreStdlib && ("fn:$name" in staticKeys || "std:$name" in staticKeys)) continue
+                val doc = CalculatorFunctionDocs.forName(name)
                 val hasArgs = !sig.contains("$name()")
                 val paramsInside = sig.substringAfter("(", "").substringBeforeLast(")", "").trim()
-                val paramBullets = if (paramsInside.isEmpty()) {
-                    listOf("None — Zero-argument function in [$modName]")
+                val displaySig = if (doc != null && doc.signature.isNotBlank() && sig.contains("p1:")) {
+                    "${doc.signature} -> $retType"
                 } else {
-                    paramsInside.split(',').mapIndexed { idx, p ->
+                    sig
+                }
+                val paramBullets = when {
+                    doc != null && doc.params.isNotEmpty() -> doc.params
+                    paramsInside.isEmpty() -> listOf("None — Zero-argument function in [$modName]")
+                    else -> paramsInside.split(',').mapIndexed { idx, p ->
                         "${p.trim()} — Parameter #${idx + 1} in [$modName]"
                     }
+                }
+                val detailText = if (doc != null && doc.summary.isNotBlank()) {
+                    "[$modName] ${doc.summary}"
+                } else {
+                    "[$modName] function"
+                }
+                val retText = if (doc != null && doc.returns.isNotBlank()) {
+                    doc.returns
+                } else {
+                    "$retBadge — Result from [$modName]::$name"
                 }
                 items.add(
                     MathCodeEditText.SuggestionItem(
                         matchKey = name,
-                        displayLabel = sig,
+                        displayLabel = displaySig,
                         insertText = "$name()",
                         cursorBackOffset = if (hasArgs) 1 else 0,
                         category = if (isCoreStdlib) "std" else "fn",
-                        detail = "[$modName] function",
+                        detail = detailText,
                         paramBullets = paramBullets,
-                        returnBullet = "$retBadge — Result from [$modName]::$name"
+                        returnBullet = retText
                     )
                 )
             }
             "op" -> {
                 if (isCoreStdlib && "op:$name" in staticKeys) continue
+                val doc = CalculatorFunctionDocs.forName(name)
                 items.add(
                     MathCodeEditText.SuggestionItem(
                         matchKey = name,
-                        displayLabel = sig,
+                        displayLabel = if (doc != null && doc.signature.isNotBlank()) doc.signature else sig,
                         insertText = if (name[0].isLetterOrDigit()) " $name " else name,
                         cursorBackOffset = 0,
                         category = "op",
-                        detail = "[$modName] operator",
-                        paramBullets = listOf("Operands matching signature: $sig"),
-                        returnBullet = "$retBadge — Operator result from [$modName]"
+                        detail = if (doc != null && doc.summary.isNotBlank()) "[$modName] ${doc.summary}" else "[$modName] operator",
+                        paramBullets = if (doc != null && doc.params.isNotEmpty()) doc.params else listOf("Operands matching signature: $sig"),
+                        returnBullet = if (doc != null && doc.returns.isNotBlank()) doc.returns else "$retBadge — Operator result from [$modName]"
                     )
                 )
             }
@@ -1044,7 +1065,7 @@ internal fun mergeLiveEngineCatalog(rawCatalog: String) {
 }
 
 private val catalogFnDeclRegex = Regex(
-    "^\\s*(?:(pub|priv)\\s+)*(?:\\$?fn\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^()\"]*)\\)\\s*(?:->\\s*([^=:]+)|:\\s*([a-zA-Z0-9_,\\s<>]+))?\\s*(?::=|=)(?![=>])\\s*(.+)$",
+    "^\\s*(?:(pub|priv)\\s+)*(?:\\$?fn\\s+)?([a-zA-Z_][a-zA-Z0-9_]*)(?:::([a-zA-Z_][a-zA-Z0-9_]*))?\\s*\\(([^()]*)\\)\\s*(?:->\\s*([^=:]+)|:\\s*([a-zA-Z0-9_,\\s<>]+))?\\s*(?::=|=)(?![=>])\\s*(.+)$",
     setOf(RegexOption.DOT_MATCHES_ALL)
 )
 
@@ -1068,20 +1089,30 @@ private val nonNumericTypeTokens = setOf(
     "complex", "vec2", "vec3", "mat2", "circle", "line2", "plane3", "sphere", "void"
 )
 
+private val unitAnnotationTokens = setOf(
+    "none", "T", "length", "time", "mass", "speed", "force", "energy", "power", "pressure",
+    "usd", "eur", "gbp", "inr", "jpy", "cny", "aud", "cad", "chf", "sgd", "hkd", "krw", "nzd"
+)
+
+private val untypedNonNumericalParamNames = setOf(
+    "path", "file", "csv_str", "json_str", "from", "to", "sep", "pat", "msg", "fmt",
+    "expr_str", "sym", "var_x", "var_t", "var_y", "var_z", "var_k", "expr", "eq",
+    "rhs_vec", "dx", "dy", "dz", "tag", "cond", "body", "then_val", "else_val", "self"
+)
+
 /**
  * Returns true if a parameter specification (`a: real`, `x: int`, `m: real, mass`, or untyped `x`)
  * accepts a numerical scalar value usable from the Basic Calculator.
  */
 private fun isNumericalParamSpec(paramSpec: String): Boolean {
     val trimmed = paramSpec.trim()
-    if (trimmed.isEmpty()) return true
+    if (trimmed.isEmpty() || trimmed in unitAnnotationTokens) return true
     val colonIdx = trimmed.indexOf(':')
     val pName = (if (colonIdx >= 0) trimmed.substring(0, colonIdx) else trimmed)
         .substringBefore('=')
         .trim()
         .lowercase()
-    // Reject obvious non-numeric parameter names when untyped (e.g. path, csv_str, from, to)
-    if (pName in setOf("path", "file", "csv_str", "json_str", "from", "to", "sep", "pat", "msg", "fmt")) {
+    if (pName in untypedNonNumericalParamNames) {
         return false
     }
     if (colonIdx < 0) return true
@@ -1097,18 +1128,52 @@ private fun isNumericalParamSpec(paramSpec: String): Boolean {
     return typePart == "real" || typePart == "int" || typePart == "any" || typePart == "t"
 }
 
-private fun isNumericalReturnSpec(retSpec: String, rhsRaw: String): Boolean {
+private fun isNumericalReturnSpec(retSpec: String, rhsRaw: String, paramCount: Int = 1): Boolean {
     val cleanRet = retSpec.substringBefore(',').trim().lowercase()
     if (cleanRet in nonNumericTypeTokens || cleanRet.startsWith("vec<") || cleanRet.startsWith("map<")) {
         return false
     }
     if (rhsRaw.contains("println(") || rhsRaw.contains("print(") ||
         rhsRaw.contains("read_file(") || rhsRaw.contains("read_json(") ||
-        rhsRaw.contains("csv_to_maps(") || rhsRaw.contains("@str_fmt")
+        rhsRaw.contains("csv_to_maps(") || rhsRaw.contains("@str_fmt") ||
+        rhsRaw.contains("@file_") || rhsRaw.contains("@json_") ||
+        rhsRaw.contains("@sym_") || rhsRaw.contains("@type_name") ||
+        (rhsRaw.contains("@unit_name") && paramCount < 2)
     ) {
         return false
     }
     return true
+}
+
+/**
+ * Formats a `.math` parameter list (`a, b` or `x, digits = 0` or `d: real, length`) into a clean
+ * canonical signature `fnName(a: real, b: real)`.
+ */
+private fun formatCanonicalSignature(fnName: String, rawParams: String): String {
+    if (rawParams.isBlank()) return "$fnName()"
+    val formatted = ArrayList<String>(4)
+    for (part in rawParams.split(',')) {
+        val p = part.trim()
+        if (p.isEmpty() || p in unitAnnotationTokens) continue
+        if (p.contains(':')) {
+            val pName = p.substringBefore(':').trim()
+            val pRest = p.substringAfter(':').trim()
+            if (pRest.contains('=')) {
+                val tPart = pRest.substringBefore('=').trim().ifEmpty { "real" }
+                val defPart = pRest.substringAfter('=').trim()
+                formatted.add("$pName: $tPart = $defPart")
+            } else {
+                formatted.add("$pName: $pRest")
+            }
+        } else if (p.contains('=')) {
+            val pName = p.substringBefore('=').trim()
+            val defPart = p.substringAfter('=').trim()
+            formatted.add("$pName: real = $defPart")
+        } else {
+            formatted.add("$p: real")
+        }
+    }
+    return "$fnName(${formatted.joinToString(", ")})"
 }
 
 /**
@@ -1124,12 +1189,9 @@ private val calculatorExcludedFunctionNames = setOf(
 )
 
 /**
- * Derives extra numerical `fn` entries for the Basic Calculator's Functions tab from the live
- * engine catalog dump (`eng_export_catalog` → `kind|name|sig|retType|retUnit|modName`).
- * Selection criterion (same as the handpicked list): every parameter accepts a numerical
- * value (`real` / `int` / `any` / generic `T`) and the return type is numerical.
- * Zero-argument numerical functions are included; keyword shims and verbosely-typed
- * entries are filtered. Runs entirely offline against the dump text.
+ * Derives numerical `fn` entries for the Basic Calculator's Functions tab from the live
+ * engine catalog dump (`eng_export_catalog` → `kind|name|sig|retType|retUnit|modName`) for
+ * any active numerical function not already extracted from `.math` source files.
  */
 internal fun extractLiveCatalogNumericalItems(rawCatalog: String): List<CalculatorCatalogItem> {
     if (rawCatalog.isBlank()) return emptyList()
@@ -1158,27 +1220,36 @@ internal fun extractLiveCatalogNumericalItems(rawCatalog: String): List<Calculat
         if (openIdx < 0 || closeIdx < openIdx || arrowIdx <= closeIdx) continue
         val paramsInside = sig.substring(openIdx + 1, closeIdx).trim()
         val retSpec = sig.substring(arrowIdx + 2).trim().substringBefore(',').trim()
-        if (!isNumericalReturnSpec(retSpec, "")) continue
         val paramSpecs = if (paramsInside.isEmpty()) emptyList() else paramsInside.split(',')
+        if (!isNumericalReturnSpec(retSpec, "", paramSpecs.size)) continue
         if (!paramSpecs.all { isNumericalParamSpec(it) }) continue
         if (!takenSigs.add("$kind:$name|$paramsInside")) continue
         val hasArgs = paramsInside.isNotEmpty()
         val retBadge = if (retUnit != "none" && retUnit.isNotEmpty()) "$retType [$retUnit]" else retType
+        val doc = CalculatorFunctionDocs.forName(name)
+        val richSig = if (doc != null && doc.signature.isNotBlank()) doc.signature else "$name($paramsInside)"
+        val genericDesc = "Numerical function in [$modName] — accepts numeric parameters, returns $retBadge"
+        val fullDesc = doc?.definition?.takeIf { it.isNotBlank() } ?: genericDesc
+        val shortDesc = doc?.summary?.takeIf { it.isNotBlank() } ?: fullDesc
+        val richParams = when {
+            doc != null && doc.params.isNotEmpty() -> doc.params
+            hasArgs -> paramSpecs.mapIndexed { idx, p -> "${p.trim()} — Numeric parameter #${idx + 1} in [$modName]" }
+            else -> listOf("None — Zero-argument numerical function in [$modName]")
+        }
+        val richRet = doc?.returns?.takeIf { it.isNotBlank() }
+            ?: "$retBadge — Numerical result returned by [$modName]::$name"
         items.add(
             CalculatorCatalogItem(
                 name = name,
-                signature = "$name($paramsInside)",
+                signature = richSig,
                 insertText = if (hasArgs) "$name(" else "$name()",
                 originGroup = "stdlib",
                 moduleName = modName,
                 kind = "fn",
-                shortDescription = "Numerical function in [$modName] — accepts numeric parameters, returns a number",
-                paramBullets = if (hasArgs) {
-                    paramSpecs.mapIndexed { idx, p -> "${p.trim()} — Parameter #${idx + 1} in [$modName]" }
-                } else {
-                    listOf("None — Zero-argument numerical function in [$modName]")
-                },
-                returnBullet = "$retBadge — Result from [$modName]::$name"
+                shortDescription = shortDesc,
+                paramBullets = richParams,
+                returnBullet = richRet,
+                fullDescription = fullDesc
             )
         )
     }
@@ -1186,682 +1257,326 @@ internal fun extractLiveCatalogNumericalItems(rawCatalog: String): List<Calculat
 }
 
 /**
- * Handpicked, high-utility numerical `stdlib` functions for the Basic Calculator.
- * Every function here accepts strictly numerical parameters (`real` / `int`) and returns a number.
+ * Dynamically extracts all numerical functions and numerical operators from any `.math` source file
+ * (`project1`, `patch`, or `stdlib`), parsing the `# @desc`, `# @param`, and `# @return` comment
+ * block directly above each declaration and falling back to clean generic descriptions when absent.
  */
-internal val HANDPICKED_NUMERICAL_STDLIB_CATALOG: List<CalculatorCatalogItem> = listOf(
-    // --- Core Math, Roots, Logs & Number Theory ---
-    CalculatorCatalogItem(
-        name = "hypot",
-        signature = "hypot(a: real, b: real)",
-        insertText = "hypot(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "2D Euclidean hypotenuse √(a² + b²)",
-        paramBullets = listOf(
-            "a: real — First perpendicular side / component",
-            "b: real — Second perpendicular side / component"
-        ),
-        returnBullet = "real — Euclidean length √(a² + b²)"
-    ),
-    CalculatorCatalogItem(
-        name = "logb",
-        signature = "logb(x: real, base: real)",
-        insertText = "logb(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Logarithm of x to any custom base",
-        paramBullets = listOf(
-            "x: real — Positive number (x > 0)",
-            "base: real — Positive logarithm base (base > 0, base != 1)"
-        ),
-        returnBullet = "real — log_base(x) = ln(x) / ln(base)"
-    ),
-    CalculatorCatalogItem(
-        name = "root",
-        signature = "root(x: real, n: real)",
-        insertText = "root(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Real n-th root x^(1/n)",
-        paramBullets = listOf(
-            "x: real — Radicand value",
-            "n: real — Root degree (e.g. 3 for cube root, 4 for fourth root)"
-        ),
-        returnBullet = "real — Principal n-th root x^(1/n)"
-    ),
-    CalculatorCatalogItem(
-        name = "clamp",
-        signature = "clamp(x: real, lo: real, hi: real)",
-        insertText = "clamp(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Clamps x between lower bound lo and upper bound hi",
-        paramBullets = listOf(
-            "x: real — Input value to clamp",
-            "lo: real — Minimum allowed value",
-            "hi: real — Maximum allowed value"
-        ),
-        returnBullet = "real — Value constrained to [lo, hi]"
-    ),
-    CalculatorCatalogItem(
-        name = "min",
-        signature = "min(a: real, b: real)",
-        insertText = "min(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Smaller of two numbers a and b",
-        paramBullets = listOf("a: real — First value", "b: real — Second value"),
-        returnBullet = "real — Minimum value min(a, b)"
-    ),
-    CalculatorCatalogItem(
-        name = "max",
-        signature = "max(a: real, b: real)",
-        insertText = "max(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Larger of two numbers a and b",
-        paramBullets = listOf("a: real — First value", "b: real — Second value"),
-        returnBullet = "real — Maximum value max(a, b)"
-    ),
-    CalculatorCatalogItem(
-        name = "mod_pow",
-        signature = "mod_pow(base: int, exp: int, m: int)",
-        insertText = "mod_pow(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Fast modular exponentiation (base^exp) mod m",
-        paramBullets = listOf(
-            "base: int — Integer base",
-            "exp: int — Non-negative integer exponent",
-            "m: int — Positive modulus"
-        ),
-        returnBullet = "int — Remainder of (base^exp) divided by m"
-    ),
-    CalculatorCatalogItem(
-        name = "fib",
-        signature = "fib(n: int)",
-        insertText = "fib(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "n-th Fibonacci number F(n)",
-        paramBullets = listOf("n: int — Non-negative Fibonacci index (0, 1, 2, ...)"),
-        returnBullet = "int — n-th Fibonacci value"
-    ),
-    CalculatorCatalogItem(
-        name = "is_prime",
-        signature = "is_prime(n: int)",
-        insertText = "is_prime(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Primality test (returns 1 if n is prime, 0 otherwise)",
-        paramBullets = listOf("n: int — Integer to test for primality"),
-        returnBullet = "int — 1.0 if prime, 0.0 if composite"
-    ),
-    CalculatorCatalogItem(
-        name = "atan2",
-        signature = "atan2(y: real, x: real)",
-        insertText = "atan2(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Quadrant-aware inverse tangent of (y, x)",
-        paramBullets = listOf("y: real — Vertical Y coordinate", "x: real — Horizontal X coordinate"),
-        returnBullet = "real — Polar angle in radians in [-π, π]"
-    ),
-    CalculatorCatalogItem(
-        name = "asinh",
-        signature = "asinh(x: real)",
-        insertText = "asinh(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Inverse hyperbolic sine ln(x + √(x² + 1))",
-        paramBullets = listOf("x: real — Any real number"),
-        returnBullet = "real — Inverse hyperbolic sine of x"
-    ),
-    CalculatorCatalogItem(
-        name = "acosh",
-        signature = "acosh(x: real)",
-        insertText = "acosh(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Inverse hyperbolic cosine ln(x + √(x² - 1))",
-        paramBullets = listOf("x: real — Real value x >= 1"),
-        returnBullet = "real — Non-negative inverse hyperbolic cosine"
-    ),
-    CalculatorCatalogItem(
-        name = "atanh",
-        signature = "atanh(x: real)",
-        insertText = "atanh(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Inverse hyperbolic tangent 0.5 * ln((1+x)/(1-x))",
-        paramBullets = listOf("x: real — Value in (-1, 1)"),
-        returnBullet = "real — Inverse hyperbolic tangent of x"
-    ),
-    CalculatorCatalogItem(
-        name = "gamma",
-        signature = "gamma(x: real)",
-        insertText = "gamma(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Euler Gamma function Γ(x) (extends factorial: Γ(n+1) = n!)",
-        paramBullets = listOf("x: real — Real input (not a non-positive integer)"),
-        returnBullet = "real — Gamma function value Γ(x)"
-    ),
-    CalculatorCatalogItem(
-        name = "erf",
-        signature = "erf(x: real)",
-        insertText = "erf(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Gauss error function erf(x)",
-        paramBullets = listOf("x: real — Real argument"),
-        returnBullet = "real — Error integral value in (-1, 1)"
-    ),
-    CalculatorCatalogItem(
-        name = "sigmoid",
-        signature = "sigmoid(x: real)",
-        insertText = "sigmoid(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Logistic sigmoid function 1 / (1 + e^-x)",
-        paramBullets = listOf("x: real — Logit / real input"),
-        returnBullet = "real — Probability activation in (0, 1)"
-    ),
+private fun extractStatementsWithStartLines(rawSource: String): List<Pair<Int, String>> {
+    val lines = rawSource.replace("\r\n", "\n").replace("\r", "\n").lines()
+    val result = ArrayList<Pair<Int, String>>(lines.size / 2 + 1)
+    var i = 0
+    while (i < lines.size) {
+        val rawLine = MathEngineManager.stripCommentOutsideQuotes(lines[i]).trim()
+        if (rawLine.isEmpty() || rawLine.startsWith("$") || rawLine.startsWith("struct ") || rawLine.startsWith("@dim") || rawLine.startsWith("@entry") || (rawLine.startsWith("\"") && rawLine.contains("=> @"))) {
+            i++
+            continue
+        }
+        val startLineNum = i + 1
+        val sb = StringBuilder(rawLine)
+        var braceDepth = rawLine.count { it == '{' } - rawLine.count { it == '}' }
+        var parenDepth = rawLine.count { it == '(' } - rawLine.count { it == ')' }
+        var curTrim = rawLine
+        while ((curTrim.endsWith("=") || braceDepth > 0 || parenDepth > 0) && i + 1 < lines.size) {
+            i++
+            val nxt = MathEngineManager.stripCommentOutsideQuotes(lines[i]).trim()
+            if (nxt.isEmpty()) continue
+            sb.append(' ').append(nxt)
+            braceDepth += nxt.count { it == '{' } - nxt.count { it == '}' }
+            parenDepth += nxt.count { it == '(' } - nxt.count { it == ')' }
+            curTrim = nxt
+        }
+        var built = sb.toString().trim()
+        while (built.endsWith(";")) {
+            built = built.dropLast(1).trimEnd()
+        }
+        if (built.isNotEmpty()) {
+            result.add(startLineNum to built)
+        }
+        i++
+    }
+    return result
+}
 
-    // --- Means, Probability, Algebra & Finance ---
-    CalculatorCatalogItem(
-        name = "arith_mean",
-        signature = "arith_mean(a: real, b: real)",
-        insertText = "arith_mean(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Arithmetic mean (a + b) / 2",
-        paramBullets = listOf("a: real — First number", "b: real — Second number"),
-        returnBullet = "real — Average (a + b) / 2"
-    ),
-    CalculatorCatalogItem(
-        name = "geom_mean",
-        signature = "geom_mean(a: real, b: real)",
-        insertText = "geom_mean(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Geometric mean √(a * b)",
-        paramBullets = listOf("a: real — Non-negative first value", "b: real — Non-negative second value"),
-        returnBullet = "real — Geometric mean √(a * b)"
-    ),
-    CalculatorCatalogItem(
-        name = "harm_mean",
-        signature = "harm_mean(a: real, b: real)",
-        insertText = "harm_mean(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Harmonic mean 2ab / (a + b)",
-        paramBullets = listOf("a: real — First rate/value", "b: real — Second rate/value"),
-        returnBullet = "real — Harmonic mean 2ab / (a + b)"
-    ),
-    CalculatorCatalogItem(
-        name = "norm_cdf",
-        signature = "norm_cdf(x: real, mu: real, s: real)",
-        insertText = "norm_cdf(",
-        originGroup = "stdlib",
-        moduleName = "trig",
-        kind = "fn",
-        shortDescription = "Normal distribution cumulative probability P(X <= x)",
-        paramBullets = listOf(
-            "x: real — Quantile value",
-            "mu: real — Mean μ (defaults to 0 if omitted)",
-            "s: real — Standard deviation σ > 0 (defaults to 1 if omitted)"
-        ),
-        returnBullet = "real — Cumulative probability in [0, 1]"
-    ),
-    CalculatorCatalogItem(
-        name = "binom_pmf",
-        signature = "binom_pmf(n: int, k: int, p: real)",
-        insertText = "binom_pmf(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Binomial probability mass P(X = k) in n trials",
-        paramBullets = listOf(
-            "n: int — Number of independent trials",
-            "k: int — Number of successes (0 <= k <= n)",
-            "p: real — Success probability per trial in [0, 1]"
-        ),
-        returnBullet = "real — Probability nCr(n, k) * p^k * (1-p)^(n-k)"
-    ),
-    CalculatorCatalogItem(
-        name = "poisson_pmf",
-        signature = "poisson_pmf(k: int, lam: real)",
-        insertText = "poisson_pmf(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Poisson probability mass P(X = k) with rate λ",
-        paramBullets = listOf(
-            "k: int — Event count (k >= 0)",
-            "lam: real — Expected rate λ > 0"
-        ),
-        returnBullet = "real — Probability (λ^k * e^-λ) / k!"
-    ),
-    CalculatorCatalogItem(
-        name = "quad_disc",
-        signature = "quad_disc(a: real, b: real, c: real)",
-        insertText = "quad_disc(",
-        originGroup = "stdlib",
-        moduleName = "algebra",
-        kind = "fn",
-        shortDescription = "Quadratic discriminant Δ = b² - 4ac",
-        paramBullets = listOf(
-            "a: real — Quadratic x² coefficient",
-            "b: real — Linear x coefficient",
-            "c: real — Constant term"
-        ),
-        returnBullet = "real — Discriminant b² - 4ac"
-    ),
-    CalculatorCatalogItem(
-        name = "lerp",
-        signature = "lerp(a: real, b: real, t: real)",
-        insertText = "lerp(",
-        originGroup = "stdlib",
-        moduleName = "geom",
-        kind = "fn",
-        shortDescription = "Linear interpolation a + (b - a) * t",
-        paramBullets = listOf(
-            "a: real — Start value at t = 0",
-            "b: real — End value at t = 1",
-            "t: real — Interpolation factor (0..1)"
-        ),
-        returnBullet = "real — Interpolated value between a and b"
-    ),
-    CalculatorCatalogItem(
-        name = "pct_change",
-        signature = "pct_change(old_v: real, new_v: real)",
-        insertText = "pct_change(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Percentage change ((new_v - old_v) / old_v) * 100",
-        paramBullets = listOf("old_v: real — Baseline value", "new_v: real — New value"),
-        returnBullet = "real — Signed percentage change (%)"
-    ),
-    CalculatorCatalogItem(
-        name = "compound_interest",
-        signature = "compound_interest(p: real, r_pct: real, t_yr: real)",
-        insertText = "compound_interest(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Compound interest earned on principal p at r_pct% for t_yr years",
-        paramBullets = listOf(
-            "p: real — Principal amount",
-            "r_pct: real — Annual interest rate (%)",
-            "t_yr: real — Time period in years"
-        ),
-        returnBullet = "real — Total compound interest p * (1 + r/100)^t - p"
-    ),
-    CalculatorCatalogItem(
-        name = "emi",
-        signature = "emi(principal: real, annual_rate_pct: real, months: int)",
-        insertText = "emi(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Equated Monthly Installment (EMI) for a loan",
-        paramBullets = listOf(
-            "principal: real — Loan principal amount",
-            "annual_rate_pct: real — Annual interest rate (%)",
-            "months: int — Total loan tenure in months"
-        ),
-        returnBullet = "real — Monthly installment payment"
-    ),
-    CalculatorCatalogItem(
-        name = "ap_sum",
-        signature = "ap_sum(a: real, d: real, n: int)",
-        insertText = "ap_sum(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Sum of first n terms of an Arithmetic Progression",
-        paramBullets = listOf(
-            "a: real — First term",
-            "d: real — Common difference",
-            "n: int — Number of terms"
-        ),
-        returnBullet = "real — Sum (n/2) * (2a + (n-1)d)"
-    ),
-    CalculatorCatalogItem(
-        name = "gp_sum",
-        signature = "gp_sum(a: real, r: real, n: int)",
-        insertText = "gp_sum(",
-        originGroup = "stdlib",
-        moduleName = "arith",
-        kind = "fn",
-        shortDescription = "Sum of first n terms of a Geometric Progression",
-        paramBullets = listOf(
-            "a: real — First term",
-            "r: real — Common ratio",
-            "n: int — Number of terms"
-        ),
-        returnBullet = "real — Sum a * (r^n - 1) / (r - 1)"
-    ),
-
-    // --- Physics, Chemistry & Numeric Unit Conversions ---
-    CalculatorCatalogItem(
-        name = "deg2rad",
-        signature = "deg2rad(deg: real)",
-        insertText = "deg2rad(",
-        originGroup = "stdlib",
-        moduleName = "units",
-        kind = "fn",
-        shortDescription = "Converts degrees to radians (deg * π / 180)",
-        paramBullets = listOf("deg: real — Angle in degrees"),
-        returnBullet = "real [angle] — Angle in radians"
-    ),
-    CalculatorCatalogItem(
-        name = "rad2deg",
-        signature = "rad2deg(rad: real)",
-        insertText = "rad2deg(",
-        originGroup = "stdlib",
-        moduleName = "units",
-        kind = "fn",
-        shortDescription = "Converts radians to degrees (rad * 180 / π)",
-        paramBullets = listOf("rad: real — Angle in radians"),
-        returnBullet = "real — Angle in degrees"
-    ),
-    CalculatorCatalogItem(
-        name = "c_to_f",
-        signature = "c_to_f(c: real)",
-        insertText = "c_to_f(",
-        originGroup = "stdlib",
-        moduleName = "units",
-        kind = "fn",
-        shortDescription = "Converts Celsius (°C) to Fahrenheit (°F)",
-        paramBullets = listOf("c: real — Temperature in °C"),
-        returnBullet = "real — Temperature in °F (1.8 * c + 32)"
-    ),
-    CalculatorCatalogItem(
-        name = "f_to_c",
-        signature = "f_to_c(f: real)",
-        insertText = "f_to_c(",
-        originGroup = "stdlib",
-        moduleName = "units",
-        kind = "fn",
-        shortDescription = "Converts Fahrenheit (°F) to Celsius (°C)",
-        paramBullets = listOf("f: real — Temperature in °F"),
-        returnBullet = "real — Temperature in °C ((f - 32) / 1.8)"
-    ),
-    CalculatorCatalogItem(
-        name = "suvat_s",
-        signature = "suvat_s(u: real, a: real, t: real)",
-        insertText = "suvat_s(",
-        originGroup = "stdlib",
-        moduleName = "physics",
-        kind = "fn",
-        shortDescription = "Kinematic displacement s = u*t + 0.5*a*t²",
-        paramBullets = listOf(
-            "u: real — Initial velocity",
-            "a: real — Constant acceleration",
-            "t: real — Elapsed time"
-        ),
-        returnBullet = "real — Displacement s"
-    ),
-    CalculatorCatalogItem(
-        name = "res_parallel",
-        signature = "res_parallel(r1: real, r2: real)",
-        insertText = "res_parallel(",
-        originGroup = "stdlib",
-        moduleName = "physics",
-        kind = "fn",
-        shortDescription = "Equivalent parallel resistance (r1 * r2) / (r1 + r2)",
-        paramBullets = listOf("r1: real — First resistance (Ω)", "r2: real — Second resistance (Ω)"),
-        returnBullet = "real — Equivalent parallel resistance"
-    ),
-    CalculatorCatalogItem(
-        name = "ph_from_h",
-        signature = "ph_from_h(h_conc: real)",
-        insertText = "ph_from_h(",
-        originGroup = "stdlib",
-        moduleName = "chemistry",
-        kind = "fn",
-        shortDescription = "Calculates pH from hydrogen ion molarity -log10([H+])",
-        paramBullets = listOf("h_conc: real — Molar H+ concentration (mol/L)"),
-        returnBullet = "real — Solution pH value"
-    ),
-    CalculatorCatalogItem(
-        name = "bmi_calc",
-        signature = "bmi_calc(mass_kg: real, height_m: real)",
-        insertText = "bmi_calc(",
-        originGroup = "stdlib",
-        moduleName = "biology",
-        kind = "fn",
-        shortDescription = "Body Mass Index mass_kg / (height_m²)",
-        paramBullets = listOf("mass_kg: real — Body mass in kilograms", "height_m: real — Height in meters"),
-        returnBullet = "real — BMI in kg/m²"
-    )
-)
-
-/**
- * Extracts ONLY numerical functions and operators (whose parameters are numeric `real` / `int`)
- * from a `.math` source file (`project1` or `patches`).
- */
 internal fun extractCatalogItemsFromMathSource(
     rawSource: String,
     originGroup: String,
     fileName: String? = null
 ): List<CalculatorCatalogItem> {
     val out = ArrayList<CalculatorCatalogItem>()
-    val modName = MathEngineManager.deriveModuleName(fileName, rawSource)
-    val lines = rawSource.replace("\r\n", "\n").replace("\r", "\n").lines()
+    var curModName = MathEngineManager.deriveModuleName(fileName, rawSource)
+    val docBlocksByLine = CalculatorFunctionDocs.parseDocBlocksByLine(rawSource)
+    val stmtsWithLines = extractStatementsWithStartLines(rawSource)
 
-    val docCommentByLine = HashMap<Int, String>()
-    var pendingDoc = ""
-    for ((idx, rawLine) in lines.withIndex()) {
-        val trimmed = rawLine.trim()
-        if (trimmed.startsWith("#")) {
-            val commentText = trimmed.removePrefix("#").trim()
-            if (!commentText.startsWith("===") && !commentText.startsWith("---")) {
-                pendingDoc = commentText
-            }
-        } else if (trimmed.isNotEmpty()) {
-            if (pendingDoc.isNotEmpty()) {
-                docCommentByLine[idx + 1] = pendingDoc
-                pendingDoc = ""
-            }
-        } else {
-            pendingDoc = ""
-        }
-    }
-
-    val stmtsWithLines = MathEngineManager.splitModuleStatementsWithLines(rawSource)
     for ((lineNum, rawStmt) in stmtsWithLines) {
-        for (stmt in rawStmt.lineSequence()) {
-            val trimmed = stmt.trim()
-            if (trimmed.isEmpty()) continue
-            val docHint = docCommentByLine[lineNum].orEmpty()
+        val trimmed = rawStmt.replace(Regex("\\s+"), " ").trim()
+        if (trimmed.isEmpty()) continue
 
-            // 1. Infix operator declaration `(a: real) "op" (b: real) :<prec = rhs`
-            val infixMatch = catalogInfixOpDeclRegex.matchEntire(trimmed)
-            if (infixMatch != null) {
-                val vis = infixMatch.groupValues[1]
-                if (vis == "priv") continue
-                val p1Raw = infixMatch.groupValues[2].trim()
-                val opRaw = infixMatch.groupValues[3].trim().removeSurrounding("\"")
-                val p2Raw = infixMatch.groupValues[4].trim()
-                val precRaw = infixMatch.groupValues[5].trim()
-                val retRaw = infixMatch.groupValues[6].trim().ifEmpty { "real" }
-                val rhsRaw = infixMatch.groupValues[7].trim().replace(Regex("\\s+"), " ").take(72)
+        val hdrMatch = MathEngineManager.modHeaderSingleLineRegex.matchEntire(trimmed)
+        if (hdrMatch != null) {
+            curModName = hdrMatch.groupValues[1]
+            continue
+        }
 
-                if (opRaw.startsWith("__mep_base_")) continue
-                // Skip unit-conversion `into` pair tables in patches; only keep numeric operators
-                if (originGroup == "patch" && opRaw == "into") continue
-                if (!isNumericalParamSpec(p1Raw) || !isNumericalParamSpec(p2Raw)) continue
-                if (!isNumericalReturnSpec(retRaw, rhsRaw)) continue
+        val docBlock = docBlocksByLine[lineNum]
 
-                val isStandardOverload = opRaw in setOf("+", "-", "*", "/", "%", "^", "==", "!=", "<", "<=", ">", ">=")
-                val desc = when {
-                    docHint.isNotEmpty() -> docHint
-                    isStandardOverload -> "Overloaded '$opRaw' operator in $originGroup [$modName]: $rhsRaw"
-                    else -> "Custom numeric operator '$opRaw' in $originGroup [$modName]: $rhsRaw"
-                }
-                val ins = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) " $opRaw " else opRaw
+        // 1. Infix operator declaration `(a: real) "op" (b: real) :<prec = rhs`
+        val infixMatch = catalogInfixOpDeclRegex.matchEntire(trimmed)
+        if (infixMatch != null) {
+            val vis = infixMatch.groupValues[1]
+            if (vis == "priv") continue
+            val p1Raw = infixMatch.groupValues[2].trim()
+            val opRaw = infixMatch.groupValues[3].trim().removeSurrounding("\"")
+            val p2Raw = infixMatch.groupValues[4].trim()
+            val precRaw = infixMatch.groupValues[5].trim()
+            val retRaw = infixMatch.groupValues[6].trim().ifEmpty { "real" }
+            val rhsRaw = infixMatch.groupValues[7].trim().take(80)
+
+            if (opRaw.startsWith("__mep_base_")) continue
+            if (opRaw == "into") continue
+            // Built-in stdlib arithmetic/comparison operators are on the main keypad; surface custom/patch/project1 operators
+            if (originGroup == "stdlib") continue
+            if (!isNumericalParamSpec(p1Raw) || !isNumericalParamSpec(p2Raw)) continue
+            if (!isNumericalReturnSpec(retRaw, rhsRaw, 2)) continue
+
+            val sig = "($p1Raw) $opRaw ($p2Raw) $precRaw"
+            val isStandardOverload = opRaw in setOf("+", "-", "*", "/", "%", "^", "==", "!=", "<", "<=", ">", ">=")
+            val genericDesc = if (isStandardOverload) {
+                "Overloaded '$opRaw' operator in $originGroup [$curModName]: $rhsRaw"
+            } else {
+                "Custom numeric operator '$opRaw' in $originGroup [$curModName]: $rhsRaw"
+            }
+            val fullDesc = docBlock?.definition?.takeIf { it.isNotBlank() } ?: genericDesc
+            val shortDesc = docBlock?.summary?.takeIf { it.isNotBlank() } ?: fullDesc
+            val paramBullets = docBlock?.params?.takeIf { it.isNotEmpty() } ?: listOf(
+                "$p1Raw — Left-hand numeric operand of operator '$opRaw'",
+                "$p2Raw — Right-hand numeric operand of operator '$opRaw'",
+                "Associativity & Precedence: $precRaw"
+            )
+            val retDesc = docBlock?.returns?.takeIf { it.isNotBlank() }
+                ?: "$retRaw — Numeric result of ($p1Raw) $opRaw ($p2Raw) = $rhsRaw"
+
+            CalculatorFunctionDocs.registerFromMathSource(opRaw, sig, fullDesc, paramBullets, retDesc)
+            val ins = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) " $opRaw " else opRaw
+            out.add(
+                CalculatorCatalogItem(
+                    name = opRaw,
+                    signature = sig,
+                    insertText = ins,
+                    originGroup = originGroup,
+                    moduleName = curModName,
+                    kind = "op",
+                    shortDescription = shortDesc,
+                    paramBullets = paramBullets,
+                    returnBullet = retDesc,
+                    sourceFile = fileName,
+                    fullDescription = fullDesc
+                )
+            )
+            continue
+        }
+
+        // 2. Prefix operator declaration `"op" (x: real) :prec = rhs`
+        val prefixMatch = catalogPrefixOpDeclRegex.matchEntire(trimmed)
+        if (prefixMatch != null) {
+            val vis = prefixMatch.groupValues[1]
+            if (vis == "priv" || originGroup == "stdlib") continue
+            val opRaw = prefixMatch.groupValues[2].trim().removeSurrounding("\"")
+            val p1Raw = prefixMatch.groupValues[3].trim()
+            val precRaw = prefixMatch.groupValues[4].trim()
+            val retRaw = prefixMatch.groupValues[5].trim().ifEmpty { "real" }
+            val rhsRaw = prefixMatch.groupValues[6].trim().take(80)
+            if (opRaw !in MathCodeEditText.KEYWORDS &&
+                isNumericalParamSpec(p1Raw) &&
+                isNumericalReturnSpec(retRaw, rhsRaw, 1)
+            ) {
+                val sig = "$opRaw ($p1Raw) $precRaw"
+                val genericDesc = "Prefix numeric operator '$opRaw' in $originGroup [$curModName]: $rhsRaw"
+                val fullDesc = docBlock?.definition?.takeIf { it.isNotBlank() } ?: genericDesc
+                val shortDesc = docBlock?.summary?.takeIf { it.isNotBlank() } ?: fullDesc
+                val paramBullets = docBlock?.params?.takeIf { it.isNotEmpty() } ?: listOf(
+                    "$p1Raw — Numeric operand",
+                    "Precedence: $precRaw"
+                )
+                val retDesc = docBlock?.returns?.takeIf { it.isNotBlank() }
+                    ?: "$retRaw — Evaluated via $opRaw($p1Raw) = $rhsRaw"
+                CalculatorFunctionDocs.registerFromMathSource(opRaw, sig, fullDesc, paramBullets, retDesc)
                 out.add(
                     CalculatorCatalogItem(
                         name = opRaw,
-                        signature = "($p1Raw) $opRaw ($p2Raw) $precRaw",
-                        insertText = ins,
+                        signature = sig,
+                        insertText = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) "$opRaw " else opRaw,
                         originGroup = originGroup,
-                        moduleName = modName,
+                        moduleName = curModName,
                         kind = "op",
-                        shortDescription = desc,
-                        paramBullets = listOf(
-                            "$p1Raw — Left numeric operand",
-                            "$p2Raw — Right numeric operand",
-                            "Associativity & Precedence: $precRaw"
-                        ),
-                        returnBullet = "$retRaw — Evaluated via ($p1Raw) $opRaw ($p2Raw) = $rhsRaw",
-                        sourceFile = fileName
+                        shortDescription = shortDesc,
+                        paramBullets = paramBullets,
+                        returnBullet = retDesc,
+                        sourceFile = fileName,
+                        fullDescription = fullDesc
                     )
                 )
                 continue
             }
+        }
 
-            // 2. Prefix operator declaration `"op" (x: real) :prec = rhs`
-            val prefixMatch = catalogPrefixOpDeclRegex.matchEntire(trimmed)
-            if (prefixMatch != null) {
-                val vis = prefixMatch.groupValues[1]
-                if (vis == "priv") continue
-                val opRaw = prefixMatch.groupValues[2].trim().removeSurrounding("\"")
-                val p1Raw = prefixMatch.groupValues[3].trim()
-                val precRaw = prefixMatch.groupValues[4].trim()
-                val retRaw = prefixMatch.groupValues[5].trim().ifEmpty { "real" }
-                val rhsRaw = prefixMatch.groupValues[6].trim().replace(Regex("\\s+"), " ").take(72)
-                if (opRaw !in MathCodeEditText.KEYWORDS &&
-                    isNumericalParamSpec(p1Raw) &&
-                    isNumericalReturnSpec(retRaw, rhsRaw)
-                ) {
-                    out.add(
-                        CalculatorCatalogItem(
-                            name = opRaw,
-                            signature = "$opRaw ($p1Raw) $precRaw",
-                            insertText = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) "$opRaw " else opRaw,
-                            originGroup = originGroup,
-                            moduleName = modName,
-                            kind = "op",
-                            shortDescription = docHint.ifEmpty { "Prefix numeric operator '$opRaw' in $originGroup [$modName]: $rhsRaw" },
-                            paramBullets = listOf(
-                                "$p1Raw — Numeric operand",
-                                "Precedence: $precRaw"
-                            ),
-                            returnBullet = "$retRaw — Evaluated via $opRaw($p1Raw) = $rhsRaw",
-                            sourceFile = fileName
-                        )
-                    )
-                    continue
-                }
-            }
-
-            // 3. Postfix operator declaration `(x: real) "op" :prec = rhs`
-            val postfixMatch = catalogPostfixOpDeclRegex.matchEntire(trimmed)
-            if (postfixMatch != null) {
-                val vis = postfixMatch.groupValues[1]
-                if (vis == "priv") continue
-                val p1Raw = postfixMatch.groupValues[2].trim()
-                val opRaw = postfixMatch.groupValues[3].trim().removeSurrounding("\"")
-                val precRaw = postfixMatch.groupValues[4].trim()
-                val retRaw = postfixMatch.groupValues[5].trim().ifEmpty { "real" }
-                val rhsRaw = postfixMatch.groupValues[6].trim().replace(Regex("\\s+"), " ").take(72)
-                // Skip unit marker definitions `(x) USD :95 -> real, usd = x`
-                if (rhsRaw == "x" && precRaw == ":95") continue
-                if (isNumericalParamSpec(p1Raw) && isNumericalReturnSpec(retRaw, rhsRaw)) {
-                    out.add(
-                        CalculatorCatalogItem(
-                            name = opRaw,
-                            signature = "($p1Raw) $opRaw $precRaw",
-                            insertText = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) " $opRaw" else opRaw,
-                            originGroup = originGroup,
-                            moduleName = modName,
-                            kind = "op",
-                            shortDescription = docHint.ifEmpty { "Postfix numeric operator '$opRaw' in $originGroup [$modName]: $rhsRaw" },
-                            paramBullets = listOf(
-                                "$p1Raw — Numeric operand",
-                                "Precedence: $precRaw"
-                            ),
-                            returnBullet = "$retRaw — Evaluated via ($p1Raw) $opRaw = $rhsRaw",
-                            sourceFile = fileName
-                        )
-                    )
-                    continue
-                }
-            }
-
-            // 4. Numerical function declaration `pub fn_name(a: real, b: real) = rhs`
-            val fnMatch = catalogFnDeclRegex.matchEntire(trimmed)
-            if (fnMatch != null) {
-                val vis = fnMatch.groupValues[1]
-                if (vis == "priv") continue
-                val fnName = fnMatch.groupValues[2].trim()
-                // Skip `main()` entry wrapper and reserved keywords
-                if (fnName in MathCodeEditText.KEYWORDS || fnName == "main") continue
-                val paramsRaw = fnMatch.groupValues[3].trim()
-                val retRaw = fnMatch.groupValues[4].trim().ifEmpty {
-                    fnMatch.groupValues[5].trim().ifEmpty { "real" }
-                }
-                val rhsRaw = fnMatch.groupValues[6].trim().replace(Regex("\\s+"), " ").take(76)
-
-                // Strictly require at least 1 parameter and ALL parameters to be numerical
-                if (paramsRaw.isEmpty()) continue
-                val paramParts = paramsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-                if (paramParts.isEmpty() || !paramParts.all { isNumericalParamSpec(it) }) continue
-                if (!isNumericalReturnSpec(retRaw, rhsRaw)) continue
-
-                val paramBullets = paramParts.mapIndexed { idx, pTrim ->
-                    if (pTrim.contains(':')) {
-                        "$pTrim — Numeric argument #${idx + 1} of $fnName"
-                    } else {
-                        "$pTrim: real — Numeric argument #${idx + 1} of $fnName"
-                    }
-                }
-                val desc = docHint.ifEmpty {
-                    "Numeric function in $originGroup [$modName] = $rhsRaw"
-                }
+        // 3. Postfix operator declaration `(x: real) "op" :prec = rhs`
+        val postfixMatch = catalogPostfixOpDeclRegex.matchEntire(trimmed)
+        if (postfixMatch != null) {
+            val vis = postfixMatch.groupValues[1]
+            if (vis == "priv" || originGroup == "stdlib") continue
+            val p1Raw = postfixMatch.groupValues[2].trim()
+            val opRaw = postfixMatch.groupValues[3].trim().removeSurrounding("\"")
+            val precRaw = postfixMatch.groupValues[4].trim()
+            val retRaw = postfixMatch.groupValues[5].trim().ifEmpty { "real" }
+            val rhsRaw = postfixMatch.groupValues[6].trim().take(80)
+            if (rhsRaw == "x" && precRaw == ":95") continue
+            if (isNumericalParamSpec(p1Raw) && isNumericalReturnSpec(retRaw, rhsRaw, 1)) {
+                val sig = "($p1Raw) $opRaw $precRaw"
+                val genericDesc = "Postfix numeric operator '$opRaw' in $originGroup [$curModName]: $rhsRaw"
+                val fullDesc = docBlock?.definition?.takeIf { it.isNotBlank() } ?: genericDesc
+                val shortDesc = docBlock?.summary?.takeIf { it.isNotBlank() } ?: fullDesc
+                val paramBullets = docBlock?.params?.takeIf { it.isNotEmpty() } ?: listOf(
+                    "$p1Raw — Numeric operand",
+                    "Precedence: $precRaw"
+                )
+                val retDesc = docBlock?.returns?.takeIf { it.isNotBlank() }
+                    ?: "$retRaw — Evaluated via ($p1Raw) $opRaw = $rhsRaw"
+                CalculatorFunctionDocs.registerFromMathSource(opRaw, sig, fullDesc, paramBullets, retDesc)
                 out.add(
                     CalculatorCatalogItem(
-                        name = fnName,
-                        signature = "$fnName($paramsRaw)",
-                        insertText = "$fnName(",
+                        name = opRaw,
+                        signature = sig,
+                        insertText = if (opRaw.firstOrNull()?.isLetterOrDigit() == true) " $opRaw" else opRaw,
                         originGroup = originGroup,
-                        moduleName = modName,
-                        kind = "fn",
-                        shortDescription = desc,
+                        moduleName = curModName,
+                        kind = "op",
+                        shortDescription = shortDesc,
                         paramBullets = paramBullets,
-                        returnBullet = "$retRaw — Computed by $fnName($paramsRaw) = $rhsRaw",
-                        sourceFile = fileName
+                        returnBullet = retDesc,
+                        sourceFile = fileName,
+                        fullDescription = fullDesc
                     )
                 )
+                continue
             }
+        }
+
+        // 4. Function declaration `pub fn_name(a: real, b: real) = rhs`
+        val fnMatch = catalogFnDeclRegex.matchEntire(trimmed)
+        if (fnMatch != null) {
+            val vis = fnMatch.groupValues[1]
+            if (vis == "priv") continue
+            val fnName = fnMatch.groupValues[3].ifEmpty { fnMatch.groupValues[2] }.trim()
+            if (fnName in MathCodeEditText.KEYWORDS || fnName in calculatorExcludedFunctionNames || fnName == "main") continue
+            val paramsRaw = fnMatch.groupValues[4].trim()
+            val retRaw = fnMatch.groupValues[5].trim().ifEmpty {
+                fnMatch.groupValues[6].trim().ifEmpty { "real" }
+            }
+            val rhsRaw = fnMatch.groupValues[7].trim().take(80)
+            val canonicalSig = formatCanonicalSignature(fnName, paramsRaw)
+
+            // Register parsed .math documentation for Studio autocomplete even if non-scalar
+            if (docBlock != null) {
+                CalculatorFunctionDocs.registerFromMathSource(
+                    fnName,
+                    canonicalSig,
+                    docBlock.definition,
+                    docBlock.params,
+                    docBlock.returns
+                )
+            }
+
+            val paramParts = paramsRaw.split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it !in unitAnnotationTokens }
+            if (!paramParts.all { isNumericalParamSpec(it) }) continue
+            if (!isNumericalReturnSpec(retRaw, rhsRaw, paramParts.size)) continue
+
+            val effectiveDoc = docBlock ?: CalculatorFunctionDocs.forName(fnName)
+            val paramBullets = effectiveDoc?.params?.takeIf { it.isNotEmpty() } ?: if (paramParts.isEmpty()) {
+                listOf("None — Zero-argument numerical function in [$curModName]")
+            } else {
+                paramParts.mapIndexed { idx, pTrim ->
+                    val pTyped = if (pTrim.contains(':')) pTrim else "$pTrim: real"
+                    val pIdent = pTrim.substringBefore(':').substringBefore('=').trim()
+                    "$pTyped — Numeric input parameter '$pIdent' (argument #${idx + 1} of $fnName)"
+                }
+            }
+            val rhsPreview = if (rhsRaw.startsWith("{")) "{ ... }" else rhsRaw
+            val genericDesc = "Numerical function in $originGroup [$curModName] — evaluates $canonicalSig = $rhsPreview"
+            val fullDesc = effectiveDoc?.definition?.takeIf { it.isNotBlank() } ?: genericDesc
+            val shortDesc = effectiveDoc?.summary?.takeIf { it.isNotBlank() } ?: fullDesc
+            val retClean = retRaw.substringBefore(',').trim().ifEmpty { "real" }
+            val retDesc = effectiveDoc?.returns?.takeIf { it.isNotBlank() }
+                ?: "$retClean — Numeric result computed by $canonicalSig in [$curModName]"
+
+            if (docBlock != null) {
+                CalculatorFunctionDocs.registerFromMathSource(fnName, canonicalSig, fullDesc, paramBullets, retDesc)
+            }
+
+            val hasArgs = paramParts.isNotEmpty()
+            out.add(
+                CalculatorCatalogItem(
+                    name = fnName,
+                    signature = canonicalSig,
+                    insertText = if (hasArgs) "$fnName(" else "$fnName()",
+                    originGroup = originGroup,
+                    moduleName = curModName,
+                    kind = "fn",
+                    shortDescription = shortDesc,
+                    paramBullets = paramBullets,
+                    returnBullet = retDesc,
+                    sourceFile = fileName,
+                    fullDescription = fullDesc
+                )
+            )
         }
     }
     return out
+}
+
+@Volatile
+private var cachedBundledStdlibItems: List<CalculatorCatalogItem>? = null
+
+private val stdlibModulePriorityOrder = listOf(
+    "trig.math", "arith.math", "algebra.math", "geom.math", "calculus.math",
+    "physics.math", "chemistry.math", "biology.math", "units.math", "conversions.math",
+    "vec.math", "mat.math", "complex.math", "string.math", "bootstrap.math"
+)
+
+/**
+ * Dynamically parses all bundled `.math` standard library files under `assets/Library/*.math`,
+ * extracting every numerical function and its `# @desc` / `# @param` / `# @return` documentation.
+ */
+internal fun ensureBundledStdlibDocsLoaded(ctx: Context): List<CalculatorCatalogItem> {
+    cachedBundledStdlibItems?.let { return it }
+    synchronized(CalculatorFunctionDocs) {
+        cachedBundledStdlibItems?.let { return it }
+        val assetFiles = runCatching {
+            ctx.assets.list("Library")?.filter { it.endsWith(".math", ignoreCase = true) }.orEmpty()
+        }.getOrDefault(emptyList())
+        val orderedFiles = assetFiles.sortedWith(
+            compareBy<String> {
+                val idx = stdlibModulePriorityOrder.indexOf(it)
+                if (idx >= 0) idx else 999
+            }.thenBy { it.lowercase() }
+        )
+        val items = ArrayList<CalculatorCatalogItem>(512)
+        val seen = HashSet<String>()
+        for (fileName in orderedFiles) {
+            val rawSrc = runCatching {
+                ctx.assets.open("Library/$fileName").bufferedReader(Charsets.UTF_8).use { it.readText() }
+            }.getOrDefault("")
+            if (rawSrc.isBlank()) continue
+            for (item in extractCatalogItemsFromMathSource(rawSrc, originGroup = "stdlib", fileName = fileName)) {
+                if (seen.add("${item.kind}:${item.name}")) {
+                    items.add(item)
+                }
+            }
+        }
+        cachedBundledStdlibItems = items
+        return items
+    }
 }
 
 @Volatile
@@ -1871,9 +1586,14 @@ private var cachedCatalogSignature: String = ""
 private var cachedCatalogItems: List<CalculatorCatalogItem> = emptyList()
 
 /**
- * Returns the cached or freshly collected numerical function & operator catalog from
- * `project1` + `patches` + handpicked numerical `stdlib`.
- * Caches by signature so switching tabs in the Basic Calculator takes 0 ms.
+ * Dynamically collects all numerical functions and operators from all sources:
+ * 1. `project1` (`.math` files in `filesDir/math_projects/project1/` + live Studio editor buffers)
+ * 2. `patches` (`.math` files in `filesDir/math_patches/`, including newly downloaded OTA patches)
+ * 3. `stdlib` (`.math` files in `assets/Library/*.math` + live C engine `SymTable` fallback)
+ *
+ * No functions or descriptions are hardcoded in the app: every item and its documentation is
+ * dynamically extracted from the `.math` files (falling back to generic descriptions when
+ * `# @desc` / `# @param` / `# @return` tags are omitted).
  */
 @Synchronized
 fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<CalculatorCatalogItem> {
@@ -1886,9 +1606,8 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
             !f.name.startsWith("currency_pairs_")
     }?.sortedBy { it.name.lowercase() }.orEmpty()
 
-    // 4th source: live engine catalog dump (`eng_export_catalog`) — every active `fn` whose
-    // parameters are numerical and whose return type is numerical. Fetched on the worker
-    // thread that calls this; handle == 0 (engine not yet booted) degrades gracefully.
+    val stdlibItems = ensureBundledStdlibDocsLoaded(ctx)
+
     val liveCatalogDump = if (engineHandle != 0L) {
         runCatching { MathEngineBridge.nativeExportCatalog(engineHandle) }.getOrNull()
     } else {
@@ -1900,6 +1619,7 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
         for (pf in patchFiles) {
             append(pf.name).append(':').append(pf.lastModified()).append(':').append(pf.length()).append(';')
         }
+        append('|').append(stdlibItems.size)
         if (!liveCatalogDump.isNullOrBlank()) {
             append('|').append(liveCatalogDump.hashCode())
         }
@@ -1908,10 +1628,9 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
         return cachedCatalogItems
     }
 
-    val result = ArrayList<CalculatorCatalogItem>(64)
+    val result = ArrayList<CalculatorCatalogItem>(540)
     val seenKeys = HashSet<String>()
     val proj1OverloadedNames = HashSet<String>()
-    // Module → origin-group attribution for live-engine items whose module came from a patch or project1.
     val liveModuleGroups = HashMap<String, String>()
 
     // 1. Numerical functions & operator overloads from `project1`
@@ -1943,8 +1662,8 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
         }
     }
 
-    // 3. Handpicked numerical `stdlib` functions
-    for (stdItem in HANDPICKED_NUMERICAL_STDLIB_CATALOG) {
+    // 3. Dynamically parsed numerical `stdlib` functions from `assets/Library/*.math`
+    for (stdItem in stdlibItems) {
         val key = "stdlib:${stdItem.moduleName}:${stdItem.kind}:${stdItem.name}"
         if (seenKeys.add(key)) {
             val isOverloaded = "${stdItem.kind}:${stdItem.name}" in proj1OverloadedNames
@@ -1958,8 +1677,7 @@ fun MathEngineManager.collectCalculatorFunctionCatalog(ctx: Context): List<Calcu
         }
     }
 
-    // 4. Live-engine derived numerical functions (beyond the handpicked set). Curated entries from
-    // sources 1–3 win on name overlap; every remaining numerical `fn` overload from the dump is added.
+    // 4. Live-engine `SymTable` fallback for any additional numerical function registered in C
     if (!liveCatalogDump.isNullOrBlank()) {
         val takenNames = result.mapTo(HashSet()) { "${it.kind}:${it.name}" }
         for (liveItem in extractLiveCatalogNumericalItems(liveCatalogDump)) {

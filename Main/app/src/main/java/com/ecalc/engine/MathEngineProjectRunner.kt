@@ -703,9 +703,16 @@ internal fun MathEngineManager.ensureModuleDeclarationsLinkedSync(
  * example modules (`custom_ops.math`, `physics_sim.math`, `vectors_stats.math`, `data_io_json.math`)
  * and data files (`config.json`, `sensor_data.csv`), even on cold start before opening the Studio.
  */
-@Synchronized
 fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
-    val legDir = File(ctx.filesDir, "math_programs").also { if (!it.exists()) it.mkdirs() }
+    val fastModDir = getProjectDir(ctx, DEFAULT_STUDIO_PROJECT_NAME)
+    if (defaultProject1Seeded && File(fastModDir, ".seeded_unified_modules_v11").exists()) {
+        return fastModDir
+    }
+    return synchronized(projectFsLock) {
+        if (defaultProject1Seeded && File(fastModDir, ".seeded_unified_modules_v11").exists()) {
+            return@synchronized fastModDir
+        }
+        val legDir = File(ctx.filesDir, "math_programs").also { if (!it.exists()) it.mkdirs() }
     val legModDir = File(ctx.filesDir, "math_modules")
     val modDir = ensureProjectSetup(ctx, DEFAULT_STUDIO_PROJECT_NAME)
     val sessRoot = File(ctx.filesDir, "math_sessions")
@@ -757,7 +764,7 @@ fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
             }
     }
 
-    val seedMarker = File(modDir, ".seeded_unified_modules_v10")
+    val seedMarker = File(modDir, ".seeded_unified_modules_v11")
     if (!seedMarker.exists()) {
         val oldV9Marker = File(modDir, ".seeded_unified_modules_v9")
         if (!oldV9Marker.exists()) {
@@ -794,7 +801,9 @@ fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
                 "pub range_km := (range_m * 1m) into km\n" +
                 "pub max_h := (v0 * deg_sin(angle))^2 / (2 * g)\n" +
                 "pub flight_t := (2 * v0 * deg_sin(angle)) / g\n\n" +
-                "# Reusable module function:\n" +
+                "# @desc Computes projectile altitude y(t) = v₀·sin(θ)·t − ½·g·t² at time t using module parameters v0, angle, and g in [physics_sim]. Formula: height_at(t) = v0 · deg_sin(angle) · t - 0.5 · g · t^2\n" +
+                "# @param t: real — Elapsed flight time t since launch in seconds (s)\n" +
+                "# @return real — Vertical projectile height y(t) above launch level in metres (m)\n" +
                 "pub height_at(t: real) = v0 * deg_sin(angle) * t - 0.5 * g * t^2\n\n" +
                 "# Project entry point (invoked via '▶ Run' in ☰ Project Options):\n" +
                 "pub main() = {\n" +
@@ -819,8 +828,36 @@ fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
                 "roots\n"
             )
         }
+        val physFile = File(modDir, "physics_sim.math")
+        if (physFile.exists() && !physFile.readText().contains("# @desc")) {
+            physFile.writeText(
+                "# Multi-File Project Module with Project Entry Point: physics_sim.math\n" +
+                "# • Running this file ('▶ Run / Link') executes declarations top-to-bottom.\n" +
+                "# • Running the Project ('▶ Run' in ☰ Project Options) executes pub main().\n\n" +
+                "[physics_sim]\n" +
+                "<[custom_ops]\n" +
+                "<[units]\n" +
+                "<[conversions]\n\n" +
+                "pub v0 := 25.0\n" +
+                "pub angle := 45.0\n" +
+                "priv const g = G_STD\n\n" +
+                "pub range_m := (v0^2 * deg_sin(2 * angle)) / g\n" +
+                "pub range_km := (range_m * 1m) into km\n" +
+                "pub max_h := (v0 * deg_sin(angle))^2 / (2 * g)\n" +
+                "pub flight_t := (2 * v0 * deg_sin(angle)) / g\n\n" +
+                "# @desc Computes projectile altitude y(t) = v₀·sin(θ)·t − ½·g·t² at time t using module parameters v0, angle, and g in [physics_sim]. Formula: height_at(t) = v0 · deg_sin(angle) · t - 0.5 · g · t^2\n" +
+                "# @param t: real — Elapsed flight time t since launch in seconds (s)\n" +
+                "# @return real — Vertical projectile height y(t) above launch level in metres (m)\n" +
+                "pub height_at(t: real) = v0 * deg_sin(angle) * t - 0.5 * g * t^2\n\n" +
+                "# Project entry point (invoked via '▶ Run' in ☰ Project Options):\n" +
+                "pub main() = {\n" +
+                "    println(\$\"Projectile range={range_m} m, max_h={max_h} m\")\n" +
+                "    height_at(1.8)\n" +
+                "}\n"
+            )
+        }
         val customOpsFile = File(modDir, "custom_ops.math")
-        if (!customOpsFile.exists() || !customOpsFile.readText().contains("\"par\"")) {
+        if (!customOpsFile.exists() || !customOpsFile.readText().contains("# @desc")) {
             customOpsFile.writeText(
                 "# Unified Library & Executable Module: custom_ops.math\n" +
                 "# Linked with Basic Calculator & imported via <[custom_ops] in Studio.\n\n" +
@@ -829,11 +866,27 @@ fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
                 "<[trig]\n\n" +
                 "priv const DEG_SCALE = π / 180\n" +
                 "priv deg_to_r(x: real) = x * DEG_SCALE\n\n" +
-                "pub const G_STD = 9.80665\n" +
-                "pub hypot3(a: real, b: real, c: real) = √(a^2 + b^2 + c^2)\n" +
-                "pub kinetic_e(m: real, v: real) = 0.5 * m * v^2\n" +
+                "pub const G_STD = 9.80665\n\n" +
+                "# @desc Computes the 3D Euclidean vector norm (spatial diagonal) √(a² + b² + c²) in [custom_ops]. Formula: hypot3(a, b, c) = √(a^2 + b^2 + c^2)\n" +
+                "# @param a: real — X-axis orthogonal component or length\n" +
+                "# @param b: real — Y-axis orthogonal component or width\n" +
+                "# @param c: real — Z-axis orthogonal component or height\n" +
+                "# @return real — 3D Euclidean distance √(a² + b² + c²) ≥ 0\n" +
+                "pub hypot3(a: real, b: real, c: real) = √(a^2 + b^2 + c^2)\n\n" +
+                "# @desc Calculates classical translational kinetic energy KE = ½·m·v² of a moving mass in [custom_ops]. Formula: kinetic_e(m, v) = 0.5 · m · v^2\n" +
+                "# @param m: real — Mass m of the body in kilograms (kg)\n" +
+                "# @param v: real — Speed v of the body in metres per second (m/s)\n" +
+                "# @return real — Translational kinetic energy in joules (J)\n" +
+                "pub kinetic_e(m: real, v: real) = 0.5 * m * v^2\n\n" +
+                "# @desc Evaluates the trigonometric sine sin(x · π / 180) of an angle x specified explicitly in degrees in [custom_ops]. Formula: deg_sin(x) = sin(x · π / 180)\n" +
+                "# @param x: real — Angle x measured in degrees (°)\n" +
+                "# @return real — Sine of x° in [−1, 1]\n" +
                 "pub deg_sin(x: real) = sin(deg_to_r(x))\n\n" +
-                "# Custom infix operator (parallel combination a par b = (a*b)/(a+b)):\n" +
+                "# @desc Custom infix operator `a par b` in [custom_ops] (precedence :<55) computing the parallel combination (a · b) / (a + b) of two resistances, impedances, or spring constants. Formula: (a) \"par\" (b) = (a · b) / (a + b)\n" +
+                "# @param a: real — Left operand (e.g. first parallel resistance R₁ or stiffness k₁)\n" +
+                "# @param b: real — Right operand (e.g. second parallel resistance R₂ or stiffness k₂)\n" +
+                "# @param Precedence: :<55 — Left-associative infix operator (binds tighter than + and -)\n" +
+                "# @return real — Parallel combination (a · b) / (a + b)\n" +
                 "pub (a: real) \"par\" (b: real) :<55 = (a * b) / (a + b)\n\n" +
                 "# Top-level self-test expression (runs when custom_ops.math is executed top-to-bottom):\n" +
                 "hypot3(3, 4, 12)\n"
@@ -843,7 +896,9 @@ fun MathEngineManager.ensureDefaultProject1Seeded(ctx: Context): File {
         runCatching { oldV9Marker.writeText("ok") }
         runCatching { seedMarker.writeText("ok") }
     }
-    return modDir
+        defaultProject1Seeded = true
+        modDir
+    }
 }
 
 /**

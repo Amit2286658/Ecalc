@@ -78,17 +78,29 @@ object MathPatchDownloader {
         }
         if (s.contains("[currency]") && !s.contains("usd_to_inr(")) {
             s = s.trimEnd() + "\n" +
-                "# Convert USD to INR (Indian Rupee)\n" +
+                "# @desc Converts a monetary amount from US Dollars (USD) to Indian Rupees (INR) using the live/cached exchange rate table. Formula: usd_to_inr(amount) = @currency_convert(\"USD\", \"INR\", amount)\n" +
+                "# @param amount: real — Monetary amount in US Dollars (USD)\n" +
+                "# @return real — Equivalent monetary amount in Indian Rupees (INR)\n" +
                 "usd_to_inr(amount: real) = @currency_convert(\"USD\", \"INR\", amount)\n" +
-                "# Convert INR (Indian Rupee) to USD\n" +
+                "# @desc Converts a monetary amount from Indian Rupees (INR) to US Dollars (USD) using the live/cached exchange rate table. Formula: inr_to_usd(amount) = @currency_convert(\"INR\", \"USD\", amount)\n" +
+                "# @param amount: real — Monetary amount in Indian Rupees (INR)\n" +
+                "# @return real — Equivalent monetary amount in US Dollars (USD)\n" +
                 "inr_to_usd(amount: real) = @currency_convert(\"INR\", \"USD\", amount)\n" +
-                "# Convert USD to EUR (Euro)\n" +
+                "# @desc Converts a monetary amount from US Dollars (USD) to Euros (EUR) using the live/cached exchange rate table. Formula: usd_to_eur(amount) = @currency_convert(\"USD\", \"EUR\", amount)\n" +
+                "# @param amount: real — Monetary amount in US Dollars (USD)\n" +
+                "# @return real — Equivalent monetary amount in Euros (EUR)\n" +
                 "usd_to_eur(amount: real) = @currency_convert(\"USD\", \"EUR\", amount)\n" +
-                "# Convert EUR (Euro) to USD\n" +
+                "# @desc Converts a monetary amount from Euros (EUR) to US Dollars (USD) using the live/cached exchange rate table. Formula: eur_to_usd(amount: real) = @currency_convert(\"EUR\", \"USD\", amount)\n" +
+                "# @param amount: real — Monetary amount in Euros (EUR)\n" +
+                "# @return real — Equivalent monetary amount in US Dollars (USD)\n" +
                 "eur_to_usd(amount: real) = @currency_convert(\"EUR\", \"USD\", amount)\n" +
-                "# Convert USD to GBP (British Pound)\n" +
+                "# @desc Converts a monetary amount from US Dollars (USD) to British Pounds (GBP) using the live/cached exchange rate table. Formula: usd_to_gbp(amount: real) = @currency_convert(\"USD\", \"GBP\", amount)\n" +
+                "# @param amount: real — Monetary amount in US Dollars (USD)\n" +
+                "# @return real — Equivalent monetary amount in British Pounds (GBP)\n" +
                 "usd_to_gbp(amount: real) = @currency_convert(\"USD\", \"GBP\", amount)\n" +
-                "# Convert GBP (British Pound) to USD\n" +
+                "# @desc Converts a monetary amount from British Pounds (GBP) to US Dollars (USD) using the live/cached exchange rate table. Formula: gbp_to_usd(amount: real) = @currency_convert(\"GBP\", \"USD\", amount)\n" +
+                "# @param amount: real — Monetary amount in British Pounds (GBP)\n" +
+                "# @return real — Equivalent monetary amount in US Dollars (USD)\n" +
                 "gbp_to_usd(amount: real) = @currency_convert(\"GBP\", \"USD\", amount)\n"
         }
         return s
@@ -105,14 +117,23 @@ object MathPatchDownloader {
      * Ensures patches are ready before the very first expression evaluation even
      * when offline.
      */
-    @Synchronized
+    private val seedLock = Any()
+    private val syncLock = Any()
+
+    @Volatile
+    private var bundledPatchesSeeded: Boolean = false
+
     fun ensureBundledPatchesSeeded(context: Context): File {
-        val dir = File(context.filesDir, PATCHES_FOLDER_NAME).apply { mkdirs() }
-        var seededAny = false
+        val fastDir = File(context.filesDir, PATCHES_FOLDER_NAME)
+        if (bundledPatchesSeeded && fastDir.isDirectory) return fastDir
+        synchronized(seedLock) {
+            if (bundledPatchesSeeded && fastDir.isDirectory) return fastDir
+            val dir = fastDir.apply { mkdirs() }
+            var seededAny = false
         runCatching {
             val ccyFile = File(dir, "currency.math")
             val existing = if (ccyFile.isFile && ccyFile.canRead()) ccyFile.readText(Charsets.UTF_8) else ""
-            if (existing.isBlank() || existing.contains(") \"in\" (") || !existing.contains("\"RS\"") || !existing.contains("usd_to_inr(")) {
+            if (existing.isBlank() || existing.contains(") \"in\" (") || !existing.contains("\"RS\"") || !existing.contains("usd_to_inr(") || !existing.contains("# @desc")) {
                 val bundled = runCatching {
                     context.assets.open("patches/currency.math").bufferedReader(Charsets.UTF_8).use { it.readText() }
                 }.getOrNull()
@@ -129,7 +150,7 @@ object MathPatchDownloader {
                     ?: emptyList()
                 for (name in bundledOther) {
                     val target = File(dir, name)
-                    if (target.isFile && target.canRead()) continue
+                    if (target.isFile && target.canRead() && (!name.equals("Prime.math", ignoreCase = true) || target.readText(Charsets.UTF_8).contains("# @desc"))) continue
                     val text = runCatching {
                         context.assets.open("patches/$name").bufferedReader(Charsets.UTF_8).use { it.readText() }
                     }.getOrNull()
@@ -141,13 +162,17 @@ object MathPatchDownloader {
                 }
             }
             if (seededAny) invalidateCompiledCache(dir)
+            }
+            bundledPatchesSeeded = true
+            return dir
         }
-        return dir
     }
 
     /** Returns the dedicated local directory where incremental `.math` patches live (seeded with bundled patches). */
-    fun getPatchesDir(context: Context): File =
-        ensureBundledPatchesSeeded(context)
+    fun getPatchesDir(context: Context): File {
+        val dir = File(context.filesDir, PATCHES_FOLDER_NAME)
+        return if (bundledPatchesSeeded && dir.isDirectory) dir else ensureBundledPatchesSeeded(context)
+    }
 
     /** Removes precompiled `.mathc` cache files whenever on-disk `.math` patches change. */
     internal fun invalidateCompiledCache(patchesDir: File) {
@@ -165,8 +190,7 @@ object MathPatchDownloader {
      *   screen instead of only in logcat.
      * @return Number of newly downloaded `.math` patch files.
      */
-    @Synchronized
-    fun syncMissingPatches(context: Context, onStatus: ((String) -> Unit)? = null): Int {
+    fun syncMissingPatches(context: Context, onStatus: ((String) -> Unit)? = null): Int = synchronized(syncLock) {
         return try {
             val patchesDir = getPatchesDir(context)
             val manifestText = fetchManifestWithFallback("/manifest.json")
