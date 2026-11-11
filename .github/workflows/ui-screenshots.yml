@@ -96,26 +96,17 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            set -eu
-            cd "$GITHUB_WORKSPACE"
+            # NOTE: this action executes EACH LINE as a separate `sh -c`
+            # (see its lib/script-parser.js): variables and cd do not persist
+            # across lines. Keep each logical statement on ONE line and use
+            # absolute paths throughout.
             adb shell cmd uimode night ${{ matrix.dark }}
-            APK="$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' | head -1)"
-            adb install -r "$APK"
+            adb install -r "$(find "$GITHUB_WORKSPACE/apk" -name '*.apk' | head -1)"
             adb shell am start -W -n com.ecalc/.LauncherDark
-            # generous wait: engine boot + stdlib load + first patch seed
             sleep 15
             mkdir -p "$GITHUB_WORKSPACE/shots"
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/shots/01-home.png"
-            # swipe across all six ViewPager2 pages, screenshot each
-            W=$(adb shell wm size | sed -n 's/.*: \([0-9]*\)x[0-9]*/\1/p' | tr -d '\r')
-            H=$(adb shell wm size | sed -n 's/.*: [0-9]*x\([0-9]*\)/\1/p' | tr -d '\r')
-            X1=$((W*8/10)); X2=$((W*12/100)); Y=$((H*62/100))
-            for p in 1 2 3 4 5; do
-              adb shell input swipe "$X1" "$Y" "$X2" "$Y" 600
-              sleep 3
-              adb exec-out screencap -p > "$GITHUB_WORKSPACE/shots/0$((p+1))-page$((p+1)).png"
-            done
-            ls -la "$GITHUB_WORKSPACE/shots"
+            W=$(adb shell wm size | sed -n 's/.*: \([0-9]*\)x[0-9]*/\1/p' | tr -d '\r'); H=$(adb shell wm size | sed -n 's/.*: [0-9]*x\([0-9]*\)/\1/p' | tr -d '\r'); X1=$((W*8/10)); X2=$((W*12/100)); Y=$((H*62/100)); for p in 1 2 3 4 5; do adb shell input swipe "$X1" "$Y" "$X2" "$Y" 600; sleep 3; adb exec-out screencap -p > "$GITHUB_WORKSPACE/shots/0$((p+1))-page$((p+1)).png"; done; ls -la "$GITHUB_WORKSPACE/shots"
 
       - uses: actions/upload-artifact@v4
         with:
