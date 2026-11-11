@@ -57,7 +57,9 @@ android {
       }
     }
     defaultConfig {
-      ndk { abiFilters += listOf("arm64-v8a") }
+      // -PmepAbi=x86_64 lets CI build the engine for an x86_64 emulator; default stays arm64-v8a.
+      val mepAbi = (project.findProperty("mepAbi") as String?) ?: "arm64-v8a"
+      ndk { abiFilters += listOf(mepAbi) }
       externalNativeBuild {
         cmake {
           arguments += listOf(
