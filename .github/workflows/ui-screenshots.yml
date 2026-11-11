@@ -69,6 +69,10 @@ jobs:
           - { profile: nexus_7,     api: 30, dark: no  }   # 7" tablet, 1200x1920 @213dpi
           - { profile: nexus_10,    api: 34, dark: no  }   # 10" tablet, 2560x1600 @160dpi
     steps:
+      # Checkout: defaults.run.working-directory is "Main", so bash would fail to
+      # start in the screenshots job without the repo tree being present.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: emulator-debug-apk
