@@ -3,26 +3,39 @@ package com.ecalc
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.LinearInterpolator
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -32,10 +45,13 @@ import kotlin.math.hypot
  * Tab 5 (6th tab) in the Basic Calculator:
  * Displays a recycled, zero-jank list of numerical functions and custom/overloaded operators
  * dynamically discovered from `stdlib + patches + project1`.
- * - Top bar is split 50/50 between two neumorphic dropdown buttons:
- *   1. Left 50%: Source/kind filter dropdown (`▾ Filter: All`, `project1`, `Patches`, `Stdlib`, `Operators`).
- *   2. Right 50%: Quick numeric keypad dropdown (`▾ Keypad: 0–9  ( )  =`).
- * - Both dropdowns and all filter transitions use the app's signature damped-spring physics.
+ * - Top bar contains:
+ *   1. Left button: Source/kind filter dropdown (`▾ Filter: All`, `project1`, `Patches`, `Stdlib`, `Operators`).
+ *   2. Center button: Lens search icon (`btnSearchToggle`) right between the Filter button and the Mini-keypad button.
+ *      When clicked, animates expanding horizontally over both buttons with frosted-glass blur and damped-spring
+ *      physics, displaying live suggestions above the virtual keyboard as keys are pressed.
+ *   3. Right button: Quick numeric keypad dropdown (`▾ Keypad: 0–9  ( )  =`).
+ * - All dropdowns, search expansion, and filter transitions use the app's signature damped-spring physics.
  * - Tapping any item inserts it into the Basic Calculator's expression input.
  * - Holding any item displays a frosted-glass popup info window (`showButtonPopup`) populated
  *   directly from the `.math` file's `# @desc`, `# @param`, and `# @return` documentation.
@@ -43,29 +59,39 @@ import kotlin.math.hypot
 class FunctionCatalogFragment : Fragment() {
 
     private var outerLayout: LinearLayout? = null
+    private var topControlsRowView: LinearLayout? = null
     private var tvHeaderSubtitle: TextView? = null
     private var recyclerView: RecyclerView? = null
     private var adapter: CatalogAdapter? = null
 
     private var allItems: List<CalculatorCatalogItem> = emptyList()
     private var activeFilter: String = "ALL" // "ALL", "PROJECT1", "PATCH", "STDLIB", "OP"
+    private var activeSearchQuery: String = ""
     private var lastRenderedFilter: String = ""
+    private var lastRenderedSearch: String = ""
     private var lastRenderedDark: Boolean? = null
     private var lastRenderedItemsRef: List<CalculatorCatalogItem>? = null
 
     private var btnFilterDropdown: NeumorphicKeyView? = null
+    private var btnSearchToggle: NeumorphicKeyView? = null
     private var btnPadToggle: NeumorphicKeyView? = null
     private val wobbleAnimators = mutableListOf<ValueAnimator>()
     private val filterListAnimators = mutableListOf<ValueAnimator>()
     private val boldMonoTypeface: Typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
 
-    /** Frost-blurred filter dropdown overlay shown from the left 50% filter toggle button. */
+    /** Frost-blurred filter dropdown overlay shown from the left filter toggle button. */
     private var filterDropdownOverlay: FrameLayout? = null
     private val filterDropdownAnimators = mutableListOf<ValueAnimator>()
 
-    /** Frost-blurred quick numeric-pad dropdown overlay shown from the right 50% keypad toggle button. */
+    /** Frost-blurred quick numeric-pad dropdown overlay shown from the right keypad toggle button. */
     private var helperPadOverlay: FrameLayout? = null
     private val padAnimators = mutableListOf<ValueAnimator>()
+
+    /** Frost-blurred horizontally-expanding search bar & live suggestions overlay shown from the center lens button. */
+    private var searchOverlay: FrameLayout? = null
+    private var searchEditText: EditText? = null
+    private val searchAnimators = mutableListOf<ValueAnimator>()
+    private var searchLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
 
     private val filterOptions = listOf(
         "ALL" to "All",
@@ -96,7 +122,7 @@ class FunctionCatalogFragment : Fragment() {
         }
         outerLayout = root
 
-        // 1. 50/50 Top Controls Row: [▾ Filter: All (...)] (50%) + [▾ Keypad: 0–9 ( ) =] (50%)
+        // 1. Top Controls Row: [▾ Filter: All (...)] + [🔍 Lens Search] + [▾ Keypad: 0–9 ( ) =]
         val topControlsRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -105,16 +131,17 @@ class FunctionCatalogFragment : Fragment() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(5f) }
         }
+        topControlsRowView = topControlsRow
 
         val filterToggle = NeumorphicKeyView(ctx).apply {
             text = formatFilterButtonLabel()
-            textSize = 11.2f
+            textSize = 11.0f
             cornerRadiusDp = 10.5f
             shadowPadDp = 2.2f
             isAccentKey = true
             isDarkThemeMode = dark
             layoutParams = LinearLayout.LayoutParams(0, dp(34f), 1f).apply {
-                marginEnd = dp(4f)
+                marginEnd = dp(3f)
             }
             setOnClickListener {
                 pulseRow(this)
@@ -122,7 +149,7 @@ class FunctionCatalogFragment : Fragment() {
             }
             setOnLongClickListener { true }
             holdListener = { held ->
-                if (filterDropdownOverlay == null && helperPadOverlay == null) {
+                if (filterDropdownOverlay == null && helperPadOverlay == null && searchOverlay == null) {
                     val act = this@FunctionCatalogFragment.activity as? MainActivity
                     if (act != null) {
                         if (held) {
@@ -142,15 +169,53 @@ class FunctionCatalogFragment : Fragment() {
         btnFilterDropdown = filterToggle
         topControlsRow.addView(filterToggle)
 
+        val searchToggle = NeumorphicKeyView(ctx).apply {
+            text = ""
+            showLensIcon = true
+            cornerRadiusDp = 10.5f
+            shadowPadDp = 2.2f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            contentDescription = "Search functions and operators"
+            layoutParams = LinearLayout.LayoutParams(dp(38f), dp(34f)).apply {
+                marginStart = dp(1f)
+                marginEnd = dp(1f)
+            }
+            setOnClickListener {
+                pulseRow(this)
+                toggleFunctionSearch(this)
+            }
+            setOnLongClickListener { true }
+            holdListener = { held ->
+                if (searchOverlay == null && filterDropdownOverlay == null && helperPadOverlay == null) {
+                    val act = this@FunctionCatalogFragment.activity as? MainActivity
+                    if (act != null) {
+                        if (held) {
+                            act.showButtonPopup(
+                                this,
+                                "Search Functions & Operators — expands horizontally over the Filter and Keypad buttons " +
+                                    "with frosted-glass blur and damped-spring physics. Displays live matching function and operator " +
+                                    "suggestions above the virtual keyboard as you type."
+                            )
+                        } else {
+                            act.dismissButtonPopup()
+                        }
+                    }
+                }
+            }
+        }
+        btnSearchToggle = searchToggle
+        topControlsRow.addView(searchToggle)
+
         val padToggle = NeumorphicKeyView(ctx).apply {
             text = "▾ Keypad: 0–9  ( )  ="
-            textSize = 11.2f
+            textSize = 11.0f
             cornerRadiusDp = 10.5f
             shadowPadDp = 2.2f
             isAccentKey = false
             isDarkThemeMode = dark
             layoutParams = LinearLayout.LayoutParams(0, dp(34f), 1f).apply {
-                marginStart = dp(4f)
+                marginStart = dp(3f)
             }
             setOnClickListener {
                 pulseRow(this)
@@ -158,7 +223,7 @@ class FunctionCatalogFragment : Fragment() {
             }
             setOnLongClickListener { true }
             holdListener = { held ->
-                if (helperPadOverlay == null && filterDropdownOverlay == null) {
+                if (helperPadOverlay == null && filterDropdownOverlay == null && searchOverlay == null) {
                     val act = this@FunctionCatalogFragment.activity as? MainActivity
                     if (act != null) {
                         if (held) {
@@ -216,6 +281,23 @@ class FunctionCatalogFragment : Fragment() {
         return root
     }
 
+    /** Handles system Back button when the search overlay, filter dropdown, or helper keypad is open. */
+    fun handleBackPressed(): Boolean {
+        if (searchOverlay != null) {
+            dismissFunctionSearch()
+            return true
+        }
+        if (filterDropdownOverlay != null) {
+            dismissFilterDropdown()
+            return true
+        }
+        if (helperPadOverlay != null) {
+            dismissHelperPad()
+            return true
+        }
+        return false
+    }
+
     private fun countForFilter(filterKey: String): Int = when (filterKey) {
         "PROJECT1" -> allItems.count { it.originGroup == "project1" }
         "PATCH" -> allItems.count { it.originGroup == "patch" }
@@ -235,6 +317,10 @@ class FunctionCatalogFragment : Fragment() {
             isDarkThemeMode = dark
             isAccentKey = true
             text = formatFilterButtonLabel()
+        }
+        btnSearchToggle?.apply {
+            isDarkThemeMode = dark
+            isAccentKey = (searchOverlay != null || activeSearchQuery.isNotBlank())
         }
         btnPadToggle?.apply {
             isDarkThemeMode = dark
@@ -318,12 +404,742 @@ class FunctionCatalogFragment : Fragment() {
         }
     }
 
+    // =========================================================================
+    //  Lens Search Overlay: Horizontal Physics Expansion over Filter & Keypad,
+    //  Frosted Backdrop, Virtual Keyboard Avoidance & Live Suggestions
+    // =========================================================================
+
+    private fun toggleFunctionSearch(anchor: View) {
+        if (searchOverlay != null) {
+            dismissFunctionSearch()
+        } else {
+            if (filterDropdownOverlay != null) dismissFilterDropdown()
+            if (helperPadOverlay != null) dismissHelperPad()
+            showFunctionSearch(anchor)
+        }
+    }
+
+    /**
+     * Scores and filters [allItems] for a given search query [rawQuery], prioritizing exact name
+     * matches, prefix matches on function/operator names, signature matches, module matches, and
+     * description matches.
+     */
+    private fun queryCatalogSuggestions(rawQuery: String, limit: Int = 24): List<CalculatorCatalogItem> {
+        val basePool = when (activeFilter) {
+            "PROJECT1" -> allItems.filter { it.originGroup == "project1" }
+            "PATCH" -> allItems.filter { it.originGroup == "patch" }
+            "STDLIB" -> allItems.filter { it.originGroup == "stdlib" }
+            "OP" -> allItems.filter { it.kind == "op" }
+            else -> allItems
+        }.ifEmpty { allItems }
+
+        val q = rawQuery.trim().lowercase()
+        if (q.isEmpty()) {
+            return basePool.take(limit)
+        }
+        val tokens = q.split(Regex("\\s+")).filter { it.isNotEmpty() }
+
+        val scored = ArrayList<Pair<Int, CalculatorCatalogItem>>(basePool.size)
+        for (item in allItems) {
+            val nameLow = item.name.lowercase()
+            val sigLow = item.signature.lowercase()
+            val modLow = item.moduleName.lowercase()
+            val descLow = item.shortDescription.lowercase()
+            val fullLow = item.fullDescription.lowercase()
+
+            val inActiveFilter = when (activeFilter) {
+                "PROJECT1" -> item.originGroup == "project1"
+                "PATCH" -> item.originGroup == "patch"
+                "STDLIB" -> item.originGroup == "stdlib"
+                "OP" -> item.kind == "op"
+                else -> true
+            }
+            val filterBoost = if (inActiveFilter) 0 else 25
+
+            val score = when {
+                nameLow == q -> 0 + filterBoost
+                nameLow.startsWith(q) -> 10 + filterBoost + (nameLow.length - q.length).coerceAtMost(15)
+                sigLow.startsWith(q) -> 22 + filterBoost
+                nameLow.contains(q) -> 30 + filterBoost + nameLow.indexOf(q).coerceAtMost(12)
+                modLow == q || modLow.startsWith(q) -> 42 + filterBoost
+                sigLow.contains(q) -> 50 + filterBoost
+                descLow.contains(q) -> 65 + filterBoost
+                fullLow.contains(q) -> 80 + filterBoost
+                tokens.size > 1 && tokens.all { tok ->
+                    nameLow.contains(tok) || sigLow.contains(tok) || modLow.contains(tok) || descLow.contains(tok)
+                } -> 90 + filterBoost
+                else -> -1
+            }
+            if (score >= 0) {
+                scored.add(score to item)
+            }
+        }
+        scored.sortWith(compareBy<Pair<Int, CalculatorCatalogItem>> { it.first }.thenBy { it.second.name.length })
+        return scored.take(limit).map { it.first to it.second }.map { it.second }
+    }
+
+    /**
+     * Expands the search bar horizontally from [anchor] (`btnSearchToggle`, placed between Filter and Keypad)
+     * to cover the full horizontal width of `topControlsRow` over both buttons, accompanied by the
+     * frosted-glass blur backdrop and damped-spring physics (`e^-7.5t · cos/sin(22t)`).
+     * Automatically tracks IME / virtual keyboard insets so the search bar and live suggestions list
+     * always stay visible above the virtual keyboard and are never hidden behind it.
+     */
+    private fun showFunctionSearch(anchor: View) {
+        val act = activity as? MainActivity ?: return
+        val rootFrame = act.binding.rootFrame
+        act.dismissButtonPopup()
+
+        searchAnimators.forEach { it.cancel() }
+        searchAnimators.clear()
+        searchOverlay?.let { existing ->
+            searchLayoutListener?.let { l ->
+                if (existing.viewTreeObserver.isAlive) existing.viewTreeObserver.removeOnGlobalLayoutListener(l)
+            }
+            (existing.parent as? FrameLayout)?.removeView(existing)
+        }
+        searchOverlay = null
+        searchLayoutListener = null
+
+        val density = resources.displayMetrics.density
+        val dp = { v: Float -> (v * density).toInt() }
+        val dark = act.isDarkMode
+
+        val barBgColor = Color.parseColor(if (dark) "#24282E" else "#F7F8FA")
+        val suggCardBg = Color.parseColor(if (dark) "#22252A" else "#F4F6F9")
+        val rowBgColor = Color.parseColor(if (dark) "#2C3038" else "#EAECEF")
+        val proj1RowBgColor = Color.parseColor(if (dark) "#1F3236" else "#F9EAE6")
+        val strokeCol = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
+        val subStrokeCol = Color.parseColor(if (dark) "#3C4048" else "#D5D9E0")
+        val primaryText = Color.parseColor(if (dark) "#ECEFF4" else "#24292F")
+        val secondaryText = Color.parseColor(if (dark) "#9AA4B2" else "#57606A")
+
+        val overlay = FrameLayout(act).apply {
+            elevation = 48f * density
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { dismissFunctionSearch() }
+        }
+
+        val frostView = createFrostedBackdropWithDisplayCutout(act, rootFrame, dp)
+        if (frostView != null) {
+            overlay.addView(
+                frostView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+
+        // 1. Expanding Search Bar Card (covers full horizontal space over Filter + Lens + Keypad buttons)
+        val searchBarCard = LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 11.5f * density
+                setColor(barBgColor)
+                setStroke(dp(1.4f).coerceAtLeast(1), strokeCol)
+            }
+            elevation = 16f * density
+            setPadding(dp(10f), dp(3f), dp(6f), dp(3f))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { }
+            visibility = View.INVISIBLE
+        }
+
+        val ivLens = ImageView(act).apply {
+            setImageResource(R.drawable.ic_search_lens)
+            setColorFilter(strokeCol)
+            layoutParams = LinearLayout.LayoutParams(dp(18f), dp(18f)).apply {
+                marginEnd = dp(8f)
+            }
+        }
+        searchBarCard.addView(ivLens)
+
+        val etSearch = EditText(act).apply {
+            setText(activeSearchQuery)
+            setSelection(text.length)
+            hint = "Search functions, operators, modules..."
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_SEARCH or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(primaryText)
+            setHintTextColor(secondaryText)
+            background = null
+            setPadding(0, dp(4f), dp(6f), dp(4f))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        searchEditText = etSearch
+        searchBarCard.addView(etSearch)
+
+        val tvCountBadge = TextView(act).apply {
+            text = "${allItems.size}"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+            typeface = boldMonoTypeface
+            setTextColor(strokeCol)
+            setPadding(dp(6f), dp(2f), dp(6f), dp(2f))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 7f * density
+                setColor(Color.parseColor(if (dark) "#1A2E32" else "#FCEAE6"))
+                setStroke(1, strokeCol)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(5f) }
+        }
+        searchBarCard.addView(tvCountBadge)
+
+        val btnClearText = NeumorphicKeyView(act).apply {
+            text = "⌫"
+            textSize = 10.5f
+            cornerRadiusDp = 8f
+            shadowPadDp = 1.6f
+            isAccentKey = false
+            isDarkThemeMode = dark
+            visibility = if (activeSearchQuery.isNotEmpty()) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(dp(28f), dp(26f)).apply {
+                marginEnd = dp(4f)
+            }
+            setOnClickListener {
+                pulseRow(this)
+                etSearch.setText("")
+            }
+        }
+        searchBarCard.addView(btnClearText)
+
+        val btnCloseSearch = NeumorphicKeyView(act).apply {
+            text = "✕"
+            textSize = 11.5f
+            cornerRadiusDp = 8.5f
+            shadowPadDp = 1.8f
+            isAccentKey = true
+            isDarkThemeMode = dark
+            layoutParams = LinearLayout.LayoutParams(dp(28f), dp(26f))
+            setOnClickListener {
+                pulseRow(this)
+                dismissFunctionSearch()
+            }
+        }
+        searchBarCard.addView(btnCloseSearch)
+
+        // 2. Live Suggestions Panel (positioned directly below searchBarCard, clamped above the virtual keyboard)
+        val suggestionsPanel = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 13f * density
+                setColor(suggCardBg)
+                setStroke(dp(1.2f).coerceAtLeast(1), strokeCol)
+            }
+            elevation = 15f * density
+            setPadding(dp(8f), dp(7f), dp(8f), dp(7f))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { }
+            visibility = View.INVISIBLE
+        }
+
+        val tvSuggHeader = TextView(act).apply {
+            text = "💡 Suggestions — Tap to insert, Hold for full docs"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
+            typeface = boldMonoTypeface
+            setTextColor(strokeCol)
+            setPadding(dp(4f), 0, dp(4f), dp(4f))
+        }
+        suggestionsPanel.addView(tvSuggHeader)
+
+        val suggScroll = ScrollView(act).apply {
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val suggListContainer = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        suggScroll.addView(suggListContainer)
+        suggestionsPanel.addView(suggScroll)
+
+        overlay.addView(
+            suggestionsPanel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        overlay.addView(
+            searchBarCard,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                dp(38f)
+            )
+        )
+        rootFrame.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        searchOverlay = overlay
+        updateTopButtonsAppearance(dark)
+
+        var isEntranceRunning = true
+        var lastKnownImeBottom = 0
+
+        fun computeImeBottomPx(): Int {
+            val rootH = if (rootFrame.height > 0) rootFrame.height else resources.displayMetrics.heightPixels
+            val insetsIme = ViewCompat.getRootWindowInsets(rootFrame)
+                ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+            val rect = Rect()
+            rootFrame.getWindowVisibleDisplayFrame(rect)
+            val rootLoc = IntArray(2)
+            rootFrame.getLocationOnScreen(rootLoc)
+            val visibleBottomInRoot = rect.bottom - rootLoc[1]
+            val frameIme = if (rect.bottom > rect.top && visibleBottomInRoot in 1..rootH) {
+                (rootH - visibleBottomInRoot).coerceAtLeast(0)
+            } else 0
+            return maxOf(insetsIme, if (frameIme > rootH * 0.14f) frameIme else 0)
+        }
+
+        fun resolveTargetBounds(): Triple<Int, Int, Int> {
+            val rootW = if (rootFrame.width > 0) rootFrame.width else resources.displayMetrics.widthPixels
+            val rootLoc = IntArray(2)
+            rootFrame.getLocationInWindow(rootLoc)
+            val row = topControlsRowView
+            return if (row != null && row.width > 0) {
+                val rowLoc = IntArray(2)
+                row.getLocationInWindow(rowLoc)
+                val tLeft = (rowLoc[0] - rootLoc[0]).coerceIn(dp(8f), (rootW - dp(80f)).coerceAtLeast(dp(8f)))
+                val tWidth = row.width.coerceIn(dp(160f), rootW - tLeft - dp(8f))
+                val tTop = (rowLoc[1] - rootLoc[1]).coerceAtLeast(dp(44f))
+                Triple(tLeft, tWidth, tTop)
+            } else {
+                Triple(dp(12f), (rootW - dp(24f)).coerceAtLeast(dp(180f)), dp(280f))
+            }
+        }
+
+        fun updateVerticalLayoutForKeyboard(targetLeft: Int, targetWidth: Int, naturalRowTop: Int) {
+            if (searchOverlay !== overlay) return
+            val rootH = if (rootFrame.height > 0) rootFrame.height else resources.displayMetrics.heightPixels
+            val rootLoc = IntArray(2)
+            rootFrame.getLocationInWindow(rootLoc)
+
+            val imeBottom = computeImeBottomPx()
+            lastKnownImeBottom = imeBottom
+
+            // Visible bottom strictly above the virtual keyboard
+            val visibleBottom = (rootH - imeBottom - dp(8f)).coerceIn(dp(150f), rootH - dp(8f))
+
+            // Keep calculator primary/secondary display visible when possible, but ALWAYS prioritize
+            // keeping the search bar and suggestions strictly above the virtual keyboard!
+            val dispSecLoc = IntArray(2)
+            act.binding.tvSecondaryDisplay.getLocationInWindow(dispSecLoc)
+            val displayCutoutBottom = (dispSecLoc[1] + act.binding.tvSecondaryDisplay.height - rootLoc[1] + dp(8f))
+                .coerceAtLeast(dp(44f))
+
+            val barH = dp(38f)
+            val gap = dp(6f)
+            val minTopLimit = if (visibleBottom - displayCutoutBottom >= barH + dp(96f)) {
+                displayCutoutBottom
+            } else {
+                dp(36f)
+            }
+
+            val availForSugg = (visibleBottom - minTopLimit - barH - gap).coerceIn(dp(72f), dp(220f))
+            suggestionsPanel.measure(
+                View.MeasureSpec.makeMeasureSpec(targetWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(availForSugg, View.MeasureSpec.AT_MOST)
+            )
+            val suggH = suggestionsPanel.measuredHeight.coerceIn(dp(64f), availForSugg)
+            val totalNeeded = barH + gap + suggH
+
+            // Ensure searchBarCard + suggestionsPanel never extend below visibleBottom (never hidden behind virtual keyboard)
+            val desiredBarTop = if (imeBottom > dp(48f)) {
+                minOf(naturalRowTop, visibleBottom - totalNeeded).coerceIn(minTopLimit, (visibleBottom - barH - dp(4f)).coerceAtLeast(dp(36f)))
+            } else {
+                minOf(naturalRowTop, visibleBottom - totalNeeded).coerceAtLeast(minTopLimit)
+            }
+            val desiredSuggTop = (desiredBarTop + barH + gap).coerceAtMost((visibleBottom - suggH).coerceAtLeast(desiredBarTop + barH + dp(2f)))
+
+            val barLp = searchBarCard.layoutParams as FrameLayout.LayoutParams
+            if (!isEntranceRunning) {
+                barLp.leftMargin = targetLeft
+                barLp.width = targetWidth
+            }
+            barLp.topMargin = desiredBarTop
+            barLp.height = barH
+            searchBarCard.layoutParams = barLp
+
+            val suggLp = suggestionsPanel.layoutParams as FrameLayout.LayoutParams
+            suggLp.leftMargin = targetLeft
+            suggLp.topMargin = desiredSuggTop
+            suggLp.width = targetWidth
+            suggLp.height = suggH
+            suggestionsPanel.layoutParams = suggLp
+        }
+
+        fun populateSuggestions(query: String, animateRows: Boolean) {
+            val matches = queryCatalogSuggestions(query, limit = 25)
+            btnClearText.visibility = if (query.isNotEmpty()) View.VISIBLE else View.GONE
+            tvCountBadge.text = if (query.isBlank()) "${allItems.size}" else "${matches.size}"
+            tvSuggHeader.text = if (query.isBlank()) {
+                "💡 Popular & Project Functions (${allItems.size} total) — Tap: insert • Hold: info"
+            } else {
+                "💡 ${matches.size} suggestion${if (matches.size == 1) "" else "s"} for \"${query.trim()}\" — Tap: insert • Hold: info"
+            }
+
+            suggListContainer.removeAllViews()
+            if (matches.isEmpty()) {
+                val tvEmpty = TextView(act).apply {
+                    text = "No matching functions or operators for \"${query.trim()}\"."
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(secondaryText)
+                    setPadding(dp(6f), dp(10f), dp(6f), dp(10f))
+                }
+                suggListContainer.addView(tvEmpty)
+            } else {
+                matches.forEachIndexed { idx, item ->
+                    val isProj1 = (item.originGroup == "project1")
+                    val rowDrawable = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 9.5f * density
+                        setColor(if (isProj1) proj1RowBgColor else rowBgColor)
+                        setStroke(1, if (isProj1) strokeCol else subStrokeCol)
+                    }
+                    var isHoldActive = false
+                    val rowCard = LinearLayout(act).apply {
+                        orientation = LinearLayout.VERTICAL
+                        background = rowDrawable
+                        setPadding(dp(9f), dp(6f), dp(9f), dp(6f))
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            if (idx < matches.lastIndex) bottomMargin = dp(4f)
+                        }
+                        isClickable = true
+                        isFocusable = true
+                        setOnClickListener {
+                            pulseRow(this)
+                            act.onCatalogItemClicked(item)
+                            dismissFunctionSearch()
+                        }
+                        setOnLongClickListener {
+                            isHoldActive = true
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                            hideSoftKeyboard(etSearch)
+                            act.showButtonPopup(this, item.richPopupText())
+                            true
+                        }
+                        setOnTouchListener { v, event ->
+                            when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> isHoldActive = false
+                                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                    if (isHoldActive || act.keyPopupOverlay != null) {
+                                        isHoldActive = false
+                                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                                        act.dismissButtonPopup()
+                                    }
+                                }
+                            }
+                            false
+                        }
+                    }
+
+                    val topRow = LinearLayout(act).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val tvSig = TextView(act).apply {
+                        text = item.signature
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+                        typeface = boldMonoTypeface
+                        setTextColor(primaryText)
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    val badgeColor = when {
+                        item.originGroup == "project1" -> if (dark) 0xFF13959B.toInt() else 0xFFD96B59.toInt()
+                        item.originGroup == "patch" -> if (dark) 0xFFDCDCAA.toInt() else 0xFF9A6700.toInt()
+                        item.kind == "op" -> if (dark) 0xFFC586C0.toInt() else 0xFF8250DF.toInt()
+                        else -> if (dark) 0xFF569CD6.toInt() else 0xFF0969DA.toInt()
+                    }
+                    val tvBadge = TextView(act).apply {
+                        text = when (item.originGroup) {
+                            "project1" -> if (item.kind == "op") "project1 • op [${item.moduleName}]" else "project1 [${item.moduleName}]"
+                            "patch" -> "patch [${item.moduleName}]"
+                            else -> "stdlib [${item.moduleName}]"
+                        }
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+                        typeface = boldMonoTypeface
+                        setTextColor(badgeColor)
+                        setPadding(dp(6f), 0, 0, 0)
+                    }
+                    topRow.addView(tvSig)
+                    topRow.addView(tvBadge)
+                    rowCard.addView(topRow)
+
+                    val tvDesc = TextView(act).apply {
+                        text = item.shortDescription
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                        setTextColor(secondaryText)
+                        maxLines = 1
+                        setPadding(0, dp(1f), 0, 0)
+                    }
+                    rowCard.addView(tvDesc)
+                    suggListContainer.addView(rowCard)
+                }
+            }
+
+            val (tLeft, tWidth, tTop) = resolveTargetBounds()
+            updateVerticalLayoutForKeyboard(tLeft, tWidth, tTop)
+
+            if (animateRows && suggListContainer.childCount > 0) {
+                ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = 320L
+                    interpolator = LinearInterpolator()
+                    addUpdateListener { a ->
+                        val f = a.animatedValue as Float
+                        val t = f * 0.45
+                        val pulse = (Math.exp(-7.5 * t) * Math.sin(t * 22.0)).toFloat()
+                        val spring = (Math.exp(-7.5 * t) * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                        suggListContainer.translationY = (6f * density) * spring
+                        suggListContainer.scaleY = 1f + 0.015f * pulse
+                    }
+                    addListener(object : AnimatorListenerAdapter() {
+                        override fun onAnimationEnd(animation: Animator) {
+                            suggListContainer.translationY = 0f
+                            suggListContainer.scaleY = 1f
+                        }
+                    })
+                    start()
+                    searchAnimators.add(this)
+                }
+            }
+        }
+
+        etSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val q = s?.toString().orEmpty()
+                activeSearchQuery = q
+                renderFilteredItems(dark, force = true)
+                populateSuggestions(q, animateRows = true)
+            }
+        })
+
+        etSearch.setOnEditorActionListener { _, actionId, event ->
+            val isEnter = event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE || isEnter) {
+                val topMatch = queryCatalogSuggestions(etSearch.text?.toString().orEmpty(), limit = 1).firstOrNull()
+                if (topMatch != null && !etSearch.text.isNullOrBlank()) {
+                    act.onCatalogItemClicked(topMatch)
+                }
+                dismissFunctionSearch()
+                true
+            } else false
+        }
+
+        // Listen for virtual keyboard (IME) insets & global layout changes so the search bar is NEVER hidden behind the keyboard
+        ViewCompat.setOnApplyWindowInsetsListener(overlay) { _, windowInsets ->
+            val (tLeft, tWidth, tTop) = resolveTargetBounds()
+            updateVerticalLayoutForKeyboard(tLeft, tWidth, tTop)
+            windowInsets
+        }
+
+        val globalListener = ViewTreeObserver.OnGlobalLayoutListener {
+            if (searchOverlay !== overlay || !isAdded) return@OnGlobalLayoutListener
+            val curIme = computeImeBottomPx()
+            if (curIme != lastKnownImeBottom) {
+                val (tLeft, tWidth, tTop) = resolveTargetBounds()
+                updateVerticalLayoutForKeyboard(tLeft, tWidth, tTop)
+            }
+        }
+        searchLayoutListener = globalListener
+        overlay.viewTreeObserver.addOnGlobalLayoutListener(globalListener)
+
+        fun startHorizontalExpandPhysics() {
+            if (searchOverlay !== overlay) return
+            populateSuggestions(activeSearchQuery, animateRows = false)
+
+            val rootLoc = IntArray(2)
+            rootFrame.getLocationInWindow(rootLoc)
+            val anchorLoc = IntArray(2)
+            anchor.getLocationInWindow(anchorLoc)
+            val (targetLeft, targetWidth, naturalRowTop) = resolveTargetBounds()
+
+            val startWidth = anchor.width.takeIf { it > 0 } ?: dp(38f)
+            val startLeft = (anchorLoc[0] - rootLoc[0]).coerceIn(targetLeft, (targetLeft + targetWidth - startWidth).coerceAtLeast(targetLeft))
+
+            updateVerticalLayoutForKeyboard(targetLeft, targetWidth, naturalRowTop)
+
+            val barLp = searchBarCard.layoutParams as FrameLayout.LayoutParams
+            barLp.leftMargin = startLeft
+            barLp.width = startWidth
+            searchBarCard.layoutParams = barLp
+            searchBarCard.visibility = View.VISIBLE
+            suggestionsPanel.visibility = View.VISIBLE
+            suggestionsPanel.pivotX = targetWidth / 2f
+            suggestionsPanel.pivotY = 0f
+
+            val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 440L
+                interpolator = LinearInterpolator()
+                addUpdateListener { a ->
+                    val f = a.animatedValue as Float
+                    val t = f * 0.48
+                    val decay = Math.exp(-7.5 * t)
+                    val springFactor = (decay * (Math.cos(t * 22.0) + (7.5 / 22.0) * Math.sin(t * 22.0))).toFloat()
+                    val pulse = (decay * Math.sin(t * 22.0)).toFloat()
+                    val expandProgress = 1f - springFactor
+
+                    val curLeft = (startLeft + (targetLeft - startLeft) * expandProgress).toInt()
+                    val curW = (startWidth + (targetWidth - startWidth) * expandProgress).toInt().coerceAtLeast(dp(38f))
+
+                    val lp = searchBarCard.layoutParams as FrameLayout.LayoutParams
+                    lp.leftMargin = curLeft
+                    lp.width = curW
+                    searchBarCard.layoutParams = lp
+                    searchBarCard.scaleY = 1f + 0.045f * pulse
+                    searchBarCard.alpha = (f / 0.18f).coerceIn(0f, 1f)
+
+                    val suggScale = (1.0 - 0.32 * Math.exp(-4.0 * f) * Math.cos(f * 3.0 * Math.PI)).toFloat()
+                    suggestionsPanel.scaleX = suggScale
+                    suggestionsPanel.scaleY = suggScale
+                    suggestionsPanel.alpha = (f / 0.24f).coerceIn(0f, 1f)
+                    suggestionsPanel.translationY = (-10f * density) * (1f - f)
+
+                    frostView?.alpha = 0.92f * (f / 0.28f).coerceIn(0f, 1f)
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        isEntranceRunning = false
+                        searchBarCard.scaleY = 1f
+                        searchBarCard.alpha = 1f
+                        suggestionsPanel.scaleX = 1f
+                        suggestionsPanel.scaleY = 1f
+                        suggestionsPanel.translationY = 0f
+                        suggestionsPanel.alpha = 1f
+                        val (tL, tW, tT) = resolveTargetBounds()
+                        updateVerticalLayoutForKeyboard(tL, tW, tT)
+                    }
+                })
+                start()
+            }
+            searchAnimators.add(anim)
+
+            etSearch.requestFocus()
+            etSearch.post {
+                runCatching {
+                    val imm = act.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                    imm?.showSoftInput(etSearch, InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+        }
+
+        if (rootFrame.width > 0 && anchor.width > 0) {
+            startHorizontalExpandPhysics()
+        } else {
+            overlay.post { startHorizontalExpandPhysics() }
+        }
+    }
+
+    private fun hideSoftKeyboard(view: View?) {
+        val ctx = context ?: return
+        val target = view ?: return
+        runCatching {
+            val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(target.windowToken, 0)
+        }
+    }
+
+    /** Collapses the search bar horizontally back toward the lens icon and fades out the frost blur. */
+    private fun dismissFunctionSearch() {
+        searchAnimators.forEach { it.cancel() }
+        searchAnimators.clear()
+        hideSoftKeyboard(searchEditText)
+        searchEditText = null
+
+        val overlay = searchOverlay ?: return
+        searchOverlay = null
+        searchLayoutListener?.let { l ->
+            if (overlay.viewTreeObserver.isAlive) overlay.viewTreeObserver.removeOnGlobalLayoutListener(l)
+        }
+        searchLayoutListener = null
+
+        val dark = (activity as? MainActivity)?.isDarkMode ?: false
+        updateTopButtonsAppearance(dark)
+
+        val anchor = btnSearchToggle
+        val rootFrame = (activity as? MainActivity)?.binding?.rootFrame
+        val barCard = overlay.getChildAt(overlay.childCount - 1)
+        val suggCard = if (overlay.childCount >= 2) overlay.getChildAt(overlay.childCount - 2) else null
+
+        for (i in 0 until (overlay.childCount - 2).coerceAtLeast(0)) {
+            overlay.getChildAt(i)?.animate()?.alpha(0f)?.setDuration(180L)?.start()
+        }
+        suggCard?.animate()
+            ?.scaleX(0.72f)?.scaleY(0.72f)?.alpha(0f)
+            ?.setDuration(175L)
+            ?.setInterpolator(AccelerateInterpolator(0.85f))
+            ?.start()
+
+        if (barCard != null && anchor != null && rootFrame != null && barCard.width > 0) {
+            val rootLoc = IntArray(2)
+            val anchorLoc = IntArray(2)
+            rootFrame.getLocationInWindow(rootLoc)
+            anchor.getLocationInWindow(anchorLoc)
+            val lp = barCard.layoutParams as FrameLayout.LayoutParams
+            val startLeft = lp.leftMargin
+            val startW = barCard.width
+            val endLeft = anchorLoc[0] - rootLoc[0]
+            val endW = anchor.width.coerceAtLeast(1)
+
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 190L
+                interpolator = AccelerateInterpolator(0.85f)
+                addUpdateListener { a ->
+                    val f = a.animatedValue as Float
+                    lp.leftMargin = (startLeft + (endLeft - startLeft) * f).toInt()
+                    lp.width = (startW + (endW - startW) * f).toInt().coerceAtLeast(endW)
+                    barCard.layoutParams = lp
+                    barCard.alpha = 1f - f
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        (overlay.parent as? FrameLayout)?.removeView(overlay)
+                    }
+                })
+                start()
+            }
+        } else {
+            (overlay.parent as? FrameLayout)?.removeView(overlay)
+        }
+    }
+
     /** Toggles the frosted-glass filter dropdown menu with damped-spring physics. */
     private fun toggleFilterDropdown(anchor: View) {
         if (filterDropdownOverlay != null) {
             dismissFilterDropdown()
         } else {
             if (helperPadOverlay != null) dismissHelperPad()
+            if (searchOverlay != null) dismissFunctionSearch()
             showFilterDropdown(anchor)
         }
     }
@@ -524,6 +1340,7 @@ class FunctionCatalogFragment : Fragment() {
             dismissHelperPad()
         } else {
             if (filterDropdownOverlay != null) dismissFilterDropdown()
+            if (searchOverlay != null) dismissFunctionSearch()
             showHelperPad(anchor)
         }
     }
@@ -771,6 +1588,7 @@ class FunctionCatalogFragment : Fragment() {
         if (lastRenderedDark == isDark) return
         dismissFilterDropdown()
         dismissHelperPad()
+        dismissFunctionSearch()
         tvHeaderSubtitle?.setTextColor(Color.parseColor(if (isDark) "#8E8E8E" else "#666666"))
         updateTopButtonsAppearance(isDark)
         renderFilteredItems(isDark, force = true)
@@ -785,16 +1603,18 @@ class FunctionCatalogFragment : Fragment() {
     ) {
         if (!force &&
             lastRenderedFilter == activeFilter &&
+            lastRenderedSearch == activeSearchQuery &&
             lastRenderedDark == isDark &&
             lastRenderedItemsRef === allItems
         ) {
             return
         }
         lastRenderedFilter = activeFilter
+        lastRenderedSearch = activeSearchQuery
         lastRenderedDark = isDark
         lastRenderedItemsRef = allItems
 
-        val filtered = when (activeFilter) {
+        val baseFiltered = when (activeFilter) {
             "PROJECT1" -> allItems.filter { it.originGroup == "project1" }
             "PATCH" -> allItems.filter { it.originGroup == "patch" }
             "STDLIB" -> allItems.filter { it.originGroup == "stdlib" }
@@ -802,11 +1622,21 @@ class FunctionCatalogFragment : Fragment() {
             else -> allItems
         }
 
+        val q = activeSearchQuery.trim()
+        val filtered = if (q.isEmpty()) {
+            baseFiltered
+        } else {
+            queryCatalogSuggestions(q, limit = 500)
+        }
+
         val p1Count = allItems.count { it.originGroup == "project1" }
         val patchCount = allItems.count { it.originGroup == "patch" }
         val stdCount = allItems.count { it.originGroup == "stdlib" }
-        tvHeaderSubtitle?.text =
+        tvHeaderSubtitle?.text = if (q.isEmpty()) {
             "${filtered.size} numerical items (project1: $p1Count • patches: $patchCount • stdlib: $stdCount) — Tap to insert, Hold for info"
+        } else {
+            "🔍 ${filtered.size} match${if (filtered.size == 1) "" else "es"} for \"$q\" — Tap to insert, Hold for info"
+        }
         updateTopButtonsAppearance(isDark)
 
         adapter?.submitList(filtered, isDark)
@@ -1156,8 +1986,11 @@ class FunctionCatalogFragment : Fragment() {
         filterListAnimators.clear()
         dismissFilterDropdown()
         dismissHelperPad()
+        dismissFunctionSearch()
         btnFilterDropdown = null
+        btnSearchToggle = null
         btnPadToggle = null
+        topControlsRowView = null
         recyclerView?.adapter = null
         recyclerView = null
         adapter = null

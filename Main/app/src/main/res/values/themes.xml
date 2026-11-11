@@ -2,7 +2,7 @@
 <resources>
     <!-- Default startup theme is Light Theme so Android cold start always starts with Light Theme,
          while the in-app light/dark theme switcher remains completely independent at runtime. -->
-    <style name="Theme.Ecalc" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.MEPCalc" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:windowBackground">#F8F8F8</item>
         <item name="android:statusBarColor">#F8F8F8</item>
         <item name="android:navigationBarColor">#F3F3F3</item>
@@ -14,7 +14,7 @@
         <item name="colorPrimary">#F18977</item>
     </style>
 
-    <style name="Theme.Ecalc.LaunchDark" parent="Theme.Ecalc">
+    <style name="Theme.MEPCalc.LaunchDark" parent="Theme.MEPCalc">
         <item name="android:windowBackground">#F8F8F8</item>
         <item name="android:statusBarColor">#F8F8F8</item>
         <item name="android:navigationBarColor">#F3F3F3</item>
@@ -25,7 +25,7 @@
         <item name="android:windowLightNavigationBar">true</item>
     </style>
 
-    <style name="Theme.Ecalc.LaunchLight" parent="Theme.Ecalc">
+    <style name="Theme.MEPCalc.LaunchLight" parent="Theme.MEPCalc">
         <item name="android:windowBackground">#F8F8F8</item>
         <item name="android:statusBarColor">#F8F8F8</item>
         <item name="android:navigationBarColor">#F3F3F3</item>

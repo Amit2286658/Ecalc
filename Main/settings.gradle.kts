@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Ecalc"
+rootProject.name = "MEP Calc"
 
 include(":app")

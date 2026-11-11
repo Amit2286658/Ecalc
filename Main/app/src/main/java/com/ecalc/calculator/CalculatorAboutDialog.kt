@@ -286,8 +286,8 @@ fun MainActivity.showAboutInfoWindow() {
     addInfoBullet(authorBox, "Email", "amitkumar13234353@gmail.com") {
         openExternalUri("mailto:amitkumar13234353@gmail.com?subject=MEP%20Calc%20Query%20/%20Feedback")
     }
-    addInfoBullet(authorBox, "Project GitHub", "GitHub.com/Amit2286658/Ecalc") {
-        openExternalUri("https://github.com/Amit2286658/Ecalc")
+    addInfoBullet(authorBox, "Project GitHub", "GitHub.com/Amit2286658/MEP-Calc") {
+        openExternalUri("https://github.com/Amit2286658/MEP-Calc")
     }
     addInfoBullet(authorBox, "Cmath engine", "GitHub.com/Amit2286658/Math-Engine-MEP") {
         openExternalUri("https://github.com/Amit2286658/Math-Engine-MEP")
@@ -332,7 +332,7 @@ fun MainActivity.showAboutInfoWindow() {
         }
     }
     quickLinksRow.addView(makeQuickLinkBtn("✉ Email", "mailto:amitkumar13234353@gmail.com?subject=MEP%20Calc%20Query%20/%20Feedback"))
-    quickLinksRow.addView(makeQuickLinkBtn("🌐 MEP Calc Repo", "https://github.com/Amit2286658/Ecalc"))
+    quickLinksRow.addView(makeQuickLinkBtn("🌐 MEP Calc Repo", "https://github.com/Amit2286658/MEP-Calc"))
     quickLinksRow.addView(makeQuickLinkBtn("⚙ MEP Engine", "https://github.com/Amit2286658/Math-Engine-MEP").apply {
         (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
     })

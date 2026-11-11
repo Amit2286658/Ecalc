@@ -163,6 +163,7 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 when {
                     aboutOverlay != null -> dismissAboutInfoWindow()
+                    currentWorkspacePage == 0 && (fragmentAt(5) as? FunctionCatalogFragment)?.handleBackPressed() == true -> Unit
                     currentWorkspacePage == 1 && workspaceFragment?.handleBackPressed() == true -> Unit
                     currentWorkspacePage == 1 -> switchWorkspacePage(0)
                     else -> playExitSplashCollapse()
@@ -435,7 +436,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Six tabs (history + 4 keypads + catalog) live inside a ViewPager2 with distance-dependent damped-spring physics. */
     internal fun setupViewPager() {
-        binding.viewPager.adapter = EcalcPagerAdapter(this)
+        binding.viewPager.adapter = MepCalcPagerAdapter(this)
         binding.viewPager.setCurrentItem(selectedTabIndex, false)
         binding.viewPager.offscreenPageLimit = 1
         binding.viewPager.setPageTransformer { page, position ->
@@ -645,7 +646,7 @@ class MainActivity : AppCompatActivity() {
         displayPulseAnimators.add(view to anim)
     }
 
-    inner class EcalcPagerAdapter(activity: FragmentActivity) : FragmentStateAdapter(activity) {
+    inner class MepCalcPagerAdapter(activity: FragmentActivity) : FragmentStateAdapter(activity) {
         override fun getItemCount(): Int = 6
         override fun createFragment(position: Int): Fragment = when (position) {
             0 -> HistoryFragment()

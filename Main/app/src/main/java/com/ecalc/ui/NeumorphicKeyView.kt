@@ -18,7 +18,7 @@ import androidx.appcompat.widget.AppCompatTextView
 /**
  * Custom View that implements realistic 3D Neumorphic styling for calculator keys.
  * Supports dual soft shadows (highlight and shade), pressed-in depth inversion,
- * disabled/greyed-out state, and adaptive dark/light theme palettes.
+ * disabled/greyed-out state, custom vector lens icon rendering, and adaptive dark/light theme palettes.
  */
 class NeumorphicKeyView @JvmOverloads constructor(
     context: Context,
@@ -58,6 +58,18 @@ class NeumorphicKeyView @JvmOverloads constructor(
             }
         }
 
+    /**
+     * When true, draws a crisp geometric magnifying-glass lens icon centered inside the
+     * neumorphic key using the current theme/accent text color.
+     */
+    var showLensIcon: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
     private var isKeyPressed: Boolean = false
     private var longPressConsumed: Boolean = false
     /** Notified with `true` when a hold turns into a long-press, `false` when
@@ -77,6 +89,11 @@ class NeumorphicKeyView @JvmOverloads constructor(
     private val lightShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val darkShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
     private val rectF = RectF()
     private val outerRect = RectF()
     private val clipPath = Path()
@@ -224,6 +241,28 @@ class NeumorphicKeyView @JvmOverloads constructor(
             canvas.drawBitmap(bmp, 0f, 0f, bitmapPaint)
         }
         super.onDraw(canvas)
+        if (showLensIcon && width > 0 && height > 0) {
+            val density = resources.displayMetrics.density
+            val cx = width / 2f
+            val cy = height / 2f
+            val minDim = minOf(width, height).toFloat()
+            val ringRadius = (minDim * 0.19f).coerceIn(4.2f * density, 6.8f * density)
+            val lensCx = cx - ringRadius * 0.28f
+            val lensCy = cy - ringRadius * 0.28f
+
+            iconPaint.color = currentTextColor
+            iconPaint.style = Paint.Style.STROKE
+            iconPaint.strokeWidth = (1.85f * density).coerceAtLeast(2f)
+            canvas.drawCircle(lensCx, lensCy, ringRadius, iconPaint)
+
+            val diag = 0.70710677f
+            val handleStartX = lensCx + ringRadius * diag
+            val handleStartY = lensCy + ringRadius * diag
+            val handleEndX = lensCx + ringRadius * 1.68f
+            val handleEndY = lensCy + ringRadius * 1.68f
+            iconPaint.strokeWidth = (2.15f * density).coerceAtLeast(2.2f)
+            canvas.drawLine(handleStartX, handleStartY, handleEndX, handleEndY, iconPaint)
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {

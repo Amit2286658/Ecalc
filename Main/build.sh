@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  build.sh — simplified build runner for the Ecalc project
+#  build.sh — simplified build runner for the MEP Calc project
 #
 #  Usage:  ./build.sh [command]
 #

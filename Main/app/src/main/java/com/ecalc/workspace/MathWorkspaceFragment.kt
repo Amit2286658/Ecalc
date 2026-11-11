@@ -6,19 +6,23 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.view.inputmethod.EditorInfo
@@ -38,8 +42,19 @@ import java.io.File
 import kotlin.math.hypot
 
 /**
+ * App-side folder hierarchy state for a Studio project.
+ * Since the C11 Math Engine operates on flat `.math` compilation units in the project directory,
+ * folders are a purely app-side organizational feature persisted alongside the project.
+ */
+internal class ProjectFolderState(
+    val folders: LinkedHashSet<String> = LinkedHashSet(),
+    val fileToFolder: LinkedHashMap<String, String> = LinkedHashMap(),
+    val collapsedFolders: LinkedHashSet<String> = LinkedHashSet()
+)
+
+/**
  * Unified Top-to-Bottom Executable `.math` Modules & Multi-File Project Workspace
- * with Left-Drawer Project & File Manager.
+ * with Left-Drawer Project & File Manager, App-Side Folder Hierarchy, and Frosted File Search.
  */
 class MathWorkspaceFragment : Fragment() {
 
@@ -72,11 +87,25 @@ class MathWorkspaceFragment : Fragment() {
     internal var btnDrawerResetProjectEngine: NeumorphicKeyView? = null
     internal var drawerProjectListContainer: LinearLayout? = null
 
-    // Drawer File List Header & Container
+    // Drawer File List Header, Controls Row & Container
     internal var tvDrawerFilesSectionLabel: TextView? = null
+    internal var filesHeaderActionRow: LinearLayout? = null
+    internal var btnDrawerCreateFolder: NeumorphicKeyView? = null
     internal var btnDrawerCreateNewFile: NeumorphicKeyView? = null
     internal var btnDrawerImportFile: NeumorphicKeyView? = null
+    internal var btnDrawerSearchFiles: NeumorphicKeyView? = null
     internal var drawerFileListContainer: LinearLayout? = null
+
+    // Drawer File Search Overlay (horizontally expands from the lens icon over the file controls row)
+    internal var drawerFileSearchOverlay: FrameLayout? = null
+    internal var drawerFileSearchEditText: EditText? = null
+    internal var drawerFileSearchQuery: String = ""
+    internal val drawerFileSearchAnimators = mutableListOf<ValueAnimator>()
+    internal var drawerFileSearchLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
+
+    // App-side Folder Hierarchy State & Expand/Collapse Animators
+    internal val projectFolderStates = mutableMapOf<String, ProjectFolderState>()
+    internal val folderToggleAnimators = mutableMapOf<String, ValueAnimator>()
 
     // --- Main Window Section ---
     internal var modulesSection: LinearLayout? = null
@@ -222,6 +251,7 @@ class MathWorkspaceFragment : Fragment() {
                     this,
                     "Project & Module Manager — opens the left-hand drawer.\n" +
                         "• Run an entire project via '▶ Run' in Project Options (executes main() / @entry located in any file).\n" +
+                        "• Organize modules into app-side folders or search files with the lens icon.\n" +
                         "• Individual .math files run top-to-bottom on their own via '▶ Run / Link' in the Editor."
                 ) else activity.dismissButtonPopup()
             }
@@ -240,6 +270,9 @@ class MathWorkspaceFragment : Fragment() {
             }
             setOnClickListener {
                 springPulse(this, 0.07f)
+                if (drawerFileSearchOverlay != null) {
+                    dismissDrawerFileSearch()
+                }
                 if (isFileManagerDrawerOpen) {
                     toggleFileManagerDrawer(open = false, animate = false)
                 }
@@ -332,7 +365,9 @@ class MathWorkspaceFragment : Fragment() {
             visibility = View.INVISIBLE
             isClickable = false
             setOnClickListener {
-                if (isFileManagerDrawerOpen) {
+                if (drawerFileSearchOverlay != null) {
+                    dismissDrawerFileSearch()
+                } else if (isFileManagerDrawerOpen) {
                     toggleFileManagerDrawer(open = false, animate = true)
                 }
             }
@@ -380,7 +415,7 @@ class MathWorkspaceFragment : Fragment() {
 
         outerFrame.viewTreeObserver.addOnGlobalLayoutListener {
             if (!isAdded || outerFrame.height <= 0) return@addOnGlobalLayoutListener
-            val rect = android.graphics.Rect()
+            val rect = Rect()
             outerFrame.getWindowVisibleDisplayFrame(rect)
             val screenH = outerFrame.rootView.height
             if (screenH > 0 && rect.bottom > rect.top) {
@@ -409,10 +444,14 @@ class MathWorkspaceFragment : Fragment() {
         (activity as? MainActivity)?.let { applyTheme(it.isDarkMode) }
     }
 
-    /** Handles system Back button when a frosted modal dialog or the File Manager drawer is open. */
+    /** Handles system Back button when a frosted modal dialog, file search bar, or the File Manager drawer is open. */
     fun handleBackPressed(): Boolean {
         if (etModuleEditor?.isSuggestionsPopupShowing() == true) {
             etModuleEditor?.dismissSuggestionsPopup()
+            return true
+        }
+        if (drawerFileSearchOverlay != null) {
+            dismissDrawerFileSearch()
             return true
         }
         if (activeModalOverlay != null) {
@@ -494,13 +533,14 @@ class MathWorkspaceFragment : Fragment() {
                 layoutParams = LinearLayout.LayoutParams(dp(36f), dp(34f))
                 setOnClickListener {
                     springPulse(this, 0.07f)
+                    if (drawerFileSearchOverlay != null) dismissDrawerFileSearch()
                     toggleFileManagerDrawer(open = false, animate = true)
                 }
             }
             headerRow.addView(btnDrawerCloseIcon)
             addView(headerRow)
 
-            // 2. Projects Section Header: Label + [▶ Run] + [+ Project] (no flush engine bloat button)
+            // 2. Projects Section Header: Label + [▶ Run] + [+ Project]
             val projectsHeaderRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -574,7 +614,20 @@ class MathWorkspaceFragment : Fragment() {
             }
             addView(drawerProjectListContainer)
 
-            // 3. Files Section Header: Label + [+ Module] + [📥 Import]
+            // 3. Files Section Header: Label + Controls Row ([+ Folder] + [+ Module] + [📥 Import] + [🔍 Lens Search])
+            tvDrawerFilesSectionLabel = TextView(ctx).apply {
+                text = "PROJECT .MATH MODULES & FOLDERS"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.2f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(secondaryText)
+                setPadding(dp(2f), 0, dp(2f), dp(3f))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            addView(tvDrawerFilesSectionLabel)
+
             val filesHeaderRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -583,23 +636,41 @@ class MathWorkspaceFragment : Fragment() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { bottomMargin = dp(6f) }
             }
-            tvDrawerFilesSectionLabel = TextView(ctx).apply {
-                text = "PROJECT .MATH MODULES"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-                setTypeface(typeface, Typeface.BOLD)
-                setTextColor(secondaryText)
-                setPadding(dp(2f), 0, dp(4f), 0)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            filesHeaderActionRow = filesHeaderRow
+
+            btnDrawerCreateFolder = NeumorphicKeyView(ctx).apply {
+                text = "+ Folder"
+                textSize = 10.4f
+                cornerRadiusDp = 10f
+                shadowPadDp = 2.3f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                layoutParams = LinearLayout.LayoutParams(0, dp(32f), 0.95f).apply {
+                    marginEnd = dp(3f)
+                }
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    promptNewFolderDialog(parentFolder = null)
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(
+                        this,
+                        "+ Folder — creates an app-side folder in the active project to organize .math modules " +
+                            "with collapsible drop-down / shrink-up hierarchy and indentation (completely transparent to the C engine)."
+                    ) else activity.dismissButtonPopup()
+                }
             }
+
             btnDrawerCreateNewFile = NeumorphicKeyView(ctx).apply {
                 text = "+ Module"
-                textSize = 11f
+                textSize = 10.4f
                 cornerRadiusDp = 10f
-                shadowPadDp = 2.4f
+                shadowPadDp = 2.3f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(82f), dp(32f)).apply {
-                    marginEnd = dp(4f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(32f), 1f).apply {
+                    marginEnd = dp(3f)
                 }
                 setOnClickListener {
                     springPulse(this, 0.07f)
@@ -613,14 +684,17 @@ class MathWorkspaceFragment : Fragment() {
                     ) else activity.dismissButtonPopup()
                 }
             }
+
             btnDrawerImportFile = NeumorphicKeyView(ctx).apply {
                 text = "📥 Import"
-                textSize = 11f
+                textSize = 10.4f
                 cornerRadiusDp = 10f
-                shadowPadDp = 2.4f
+                shadowPadDp = 2.3f
                 isAccentKey = true
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(dp(84f), dp(32f))
+                layoutParams = LinearLayout.LayoutParams(0, dp(32f), 1f).apply {
+                    marginEnd = dp(3f)
+                }
                 setOnClickListener {
                     springPulse(this, 0.07f)
                     launchImportMathFileForModules()
@@ -633,12 +707,38 @@ class MathWorkspaceFragment : Fragment() {
                     ) else activity.dismissButtonPopup()
                 }
             }
-            filesHeaderRow.addView(tvDrawerFilesSectionLabel)
+
+            btnDrawerSearchFiles = NeumorphicKeyView(ctx).apply {
+                text = ""
+                showLensIcon = true
+                cornerRadiusDp = 10f
+                shadowPadDp = 2.3f
+                isAccentKey = false
+                isDarkThemeMode = dark
+                contentDescription = "Search project files and folders"
+                layoutParams = LinearLayout.LayoutParams(dp(36f), dp(32f))
+                setOnClickListener {
+                    springPulse(this, 0.07f)
+                    toggleDrawerFileSearch(this)
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) activity.showButtonPopup(
+                        this,
+                        "Search Files & Folders — placed right after '+ Module' and '📥 Import'. " +
+                            "Expands horizontally over the file buttons with frosted-glass blur and damped-spring physics, " +
+                            "displaying live file and folder suggestions above the virtual keyboard as you type."
+                    ) else activity.dismissButtonPopup()
+                }
+            }
+
+            filesHeaderRow.addView(btnDrawerCreateFolder)
             filesHeaderRow.addView(btnDrawerCreateNewFile)
             filesHeaderRow.addView(btnDrawerImportFile)
+            filesHeaderRow.addView(btnDrawerSearchFiles)
             addView(filesHeaderRow)
 
-            // 4. Scrollable File Entries List
+            // 4. Scrollable File & Folder Entries List
             val listScroll = ScrollView(ctx).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -667,6 +767,8 @@ class MathWorkspaceFragment : Fragment() {
 
         if (open) {
             etModuleEditor?.dismissSuggestionsPopup()
+        } else if (drawerFileSearchOverlay != null) {
+            dismissDrawerFileSearch()
         }
         drawerAnimator?.cancel()
         isFileManagerDrawerOpen = open
@@ -780,22 +882,26 @@ class MathWorkspaceFragment : Fragment() {
         val secondaryText = Color.parseColor(if (dark) "#8E8E8E" else "#666666")
         val accentText = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
         val rowBg = Color.parseColor(if (dark) "#262626" else "#EFEFEF")
+        val folderRowBg = Color.parseColor(if (dark) "#21282B" else "#E9EEF0")
         val activeRowBg = Color.parseColor(if (dark) "#1D3638" else "#FCEAE6")
         val strokeColor = Color.parseColor(if (dark) "#3E3E3E" else "#D4D4D4")
         val activeStroke = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
+        val guideLineColor = Color.parseColor(if (dark) "#3813959B" else "#48E58A7B")
 
         val listContainer = drawerFileListContainer ?: return
+        folderToggleAnimators.values.forEach { it.cancel() }
+        folderToggleAnimators.clear()
         listContainer.removeAllViews()
 
         fun makeEntryActionBtn(label: String, accent: Boolean): NeumorphicKeyView {
             return NeumorphicKeyView(ctx).apply {
                 text = label
-                textSize = 9.6f
+                textSize = 9.4f
                 cornerRadiusDp = 8.5f
-                shadowPadDp = 2.0f
+                shadowPadDp = 1.9f
                 isAccentKey = accent
                 isDarkThemeMode = dark
-                layoutParams = LinearLayout.LayoutParams(0, dp(28f), 1f).apply {
+                layoutParams = LinearLayout.LayoutParams(0, dp(27f), 1f).apply {
                     marginEnd = dp(2f)
                 }
             }
@@ -805,6 +911,13 @@ class MathWorkspaceFragment : Fragment() {
         val projStatus = MathEngineManager.getProjectBinaryStatus(ctx, activeProjectName)
         val allModFiles = listModuleFiles(ctx)
         openModuleFiles.retainAll { name -> allModFiles.any { it.name == name } }
+
+        val folderState = ensureProjectFolderStateLoaded(ctx, activeProjectName, allModFiles)
+        btnDrawerSearchFiles?.apply {
+            isDarkThemeMode = dark
+            isAccentKey = (drawerFileSearchOverlay != null || drawerFileSearchQuery.isNotBlank())
+        }
+        btnDrawerCreateFolder?.isDarkThemeMode = dark
 
         val activeEditorText = etModuleEditor?.text?.toString()
         val activeProjEntry = MathEngineManager.findProjectEntryPointOnDisk(
@@ -827,7 +940,10 @@ class MathWorkspaceFragment : Fragment() {
         tvDrawerTitle?.text = "📦 Project & Module Manager"
         val stdlibKb = (projStatus.stdlibMathcBytes / 1024L).coerceAtLeast(1L)
         tvDrawerSubtitle?.text = "[$activeProjectName] • Shared Engine ✓ • stdlib+patches (${stdlibKb}KB)"
-        tvDrawerFilesSectionLabel?.text = "MODULES IN [$activeProjectName] (${openModuleFiles.size}/${allModFiles.size})"
+        val folderCount = folderState.folders.size
+        val folderSuffix = if (folderCount > 0) " • $folderCount folder${if (folderCount == 1) "" else "s"}" else ""
+        val filterSuffix = if (drawerFileSearchQuery.isNotBlank()) " • 🔍 \"${drawerFileSearchQuery.trim()}\"" else ""
+        tvDrawerFilesSectionLabel?.text = "MODULES IN [$activeProjectName] (${openModuleFiles.size}/${allModFiles.size}$folderSuffix)$filterSuffix"
 
         drawerProjectListContainer?.let { projContainer ->
             projContainer.removeAllViews()
@@ -905,8 +1021,6 @@ class MathWorkspaceFragment : Fragment() {
                 }
                 projCard.addView(tvPMeta)
 
-                // Project Options Row: [▶ Run] | [Open/Active] | [Clone/Ren] | [Del]
-                // Reset is completely removed; for default project (project1), "Del" is greyed out and unclickable.
                 val pActions = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -967,7 +1081,7 @@ class MathWorkspaceFragment : Fragment() {
             }
         }
 
-        if (allModFiles.isEmpty()) {
+        if (allModFiles.isEmpty() && folderState.folders.isEmpty()) {
             val emptyCard = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12f), dp(14f), dp(12f), dp(14f))
@@ -979,7 +1093,7 @@ class MathWorkspaceFragment : Fragment() {
                 }
             }
             val tvEmpty = TextView(ctx).apply {
-                text = "No .math module files stored.\nTap '+ Module' or '📥 Import' above to create or import a top-to-bottom executable .math module."
+                text = "No .math module files stored.\nTap '+ Folder', '+ Module', or '📥 Import' above to organize or create executable .math modules."
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 setTextColor(secondaryText)
             }
@@ -988,7 +1102,24 @@ class MathWorkspaceFragment : Fragment() {
             return
         }
 
-        allModFiles.forEach { file ->
+        val activeQuery = drawerFileSearchQuery.trim().lowercase()
+        val filesByName = allModFiles.associateBy { it.name }
+
+        fun fileMatchesFilter(file: File): Boolean {
+            if (activeQuery.isEmpty()) return true
+            val fname = file.name.lowercase()
+            val folderPath = folderState.fileToFolder[file.name].orEmpty().lowercase()
+            if (fname.contains(activeQuery) || folderPath.contains(activeQuery)) return true
+            val rawSrc = if (file.name == activeModuleFileName && activeEditorText != null) {
+                activeEditorText
+            } else {
+                runCatching { file.readText() }.getOrDefault("")
+            }
+            val modId = MathEngineManager.deriveModuleName(file.name, rawSrc).lowercase()
+            return modId.contains(activeQuery) || rawSrc.lowercase().contains(activeQuery)
+        }
+
+        fun buildModuleFileCard(file: File): LinearLayout {
             val fname = file.name
             val isOpen = fname in openModuleFiles
             val isActive = (fname == activeModuleFileName && isOpen)
@@ -1001,6 +1132,8 @@ class MathWorkspaceFragment : Fragment() {
             val modId = MathEngineManager.deriveModuleName(fname, rawSrc)
             val deps = MathEngineManager.extractModuleDependencies(rawSrc)
             val (entryFn, _) = MathEngineManager.detectModuleEntryPoint(rawSrc)
+            val assignedFolder = folderState.fileToFolder[fname].orEmpty()
+            val folderBadge = if (assignedFolder.isNotEmpty()) "📁 $assignedFolder/ • " else ""
             val depsLabel = if (deps.isNotEmpty()) " • <[${deps.joinToString(", ")}]" else ""
             val entryLabel = if (entryFn != null) " • @entry:$entryFn()" else ""
 
@@ -1009,11 +1142,11 @@ class MathWorkspaceFragment : Fragment() {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = dp(6f) }
-                setPadding(dp(10f), dp(8f), dp(10f), dp(8f))
+                ).apply { bottomMargin = dp(5f) }
+                setPadding(dp(10f), dp(7f), dp(10f), dp(7f))
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 12f * density
+                    cornerRadius = 11.5f * density
                     setColor(if (isActive) activeRowBg else rowBg)
                     setStroke(((if (isActive) 1.5f else 1f) * density).toInt(), if (isActive) activeStroke else strokeColor)
                 }
@@ -1035,7 +1168,7 @@ class MathWorkspaceFragment : Fragment() {
             }
             val tvName = TextView(ctx).apply {
                 text = "🧩 $fname"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.8f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.4f)
                 setTypeface(typeface, if (isActive) Typeface.BOLD else Typeface.NORMAL)
                 setTextColor(if (isActive) accentText else primaryText)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -1046,7 +1179,7 @@ class MathWorkspaceFragment : Fragment() {
                     isOpen -> "🔵 OPEN"
                     else -> "⚪ CLOSED"
                 }
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.6f)
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(if (isOpen) accentText else secondaryText)
             }
@@ -1055,15 +1188,15 @@ class MathWorkspaceFragment : Fragment() {
             itemCard.addView(topLine)
 
             val tvMeta = TextView(ctx).apply {
-                text = "[$modId]$depsLabel$entryLabel • $lineCount lines • $byteLen B"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.2f)
+                text = "$folderBadge[$modId]$depsLabel$entryLabel • $lineCount lines • $byteLen B"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.8f)
                 typeface = Typeface.MONOSPACE
                 setTextColor(secondaryText)
-                setPadding(0, dp(2f), 0, dp(5f))
+                setPadding(0, dp(2f), 0, dp(4f))
             }
             itemCard.addView(tvMeta)
 
-            // Per-module inline options: [Open] | [Close] | [Save] | [Rename] | [Export] | [Del]
+            // Per-module inline options: [Open] | [Close] | [📁] | [Save] | [Ren] | [Exp] | [Del]
             val inlineRow = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -1082,6 +1215,21 @@ class MathWorkspaceFragment : Fragment() {
                     closeSpecificModuleFile(fname)
                 }
             }
+            val btnRowFolder = makeEntryActionBtn("📁", assignedFolder.isNotEmpty()).apply {
+                setOnClickListener {
+                    promptMoveFileToFolderDialog(fname)
+                }
+                setOnLongClickListener { true }
+                holdListener = { held ->
+                    if (held) {
+                        val locDesc = if (assignedFolder.isNotEmpty()) "/$assignedFolder" else "Root (no folder)"
+                        activity.showButtonPopup(
+                            this,
+                            "Move '$fname' to Folder — currently in $locDesc. Tap to move into an existing folder, create a new folder, or move back to Root."
+                        )
+                    } else activity.dismissButtonPopup()
+                }
+            }
             val btnRowSave = makeEntryActionBtn("Save", false).apply {
                 setOnClickListener {
                     if (activeModuleFileName == fname) {
@@ -1092,12 +1240,12 @@ class MathWorkspaceFragment : Fragment() {
                     refreshFileManagerDrawer()
                 }
             }
-            val btnRowRename = makeEntryActionBtn("Rename", false).apply {
+            val btnRowRename = makeEntryActionBtn("Ren", false).apply {
                 setOnClickListener {
                     promptRenameOrCopyModuleFileDialog(fname)
                 }
             }
-            val btnRowExport = makeEntryActionBtn("Export", true).apply {
+            val btnRowExport = makeEntryActionBtn("Exp", true).apply {
                 setOnClickListener {
                     exportSpecificModuleFile(fname)
                 }
@@ -1111,13 +1259,268 @@ class MathWorkspaceFragment : Fragment() {
 
             inlineRow.addView(btnRowOpen)
             inlineRow.addView(btnRowClose)
+            inlineRow.addView(btnRowFolder)
             inlineRow.addView(btnRowSave)
             inlineRow.addView(btnRowRename)
             inlineRow.addView(btnRowExport)
             inlineRow.addView(btnRowDel)
             itemCard.addView(inlineRow)
 
-            listContainer.addView(itemCard)
+            return itemCard
+        }
+
+        fun directChildFoldersOf(parentPath: String): List<String> {
+            return folderState.folders.filter { path ->
+                val slashIdx = path.lastIndexOf('/')
+                val p = if (slashIdx < 0) "" else path.substring(0, slashIdx)
+                p == parentPath
+            }.sortedBy { it.lowercase() }
+        }
+
+        fun directFilesOf(folderPath: String): List<File> {
+            return allModFiles.filter { f ->
+                val assigned = folderState.fileToFolder[f.name].orEmpty()
+                if (folderPath.isEmpty()) {
+                    assigned.isEmpty() || assigned !in folderState.folders
+                } else {
+                    assigned == folderPath
+                }
+            }.filter { fileMatchesFilter(it) }
+        }
+
+        fun countAllFilesInSubtree(folderPath: String): Int {
+            return allModFiles.count { f ->
+                val assigned = folderState.fileToFolder[f.name].orEmpty()
+                assigned == folderPath || assigned.startsWith("$folderPath/")
+            }
+        }
+
+        fun renderFolderSubtree(parentContainer: LinearLayout, folderPath: String, depth: Int) {
+            val childFolders = directChildFoldersOf(folderPath)
+            val childFiles = directFilesOf(folderPath)
+            val folderMatchesQuery = activeQuery.isNotEmpty() && folderPath.lowercase().contains(activeQuery)
+
+            val subtreeHasMatchingFiles = allModFiles.any { f ->
+                val assigned = folderState.fileToFolder[f.name].orEmpty()
+                (assigned == folderPath || assigned.startsWith("$folderPath/")) && fileMatchesFilter(f)
+            }
+            if (activeQuery.isNotEmpty() && !folderMatchesQuery && !subtreeHasMatchingFiles) {
+                return
+            }
+
+            val shortName = folderPath.substringAfterLast('/')
+            val isCollapsed = (folderPath in folderState.collapsedFolders) && activeQuery.isEmpty()
+            val totalFilesCount = countAllFilesInSubtree(folderPath)
+            val subFolderCount = childFolders.size
+
+            val folderGroupWrap = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(4f) }
+            }
+
+            val folderHeaderCard = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(3f) }
+                setPadding(dp(10f), dp(7f), dp(10f), dp(7f))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 11.5f * density
+                    setColor(folderRowBg)
+                    setStroke((1.2f * density).toInt().coerceAtLeast(1), activeStroke)
+                }
+                isClickable = true
+                isFocusable = true
+            }
+
+            val fTopRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            val tvFolderTitle = TextView(ctx).apply {
+                text = if (isCollapsed) "▸ 📁 $shortName" else "▾ 📂 $shortName"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(accentText)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val tvFolderBadge = TextView(ctx).apply {
+                val subDesc = if (subFolderCount > 0) "$subFolderCount sub • " else ""
+                text = "${subDesc}$totalFilesCount mod${if (totalFilesCount == 1) "" else "s"} • ${if (isCollapsed) "CLOSED" else "OPEN"}"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.4f)
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextColor(if (isCollapsed) secondaryText else accentText)
+            }
+            fTopRow.addView(tvFolderTitle)
+            fTopRow.addView(tvFolderBadge)
+            folderHeaderCard.addView(fTopRow)
+
+            val tvFolderSub = TextView(ctx).apply {
+                text = "App folder /$folderPath • Tap to ${if (isCollapsed) "drop down open" else "shrink up close"}"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+                typeface = Typeface.MONOSPACE
+                setTextColor(secondaryText)
+                setPadding(0, dp(1f), 0, dp(4f))
+            }
+            folderHeaderCard.addView(tvFolderSub)
+
+            // Indented Children Container with vertical tree-guide line on the left
+            val indentedRowWrap = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                setPadding(dp(12f), 0, 0, 0)
+                visibility = if (isCollapsed) View.GONE else View.VISIBLE
+            }
+
+            val treeGuideBar = View(ctx).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 2f * density
+                    setColor(guideLineColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(2.2f).coerceAtLeast(2), LinearLayout.LayoutParams.MATCH_PARENT).apply {
+                    marginEnd = dp(8f)
+                    topMargin = dp(2f)
+                    bottomMargin = dp(4f)
+                }
+            }
+
+            val childrenStack = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+            }
+            indentedRowWrap.addView(treeGuideBar)
+            indentedRowWrap.addView(childrenStack)
+
+            // Folder inline action buttons: [▾ Drop / ▴ Shrink] | [+ Mod] | [+ Sub] | [Move In] | [Ren] | [Del]
+            val fActions = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            val btnToggleFolder = makeEntryActionBtn(if (isCollapsed) "▾ Drop" else "▴ Shrink", true)
+            val btnAddModInFolder = makeEntryActionBtn("+ Mod", true).apply {
+                setOnClickListener {
+                    springPulse(this, 0.06f)
+                    promptNewModuleDialog(targetFolder = folderPath)
+                }
+            }
+            val btnAddSubFolder = makeEntryActionBtn("+ Sub", false).apply {
+                setOnClickListener {
+                    springPulse(this, 0.06f)
+                    promptNewFolderDialog(parentFolder = folderPath)
+                }
+            }
+            val btnMoveIntoFolder = makeEntryActionBtn("Move In", false).apply {
+                setOnClickListener {
+                    springPulse(this, 0.06f)
+                    promptMoveFileIntoThisFolderDialog(folderPath)
+                }
+            }
+            val btnRenameFolder = makeEntryActionBtn("Ren", false).apply {
+                setOnClickListener {
+                    springPulse(this, 0.06f)
+                    promptRenameFolderDialog(folderPath)
+                }
+            }
+            val btnDeleteFolder = makeEntryActionBtn("Del", false).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginEnd = 0
+                setOnClickListener {
+                    springPulse(this, 0.06f)
+                    confirmDeleteFolderDialog(folderPath)
+                }
+            }
+
+            val toggleAction = {
+                springPulse(folderHeaderCard, 0.04f)
+                animateFolderShrinkOrDrop(
+                    ctx = ctx,
+                    folderPath = folderPath,
+                    shortName = shortName,
+                    subFolderCount = subFolderCount,
+                    totalFilesCount = totalFilesCount,
+                    indentedContainer = indentedRowWrap,
+                    tvTitle = tvFolderTitle,
+                    tvBadge = tvFolderBadge,
+                    tvSub = tvFolderSub,
+                    btnToggle = btnToggleFolder,
+                    accentText = accentText,
+                    secondaryText = secondaryText
+                )
+            }
+            folderHeaderCard.setOnClickListener { toggleAction() }
+            btnToggleFolder.setOnClickListener { toggleAction() }
+
+            fActions.addView(btnToggleFolder)
+            fActions.addView(btnAddModInFolder)
+            fActions.addView(btnAddSubFolder)
+            fActions.addView(btnMoveIntoFolder)
+            fActions.addView(btnRenameFolder)
+            fActions.addView(btnDeleteFolder)
+            folderHeaderCard.addView(fActions)
+
+            // Populate child subfolders and files inside childrenStack
+            childFolders.forEach { subPath ->
+                renderFolderSubtree(childrenStack, subPath, depth + 1)
+            }
+            childFiles.forEach { file ->
+                childrenStack.addView(buildModuleFileCard(file))
+            }
+            if (childFolders.isEmpty() && childFiles.isEmpty()) {
+                val tvEmptyFolder = TextView(ctx).apply {
+                    text = "Empty folder — tap '+ Mod' or 'Move In' to add .math files."
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(secondaryText)
+                    setPadding(dp(4f), dp(4f), dp(4f), dp(6f))
+                }
+                childrenStack.addView(tvEmptyFolder)
+            }
+
+            folderGroupWrap.addView(folderHeaderCard)
+            folderGroupWrap.addView(indentedRowWrap)
+            parentContainer.addView(folderGroupWrap)
+        }
+
+        // 1. Render top-level folders (depth = 0) with recursive indented children
+        directChildFoldersOf("").forEach { topFolder ->
+            renderFolderSubtree(listContainer, topFolder, depth = 0)
+        }
+
+        // 2. Render root-level .math module files (unassigned to any folder)
+        val rootFiles = directFilesOf("")
+        rootFiles.forEach { file ->
+            listContainer.addView(buildModuleFileCard(file))
+        }
+
+        if (listContainer.childCount == 0 && activeQuery.isNotEmpty()) {
+            val tvNoMatch = TextView(ctx).apply {
+                text = "No files or folders match \"${drawerFileSearchQuery.trim()}\"."
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+                typeface = Typeface.MONOSPACE
+                setTextColor(secondaryText)
+                setPadding(dp(8f), dp(12f), dp(8f), dp(12f))
+            }
+            listContainer.addView(tvNoMatch)
         }
     }
 
@@ -1127,6 +1530,9 @@ class MathWorkspaceFragment : Fragment() {
         etModuleEditor?.dismissSuggestionsPopup()
         saveCurrentModuleEditorState(showToast = false)
         drawerAnimator?.cancel()
+        folderToggleAnimators.values.forEach { it.cancel() }
+        folderToggleAnimators.clear()
+        dismissDrawerFileSearch()
         activeModalOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         activeModalOverlay = null
         isModalDialogOpen = false

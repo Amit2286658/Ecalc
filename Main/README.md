@@ -1,6 +1,6 @@
-# Ecalc — Android Scientific Calculator & `.math` Studio (Powered by Math-Engine-MEP)
+# MEP Calc — Android Scientific Calculator & `.math` Studio (Powered by Math-Engine-MEP)
 
-**Ecalc** is a neumorphic Android scientific calculator and multi-file `.math` development studio powered by the **Math-Engine-MEP** C11 symbolic and numerical runtime via JNI (`libmathengine.so` + `stdlib.mathc`).
+**MEP Calc** is a neumorphic Android scientific calculator and multi-file `.math` development studio powered by the **Math-Engine-MEP** C11 symbolic and numerical runtime via JNI (`libmathengine.so` + `stdlib.mathc`).
 
 ---
 
@@ -27,7 +27,7 @@
 ## Project Directory Structure
 
 ```text
-Ecalc/
+MEP-Calc/
 ├── README.md
 ├── docs/
 │   └── CMATH_ENGINE_DOCS.md                        # Complete .math language & stdlib reference

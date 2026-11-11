@@ -75,6 +75,10 @@ fun MathWorkspaceFragment.applyTheme(dark: Boolean) {
     val secondaryText = Color.parseColor(if (dark) "#8E8E8E" else "#666666")
     val accentText = Color.parseColor(if (dark) "#13959B" else "#E58A7B")
 
+    if (drawerFileSearchOverlay != null) {
+        dismissDrawerFileSearch()
+    }
+
     root.setBackgroundColor(bg)
     fileManagerDrawerPanel?.background = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
@@ -120,7 +124,7 @@ fun MathWorkspaceFragment.applyTheme(dark: Boolean) {
     listOf(
         btnHamburgerMenu, btnBackCalc, btnActiveProjectPill,
         btnDrawerCloseIcon, btnDrawerRunProject, btnDrawerCreateProject, btnDrawerResetProjectEngine,
-        btnDrawerCreateNewFile, btnDrawerImportFile,
+        btnDrawerCreateFolder, btnDrawerCreateNewFile, btnDrawerImportFile, btnDrawerSearchFiles,
         btnModuleSubEditor, btnModuleSubLog,
         btnCompileModule, btnPlotModule, btnBytecodeModule, btnResetActiveModule, btnModuleViewLog,
         btnClearConsole,
@@ -199,7 +203,7 @@ internal fun MathWorkspaceFragment.springSlideIn(target: View, fromDirection: In
 }
 
 // =========================================================================
-//  Frosted-Glass Neumorphic Modal Dialogs (New File, Rename/Copy, Confirm)
+//  Frosted-Glass Neumorphic Modal Dialogs (New File, Folder, Rename/Copy, Confirm)
 // =========================================================================
 
 internal fun MathWorkspaceFragment.hideSoftKeyboardFrom(view: View?) {
@@ -296,7 +300,8 @@ internal fun MathWorkspaceFragment.showFrostedFileNamingModal(
     primaryButtonLabel: String,
     onPrimary: (String) -> Unit,
     secondaryButtonLabel: String? = null,
-    onSecondary: ((String) -> Unit)? = null
+    onSecondary: ((String) -> Unit)? = null,
+    extBadgeText: String = ".math"
 ) {
     val ctx = context ?: return
     val activity = activity as? MainActivity ?: return
@@ -471,7 +476,7 @@ internal fun MathWorkspaceFragment.showFrostedFileNamingModal(
     dialogCard.addView(descBox)
 
     val tvInputLabel = TextView(ctx).apply {
-        text = "NAME"
+        text = "NAME / PATH"
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
         setTypeface(typeface, Typeface.BOLD)
         setTextColor(secondaryText)
@@ -522,7 +527,7 @@ internal fun MathWorkspaceFragment.showFrostedFileNamingModal(
     }
 
     val extBadge = TextView(ctx).apply {
-        text = ".math"
+        text = extBadgeText
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
         typeface = Typeface.MONOSPACE
         setTypeface(typeface, Typeface.BOLD)
@@ -1237,7 +1242,3 @@ internal fun MathWorkspaceFragment.buildStructuredTableView(
         setTextColor(primaryText)
     }
 }
-
-// =========================================================================
-//  Interactive 2D Function & Vector Plotter Modal (`MathPlotView`)
-// =========================================================================
