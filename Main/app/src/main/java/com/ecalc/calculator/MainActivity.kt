@@ -35,7 +35,10 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.CompoundButtonCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
@@ -102,6 +105,22 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Android 15+ (targetSdk 35+) enforces edge-to-edge: the window draws behind the
+        // system bars, so with 3-button navigation the nav bar overlapped the app UI.
+        // Pre-15 devices keep the decor-fits behavior (bars reserve their own space) —
+        // there the reported systemBars insets are already consumed/zero, so this is a
+        // no-op and nothing changes visually (CI emulator screenshots stay valid).
+        // Pad the root by the system bars and forward children insets with ONLY the
+        // systemBars type zeroed, keeping ime() and displayCutout() intact for the
+        // fragment-level keyboard/cutout handling.
+        ViewCompat.setOnApplyWindowInsetsListener(binding.rootFrame) { v, windowInsets ->
+            val bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsetsCompat.Builder(windowInsets)
+                .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.NONE)
+                .build()
+        }
 
         binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)"
         styleSplashDots(false)
