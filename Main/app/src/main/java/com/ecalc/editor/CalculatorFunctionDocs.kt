@@ -1,4 +1,4 @@
-package com.ecalc.editor
+package com.ecalc
 
 /**
  * Curated rich documentation for the Basic Calculator’s Functions-tab hold popups.
