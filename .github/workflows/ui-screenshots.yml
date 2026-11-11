@@ -55,7 +55,10 @@ jobs:
 
   screenshots:
     needs: build-apk
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: the ubuntu-26.04 image ships /dev/kvm without the runner
+    # user in the kvm group, so the emulator silently falls back to TCG (software
+    # emulation), never finishes booting, and adb stays "device offline".
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -70,6 +73,15 @@ jobs:
         with:
           name: emulator-debug-apk
           path: apk
+
+      - name: Ensure KVM access (belt-and-braces if the image changes again)
+        run: |
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            ls -l /dev/kvm
+          else
+            echo "::warning::no /dev/kvm on this runner — emulator will be slow (TCG)"
+          fi
 
       - name: Capture screenshots (${{ matrix.profile }}, API ${{ matrix.api }}${{ matrix.dark == 'yes' && ' — dark' || '' }})
         uses: reactivecircus/android-emulator-runner@v2
