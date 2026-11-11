@@ -49,7 +49,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: emulator-debug-apk
+          # x86_64-only engine (built via -PmepAbi=x86_64 for the CI emulators):
+          # do NOT install on real arm64 phones — use the debug-build APK instead.
+          name: emulator-debug-apk-x86_64-CI-ONLY-do-not-install
           path: Main/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
@@ -75,7 +77,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: emulator-debug-apk
+          name: emulator-debug-apk-x86_64-CI-ONLY-do-not-install
           path: apk
 
       - name: Ensure KVM access (belt-and-braces if the image changes again)
