@@ -3,8 +3,8 @@ package com.ecalc.editor
 /**
  * Curated rich documentation for the Basic Calculator’s Functions-tab hold popups.
  *
- * Every entry is authored against the canonical stdlib sources in
- * `Main/Library/*.math` (the engine’s own definitions, exported as-is from the same
+ * Every entry is authored against the canonical stdlib sources under
+ * `Main/Library` (the engine’s own `.math` definitions, exported as-is from the same
  * sources the byte-identical `stdlib.mathc` is compiled from), so formulas, parameter
  * names and units quoted here are exactly what the native engine evaluates.
  *
