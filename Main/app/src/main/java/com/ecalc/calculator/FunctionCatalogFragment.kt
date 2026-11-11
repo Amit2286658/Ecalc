@@ -379,7 +379,13 @@ class FunctionCatalogFragment : Fragment() {
             setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { dismissFilterDropdown() }
         }
-        val frostView = createFrostedBackdropWithDisplayCutout(act, rootFrame, dp)
+        // Filter dropdown frosts the whole screen — expression/answer stay blurred here
+        // (no display cutout; the sharp cutout is reserved for the helper key pad).
+        val frostView = ImageView(act).apply {
+            setImageBitmap(Frost.frozenBackdrop(rootFrame, downscale = 6, radius = 6))
+            scaleType = ImageView.ScaleType.FIT_XY
+            alpha = 0f
+        }
         if (frostView != null) {
             overlay.addView(
                 frostView,
