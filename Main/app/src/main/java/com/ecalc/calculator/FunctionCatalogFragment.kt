@@ -34,7 +34,7 @@ import kotlin.math.hypot
  * dynamically discovered from `stdlib + patches + project1`.
  * - Top bar is split 50/50 between two neumorphic dropdown buttons:
  *   1. Left 50%: Source/kind filter dropdown (`▾ Filter: All`, `project1`, `Patches`, `Stdlib`, `Operators`).
- *   2. Right 50%: Quick numeric keypad dropdown (`▾ Keypad: 1–9  ( )  =`).
+ *   2. Right 50%: Quick numeric keypad dropdown (`▾ Keypad: 0–9  ( )  =`).
  * - Both dropdowns and all filter transitions use the app's signature damped-spring physics.
  * - Tapping any item inserts it into the Basic Calculator's expression input.
  * - Holding any item displays a frosted-glass popup info window (`showButtonPopup`) populated
@@ -96,7 +96,7 @@ class FunctionCatalogFragment : Fragment() {
         }
         outerLayout = root
 
-        // 1. 50/50 Top Controls Row: [▾ Filter: All (...)] (50%) + [▾ Keypad: 1–9 ( ) =] (50%)
+        // 1. 50/50 Top Controls Row: [▾ Filter: All (...)] (50%) + [▾ Keypad: 0–9 ( ) =] (50%)
         val topControlsRow = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -143,7 +143,7 @@ class FunctionCatalogFragment : Fragment() {
         topControlsRow.addView(filterToggle)
 
         val padToggle = NeumorphicKeyView(ctx).apply {
-            text = "▾ Keypad: 1–9  ( )  ="
+            text = "▾ Keypad: 0–9  ( )  ="
             textSize = 11.2f
             cornerRadiusDp = 10.5f
             shadowPadDp = 2.2f
@@ -164,7 +164,7 @@ class FunctionCatalogFragment : Fragment() {
                         if (held) {
                             act.showButtonPopup(
                                 this,
-                                "1–9 Keypad — Quick numeric insert pad: drops down a frost-blurred keypad with digits 1–9, " +
+                                "0–9 Keypad — Quick numeric insert pad: drops down a frost-blurred keypad with digits 0–9, " +
                                     "decimal dot, parameter comma, a smart bracket that opens or closes ( ) automatically, " +
                                     "backspace, and equals. Tap outside or the button again to dismiss."
                             )
@@ -503,9 +503,10 @@ class FunctionCatalogFragment : Fragment() {
     }
 
     /**
-     * Drops down a small frost-blurred button window anchored to [anchor] (the `1-9` toggle):
-     * digits 1–9, decimal dot, parameter comma, a smart `( )` bracket key and an accent equals
-     * key. Entrance runs the app's signature damped-spring animation (`e⁻⁴ᶠ · cos(3πf)` scale
+     * Drops down a small frost-blurred button window anchored to [anchor] (the `0-9` toggle):
+     * digits 1–9 (3×3 grid), decimal dot, parameter comma, a smart `( )` bracket key, a `0` key
+     * and an accent equals key. Entrance runs the app's signature damped-spring animation
+     * (`e⁻⁴ᶠ · cos(3πf)` scale
      * with a slide + fade, identical to the hold-info popups). Tapping the overlay anywhere
      * outside the panel — or the toggle again — dismisses it.
      */
@@ -532,7 +533,7 @@ class FunctionCatalogFragment : Fragment() {
             key.shadowPadDp = 2.0f
             key.isAccentKey = isAccent
             key.isDarkThemeMode = dark
-            key.layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(30f)).apply {
+            key.layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(34f)).apply {
                 marginStart = dp(3f)
                 marginEnd = dp(3f)
             }
@@ -576,7 +577,7 @@ class FunctionCatalogFragment : Fragment() {
                 gravity = Gravity.CENTER
             }
             for ((label, accent) in row) {
-                rowLayout.addView(makeKey(label, accent, 34f) {
+                rowLayout.addView(makeKey(label, accent, 39f) {
                     when (label) {
                         "( )" -> act.onSmartBracketClicked()
                         else -> act.onKeyClicked(label)
@@ -595,8 +596,9 @@ class FunctionCatalogFragment : Fragment() {
             LinearLayout(act).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
-                addView(makeKey("⌫", false, 54f) { act.onKeyClicked("⌫") })
-                addView(makeKey("=", true, 54f) {
+                addView(makeKey("⌫", false, 39f) { act.onKeyClicked("⌫") })
+                addView(makeKey("0", false, 39f) { act.onKeyClicked("0") })
+                addView(makeKey("=", true, 39f) {
                     act.onKeyClicked("=")
                     dismissHelperPad()
                 })
