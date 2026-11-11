@@ -5,7 +5,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# Strict warning parity between CMake and Makefile builds
+# Strict warning parity between CMake and Makefile builds.
+# NOTE: clang (NDK) treats -Wformat=2's -Wformat-nonliteral far more aggressively
+# than gcc (e.g. log wrappers in math_engine.c / mem_arena.c that pass a runtime
+# format string), so relax just that sub-warning instead of weakening -Wformat=2.
 add_compile_options(
     -Wall
     -Wextra
@@ -13,6 +16,7 @@ add_compile_options(
     -Wcast-qual
     -Wshadow
     -Wformat=2
+    -Wno-format-nonliteral
     -Werror
 )
 
