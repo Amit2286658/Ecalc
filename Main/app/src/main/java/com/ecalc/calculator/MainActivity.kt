@@ -117,12 +117,22 @@ class MainActivity : AppCompatActivity() {
         // behind the status bar (its containers reserve their own 48dp header padding
         // and color the bar area), so padding the top here double-compensated and left
         // a large gap below the status bar.
+        val baseKeypadBottomPadPx = (10f * resources.displayMetrics.density).toInt()
         ViewCompat.setOnApplyWindowInsetsListener(binding.rootFrame) { v, windowInsets ->
             val bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(bars.left, 0, bars.right, bars.bottom)
-            WindowInsetsCompat.Builder(windowInsets)
-                .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.NONE)
-                .build()
+            // Pad only horizontal cutouts/bars on rootFrame so full-screen overlays
+            // and circular reveals reach the bottom edge seamlessly.
+            v.setPadding(bars.left, 0, bars.right, 0)
+
+            // Extend keypadSheet's background (#333333 dark / #F3F3F3 light) behind the nav bar
+            // while keeping the keys padded above 3-button and gesture navigation bars.
+            binding.keypadSheet.setPadding(
+                binding.keypadSheet.paddingLeft,
+                binding.keypadSheet.paddingTop,
+                binding.keypadSheet.paddingRight,
+                baseKeypadBottomPadPx + bars.bottom
+            )
+            windowInsets
         }
 
         binding.tvAngleMode.text = if (isDegreeMode) "deg(Degree)" else "rad(Radian)"
@@ -230,8 +240,10 @@ class MainActivity : AppCompatActivity() {
         if (binding.splashCircle.visibility == View.VISIBLE && !launchRevealStarted) {
             window.statusBarColor = Color.parseColor("#F8F8F8")
             window.navigationBarColor = Color.parseColor("#F3F3F3")
-            WindowCompat.getInsetsController(window, window.decorView)
-                .isAppearanceLightStatusBars = true
+            WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = true
+                isAppearanceLightNavigationBars = true
+            }
         }
     }
 

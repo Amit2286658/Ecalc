@@ -55,10 +55,18 @@ internal fun MainActivity.applyThemeColors(dark: Boolean) {
 
     window.statusBarColor = Color.parseColor(displayBg)
     window.navigationBarColor = Color.parseColor(sheetBg)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // Prevent Android from drawing a translucent grey/white contrast scrim
+        // over our themed surface in 3-button navigation mode.
+        window.isNavigationBarContrastEnforced = false
+    }
     window.setBackgroundDrawable(ColorDrawable(Color.parseColor(displayBg)))
-    WindowCompat.getInsetsController(window, window.decorView)
-        .isAppearanceLightStatusBars = !dark
+    WindowCompat.getInsetsController(window, window.decorView).apply {
+        isAppearanceLightStatusBars = !dark
+        isAppearanceLightNavigationBars = !dark
+    }
 
+    binding.rootFrame.setBackgroundColor(Color.parseColor(sheetBg))
     binding.calculatorContainer.setBackgroundColor(Color.parseColor(displayBg))
 
     binding.themeTogglePill.background = GradientDrawable().apply {
