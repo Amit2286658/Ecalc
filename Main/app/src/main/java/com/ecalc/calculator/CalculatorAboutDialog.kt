@@ -174,7 +174,10 @@ fun MainActivity.showAboutInfoWindow() {
         setTextColor(primaryText)
     }
     val tvVersion = TextView(this).apply {
-        text = "Version 1.0 • Native C11 Math Engine (MEP)"
+        val ver = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull() ?: "1.0"
+        text = "Version $ver • Native C11 Math Engine (MEP)"
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
         setTextColor(accentColor)
         setTypeface(typeface, Typeface.BOLD)
@@ -199,7 +202,7 @@ fun MainActivity.showAboutInfoWindow() {
     headerRow.addView(btnCloseTop)
     infoCard.addView(headerRow)
 
-    // 2. Scrollable content container holding Overview, Author/Contact/Links, License T&C, and Engine Docs
+    // 2. Scrollable content container holding Overview, Author/Contact/Links, and Engine Docs
     val bodyScroll = ScrollView(this).apply {
         isVerticalScrollBarEnabled = true
         layoutParams = LinearLayout.LayoutParams(
@@ -339,33 +342,7 @@ fun MainActivity.showAboutInfoWindow() {
     authorBox.addView(quickLinksRow)
     scrollContent.addView(authorBox)
 
-    // Section C: License & Terms & Conditions (MIT License)
-    val licenseBox = makeSectionBox(codeBg)
-    licenseBox.addView(makeSectionTitle("License & Terms & Conditions (MIT License)"))
-    val licenseFallback = """
-        MIT License
-
-        Copyright (c) 2026 Amit kumar (amitkumar13234353@gmail.com)
-
-        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-    """.trimIndent()
-    val licenseText = readAssetTextOrFallback("docs/LICENSE.txt", licenseFallback)
-    val tvLicense = TextView(this).apply {
-        text = licenseText
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-        typeface = Typeface.MONOSPACE
-        setTextColor(primaryText)
-        setLineSpacing(0f, 1.15f)
-        setTextIsSelectable(true)
-    }
-    licenseBox.addView(tvLicense)
-    scrollContent.addView(licenseBox)
-
-    // Section D: Embedded CMath Engine (Math-Engine-MEP) Documentation & Guides (Below License & T&C)
+    // Section C: Embedded CMath Engine (Math-Engine-MEP) Documentation & Guides
     val docsBox = makeSectionBox(codeBg)
     docsBox.addView(makeSectionTitle("CMath Engine (Math-Engine-MEP) — Documentation & Guides"))
     val tvDocsSub = TextView(this).apply {
