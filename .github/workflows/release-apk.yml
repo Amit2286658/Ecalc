@@ -1,0 +1,101 @@
+name: release-apk
+
+# Builds a RELEASE APK (arm64 engine, minification off so JNI symbol names are
+# untouched) and publishes it as the `ecalc-release-apk` artifact, signed.
+#
+# Signing:
+#   - If the repo secrets RELEASE_KEYSTORE_BASE64 (+ optional RELEASE_KEYSTORE_-
+#     PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD) are set, the APK is
+#     signed with that keystore (the Play-Store-grade path).
+#   - Otherwise it falls back to the runner's standard debug keystore — the same
+#     one that signs the `debug-build` APKs, so this release installs directly
+#     over an existing debug install (same signature, data preserved).
+# NOTE: the fallback keystore is for sideloading/testing only, not store upload.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Main/**'
+      - '.github/workflows/release-apk.yml'
+
+defaults:
+  run:
+    working-directory: Main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+      RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+      RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+      RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+
+      - name: Build libmathengine.so from vendored C11 sources (arm64)
+        run: |
+          set -eu
+          NDK_DIR="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$NDK_DIR" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" > /dev/null
+            NDK_DIR="$ANDROID_HOME/ndk/27.0.12077973"
+          fi
+          (cd app/src/main/cpp/mathengine && sh tools/build_android_arm64.sh "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin")
+          cp app/src/main/cpp/mathengine/precompiled/arm64-v8a/libmathengine.so app/src/main/jniLibs/arm64-v8a/libmathengine.so
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ok=0
+          for i in 1 2 3 4 5; do
+            if ./gradlew assembleRelease -PusePrebuiltMepSo --console=plain; then ok=1; break; fi
+            echo "gradlew attempt $i failed — retrying in 90s"
+            sleep 90
+          done
+          [ "$ok" = 1 ]
+
+      - name: Sign release APK
+        run: |
+          set -eu
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          APK="$(find app/build/outputs/apk/release -name '*.apk' | head -1)"
+          echo "unsigned APK: $APK"
+
+          if [ -n "$RELEASE_KEYSTORE_B64" ]; then
+            echo "Signing with repo-secret keystore (RELEASE_KEYSTORE_BASE64)"
+            echo "$RELEASE_KEYSTORE_B64" | base64 -d > release.keystore
+            KS_ARGS=(--ks release.keystore --ks-key-alias "${RELEASE_KEY_ALIAS:-release}")
+            [ -n "$RELEASE_KEYSTORE_PASSWORD" ] || { echo "::error::RELEASE_KEYSTORE_PASSWORD secret missing"; exit 1; }
+            KS_ARGS+=(--ks-pass "pass:$RELEASE_KEYSTORE_PASSWORD")
+            if [ -n "$RELEASE_KEY_PASSWORD" ]; then
+              KS_ARGS+=(--key-pass "pass:$RELEASE_KEY_PASSWORD")
+            fi
+          else
+            echo "No RELEASE_KEYSTORE_BASE64 secret — signing with the runner's standard debug keystore"
+            echo "(same key as the debug-build APKs: installs over an existing debug install)"
+            KS_ARGS=(--ks "$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android)
+          fi
+
+          "$BT/zipalign" -f 4 "$APK" app-release-aligned.apk
+          "$BT/apksigner" sign "${KS_ARGS[@]}" --out ecalc-release.apk app-release-aligned.apk
+          "$BT/apksigner" verify --print-certs ecalc-release.apk
+          rm -f release.keystore app-release-aligned.apk
+          ls -la ecalc-release.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ecalc-release-apk
+          path: Main/ecalc-release.apk
+          if-no-files-found: error
