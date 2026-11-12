@@ -1,7 +1,12 @@
 name: release-apk
 
 # Builds a RELEASE APK (arm64 engine, minification off so JNI symbol names are
-# untouched) and publishes it as the `ecalc-release-apk` artifact, signed.
+# untouched) and publishes it as the `ecalc-release-apk-vN` artifact, signed.
+#
+# Versioning: every signed release bumps the repo-root `release.version` by 1
+# (versionCode = N, versionName = 1.0.N) and commits the bump back to main.
+# `release.version` sits outside the `Main/**` trigger paths, so the bump
+# commit never re-triggers this workflow.
 #
 # Signing:
 #   - If the repo secrets RELEASE_KEYSTORE_BASE64 (+ optional RELEASE_KEYSTORE_-
@@ -28,6 +33,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     env:
       RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
       RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
@@ -55,12 +62,21 @@ jobs:
           (cd app/src/main/cpp/mathengine && sh tools/build_android_arm64.sh "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin")
           cp app/src/main/cpp/mathengine/precompiled/arm64-v8a/libmathengine.so app/src/main/jniLibs/arm64-v8a/libmathengine.so
 
+      - name: Compute release version (bump release.version by 1)
+        run: |
+          set -eu
+          # release.version lives at the REPO ROOT (outside Main/**) so pushing
+          # the bump commit never re-triggers this workflow.
+          VER=$(( "$(cat "$GITHUB_WORKSPACE/release.version" 2>/dev/null || echo 1)" + 1 ))
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "This release: versionCode=$VER, versionName=1.0.$VER"
+
       - name: Build release APK
         run: |
           chmod +x gradlew
           ok=0
           for i in 1 2 3 4 5; do
-            if ./gradlew assembleRelease -PusePrebuiltMepSo --console=plain; then ok=1; break; fi
+            if ./gradlew assembleRelease -PusePrebuiltMepSo -PmepVersionCode="$VER" -PmepVersionName="1.0.$VER" --console=plain; then ok=1; break; fi
             echo "gradlew attempt $i failed — retrying in 90s"
             sleep 90
           done
@@ -89,13 +105,30 @@ jobs:
           fi
 
           "$BT/zipalign" -f 4 "$APK" app-release-aligned.apk
-          "$BT/apksigner" sign "${KS_ARGS[@]}" --out ecalc-release.apk app-release-aligned.apk
-          "$BT/apksigner" verify --print-certs ecalc-release.apk
+          "$BT/apksigner" sign "${KS_ARGS[@]}" --out "ecalc-release-v$VER.apk" app-release-aligned.apk
+          "$BT/apksigner" verify --print-certs "ecalc-release-v$VER.apk"
           rm -f release.keystore app-release-aligned.apk
-          ls -la ecalc-release.apk
+          ls -la "ecalc-release-v$VER.apk"
+          # Record the APK's versionCode/versionName straight from the artifact
+          "$BT/aapt" dump badging "ecalc-release-v$VER.apk" | grep -E "^package:" || true
+
+      - name: Commit version bump (release.version + 1)
+        run: |
+          set -eu
+          cd "$GITHUB_WORKSPACE"
+          git config user.name  "mep-calc-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          printf '%s\n' "$VER" > release.version
+          git add release.version
+          git commit -m "[MEP Calc] release: bump release.version -> $VER (signed release v$VER built)"
+          if git push origin HEAD:main; then
+            echo "bump pushed: release.version = $VER"
+          else
+            echo "::warning::bump push failed (concurrent release?) — artifact still published"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ecalc-release-apk
-          path: Main/ecalc-release.apk
+          name: ecalc-release-apk-v${{ env.VER }}
+          path: Main/ecalc-release-v*.apk
           if-no-files-found: error

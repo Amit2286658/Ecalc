@@ -11,8 +11,10 @@ android {
     applicationId = "com.ecalc"
     minSdk = 26
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    // Overridable by CI: -PmepVersionCode=N -PmepVersionName=1.0.N (release-apk
+    // workflow bumps release.version at the repo root on every signed release).
+    versionCode = (findProperty("mepVersionCode") as String?)?.toIntOrNull() ?: 1
+    versionName = (findProperty("mepVersionName") as String?) ?: "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
